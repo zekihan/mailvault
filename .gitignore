@@ -1,0 +1,6 @@
+/dist/
+/tmp/
+.idea/
+.env
+*.test
+*.out
