@@ -32,9 +32,9 @@ type SourceConfig struct {
 
 // OAuth2Config holds OAuth2 configuration for sources that support it.
 type OAuth2Config struct {
-	ClientID     string `mapstructure:"client_id" yaml:"client_id"`
-	ClientSecret string `mapstructure:"client_secret" yaml:"client_secret"`
-	TokenURL     string `mapstructure:"token_url" yaml:"token_url"`
+	ClientID     string   `mapstructure:"client_id" yaml:"client_id"`
+	ClientSecret string   `mapstructure:"client_secret" yaml:"client_secret"`
+	TokenURL     string   `mapstructure:"token_url" yaml:"token_url"`
 	Scopes       []string `mapstructure:"scopes" yaml:"scopes"`
 }
 
@@ -65,9 +65,9 @@ type MboxTargetConfig struct {
 
 // S3TargetConfig holds configuration for an S3-compatible target.
 type S3TargetConfig struct {
-	Bucket        string `mapstructure:"bucket" yaml:"bucket"`
-	Region        string `mapstructure:"region" yaml:"region"`
-	Endpoint      string `mapstructure:"endpoint" yaml:"endpoint"`
-	Prefix        string `mapstructure:"prefix" yaml:"prefix"`
+	Bucket         string `mapstructure:"bucket" yaml:"bucket"`
+	Region         string `mapstructure:"region" yaml:"region"`
+	Endpoint       string `mapstructure:"endpoint" yaml:"endpoint"`
+	Prefix         string `mapstructure:"prefix" yaml:"prefix"`
 	CredentialsRef string `mapstructure:"credentials_ref" yaml:"credentials_ref"`
 }

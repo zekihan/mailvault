@@ -10,13 +10,13 @@ func TestValidate_Success(t *testing.T) {
 	cfg := &Config{
 		Sources: []SourceConfig{
 			{
-				Name:        "gmail",
-				Type:        "imap",
-				Host:        "imap.gmail.com",
-				Port:        993,
-				Username:    "user@gmail.com",
-				PasswordRef: "env:GMAIL_PASS",
-				UseTLS:      true,
+				Name:           "gmail",
+				Type:           "imap",
+				Host:           "imap.gmail.com",
+				Port:           993,
+				Username:       "user@gmail.com",
+				PasswordRef:    "env:GMAIL_PASS",
+				UseTLS:         true,
 				MaxConnections: 5,
 			},
 		},

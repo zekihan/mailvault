@@ -15,43 +15,43 @@ import (
 
 // SyncEngine coordinates the sync process between sources and targets.
 type SyncEngine struct {
-	config       *config.Config
-	stateStore   *state.Store
-	registry     *plugins.Registry
-	sources      map[string]plugins.Source
-	targets      map[string]plugins.Target
-	dryRun       bool
-	maxRetries   int
-	retryDelay   time.Duration
-	concurrency  int
-	since        int64
-	until        int64
+	config      *config.Config
+	stateStore  *state.Store
+	registry    *plugins.Registry
+	sources     map[string]plugins.Source
+	targets     map[string]plugins.Target
+	dryRun      bool
+	maxRetries  int
+	retryDelay  time.Duration
+	concurrency int
+	since       int64
+	until       int64
 }
 
 // SyncResult holds the result of a sync operation.
 type SyncResult struct {
-	SourceName   string
-	TargetName   string
+	SourceName      string
+	TargetName      string
 	MessagesFetched int
 	MessagesWritten int
 	MessagesSkipped int
-	Errors       []error
-	Duration     time.Duration
+	Errors          []error
+	Duration        time.Duration
 }
 
 // SyncStats holds overall sync statistics.
 type SyncStats struct {
-	TotalSources      int
-	TotalTargets      int
-	TotalPairs        int
-	Results           []SyncResult
-	TotalFetched      int
-	TotalWritten      int
-	TotalSkipped      int
-	TotalErrors       int
-	StartTime         time.Time
-	EndTime           time.Time
-	Duration          time.Duration
+	TotalSources int
+	TotalTargets int
+	TotalPairs   int
+	Results      []SyncResult
+	TotalFetched int
+	TotalWritten int
+	TotalSkipped int
+	TotalErrors  int
+	StartTime    time.Time
+	EndTime      time.Time
+	Duration     time.Duration
 }
 
 // NewSyncEngine creates a new sync engine.

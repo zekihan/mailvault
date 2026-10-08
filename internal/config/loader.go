@@ -153,9 +153,10 @@ func expandCredentialRefs(cfg *Config) error {
 
 // resolveCredentialRef resolves a single credential reference.
 // Supported formats:
-//   env:VAR_NAME          - read from environment variable
-//   file:/path/to/file    - read first line from file
-//   keyring:service:account - read from system keyring
+//
+//	env:VAR_NAME          - read from environment variable
+//	file:/path/to/file    - read first line from file
+//	keyring:service:account - read from system keyring
 func resolveCredentialRef(ref string) (string, error) {
 	if ref == "" {
 		return "", nil

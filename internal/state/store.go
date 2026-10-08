@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -14,7 +13,6 @@ import (
 // Store manages the SQLite database for sync state.
 type Store struct {
 	db   *sql.DB
-	mu   sync.Mutex
 	path string
 }
 
@@ -287,10 +285,10 @@ func (s *Store) Stats(ctx context.Context) (map[string]int64, error) {
 	stats := make(map[string]int64)
 
 	queries := map[string]string{
-		"sources":   "SELECT COUNT(*) FROM sources",
-		"folders":   "SELECT COUNT(*) FROM folders",
-		"messages":  "SELECT COUNT(*) FROM messages",
-		"oauth":     "SELECT COUNT(*) FROM oauth_tokens",
+		"sources":  "SELECT COUNT(*) FROM sources",
+		"folders":  "SELECT COUNT(*) FROM folders",
+		"messages": "SELECT COUNT(*) FROM messages",
+		"oauth":    "SELECT COUNT(*) FROM oauth_tokens",
 	}
 
 	for name, query := range queries {

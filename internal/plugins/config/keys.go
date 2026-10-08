@@ -17,11 +17,11 @@ const (
 
 // Config keys for target factories
 const (
-	TargetConfigPath             = "path"
-	TargetConfigCreateIfMissing  = "create_if_missing"
-	TargetConfigBucket           = "bucket"
-	TargetConfigRegion           = "region"
-	TargetConfigEndpoint         = "endpoint"
-	TargetConfigPrefix           = "prefix"
-	TargetConfigCredentialsRef   = "credentials_ref"
+	TargetConfigPath            = "path"
+	TargetConfigCreateIfMissing = "create_if_missing"
+	TargetConfigBucket          = "bucket"
+	TargetConfigRegion          = "region"
+	TargetConfigEndpoint        = "endpoint"
+	TargetConfigPrefix          = "prefix"
+	TargetConfigCredentialsRef  = "credentials_ref"
 )

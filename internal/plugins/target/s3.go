@@ -136,12 +136,12 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 		Body:        strings.NewReader(string(msg.Raw)),
 		ContentType: aws.String("message/rfc822"),
 		Metadata: map[string]string{
-			"source-folder":   msg.Folder,
-			"source-uid":      msg.UID,
-			"message-id":      msg.MessageID,
-			"content-hash":    msg.ContentHash,
-			"internal-date":   msg.InternalDate,
-			"size":            fmt.Sprintf("%d", msg.Size),
+			"source-folder": msg.Folder,
+			"source-uid":    msg.UID,
+			"message-id":    msg.MessageID,
+			"content-hash":  msg.ContentHash,
+			"internal-date": msg.InternalDate,
+			"size":          fmt.Sprintf("%d", msg.Size),
 		},
 	})
 	if err != nil {

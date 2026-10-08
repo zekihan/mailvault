@@ -19,20 +19,20 @@ import (
 
 // IMAPSource implements the Source interface for IMAP.
 type IMAPSource struct {
-	name           string
-	host           string
-	port           int
-	username       string
-	password       string
-	useTLS         bool
-	startTLS       bool
-	folders        []string
-	connTimeout    time.Duration
-	readTimeout    time.Duration
-	maxConns       int
-	client         *imapclient.Client
-	connected      bool
-	mu             sync.Mutex
+	name        string
+	host        string
+	port        int
+	username    string
+	password    string
+	useTLS      bool
+	startTLS    bool
+	folders     []string
+	connTimeout time.Duration
+	readTimeout time.Duration
+	maxConns    int
+	client      *imapclient.Client
+	connected   bool
+	mu          sync.Mutex
 }
 
 func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {

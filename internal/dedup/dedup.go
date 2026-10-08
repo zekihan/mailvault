@@ -37,7 +37,7 @@ func ExtractMessageID(raw []byte) string {
 				return value
 			}
 			// Handle continuation lines (folded headers)
-			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "	") {
 				continue
 			}
 		}

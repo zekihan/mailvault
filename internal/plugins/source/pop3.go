@@ -17,19 +17,19 @@ import (
 
 // POP3Source implements the Source interface for POP3.
 type POP3Source struct {
-	name           string
-	host           string
-	port           int
-	username       string
-	password       string
-	useTLS         bool
-	folders        []string
-	connTimeout    time.Duration
-	readTimeout    time.Duration
-	client         *pop3.Client
-	conn           *pop3.Conn
-	connected      bool
-	mu             sync.Mutex
+	name        string
+	host        string
+	port        int
+	username    string
+	password    string
+	useTLS      bool
+	folders     []string
+	connTimeout time.Duration
+	readTimeout time.Duration
+	client      *pop3.Client
+	conn        *pop3.Conn
+	connected   bool
+	mu          sync.Mutex
 }
 
 func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
@@ -93,8 +93,8 @@ func (s *POP3Source) Connect(ctx context.Context) error {
 
 	// Create client with options
 	opt := pop3.Opt{
-		Host:       s.host,
-		Port:       s.port,
+		Host:        s.host,
+		Port:        s.port,
 		DialTimeout: s.connTimeout,
 		TLSEnabled:  s.useTLS,
 	}
@@ -111,6 +111,7 @@ func (s *POP3Source) Connect(ctx context.Context) error {
 	if s.readTimeout > 0 {
 		// Note: knadh/go-pop3 doesn't expose direct connection access for deadlines
 		// The DialTimeout handles connection timeout
+		_ = s.readTimeout // suppress unused warning
 	}
 
 	// Authenticate
@@ -246,7 +247,8 @@ func extractMessageIDFromRaw(raw []byte) string {
 				}
 				return value
 			}
-			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			// Handle continuation lines (folded headers)
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "	") {
 				continue
 			}
 		}
