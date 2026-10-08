@@ -1,0 +1,50 @@
+sources:
+  - name: gmail
+    type: imap
+    host: imap.gmail.com
+    port: 993
+    username: user@gmail.com
+    password_ref: "env:GMAIL_PASSWORD"
+    use_tls: true
+    folders:
+      - INBOX
+      - "[Gmail]/Sent Mail"
+      - "[Gmail]/Starred"
+    connection_timeout: 30s
+    read_timeout: 60s
+    max_connections: 5
+
+  - name: outlook
+    type: imap
+    host: outlook.office365.com
+    port: 993
+    username: user@outlook.com
+    password_ref: "env:OUTLOOK_PASSWORD"
+    use_tls: true
+    folders:
+      - INBOX
+      - Sent Items
+    max_connections: 5
+
+targets:
+  - name: local_maildir
+    type: maildir
+    config:
+      path: "~/mail/backup"
+      create_if_missing: true
+
+  - name: local_mbox
+    type: mbox
+    config:
+      path: "~/mail/backup.mbox"
+      create_if_missing: true
+
+pairs:
+  - source: gmail
+    targets:
+      - local_maildir
+      - local_mbox
+
+  - source: outlook
+    targets:
+      - local_maildir
