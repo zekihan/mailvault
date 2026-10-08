@@ -1,20 +1,4 @@
-package plugins
-
-// BuiltinRegistry returns a registry with all built-in plugins registered.
-func BuiltinRegistry() *Registry {
-	r := NewRegistry()
-
-	// Register built-in sources
-	r.RegisterSource("imap", newIMapSource)
-	r.RegisterSource("pop3", newPOP3Source)
-
-	// Register built-in targets
-	r.RegisterTarget("maildir", newMaildirTarget)
-	r.RegisterTarget("mbox", newMboxTarget)
-	r.RegisterTarget("s3", newS3Target)
-
-	return r
-}
+package config
 
 // Config keys for source factories
 const (

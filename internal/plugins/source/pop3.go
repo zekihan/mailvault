@@ -11,6 +11,7 @@ import (
 	"github.com/knadh/go-pop3"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/plugins/config"
 	"sync"
 )
 
@@ -31,14 +32,14 @@ type POP3Source struct {
 	mu             sync.Mutex
 }
 
-func newPOP3Source(config map[string]interface{}) (plugins.Source, error) {
-	host, _ := plugins.ParseString(config, plugins.SourceConfigHost, "")
-	port, _ := plugins.ParseInt(config, plugins.SourceConfigPort, 995)
-	username, _ := plugins.ParseString(config, plugins.SourceConfigUsername, "")
-	passwordRef, _ := plugins.ParseString(config, plugins.SourceConfigPasswordRef, "")
-	useTLS, _ := plugins.ParseBool(config, plugins.SourceConfigUseTLS, true)
-	connTimeout, _ := plugins.ParseDuration(config, plugins.SourceConfigConnectionTimeout, 30*time.Second)
-	readTimeout, _ := plugins.ParseDuration(config, plugins.SourceConfigReadTimeout, 60*time.Second)
+func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
+	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
+	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 995)
+	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
+	passwordRef, _ := config.ParseString(configMap, config.SourceConfigPasswordRef, "")
+	useTLS, _ := config.ParseBool(configMap, config.SourceConfigUseTLS, true)
+	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
+	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
 
 	if host == "" {
 		return nil, errors.New("host is required")
@@ -51,7 +52,7 @@ func newPOP3Source(config map[string]interface{}) (plugins.Source, error) {
 	}
 
 	// POP3 doesn't support folders, but we keep the config for consistency
-	folders, _ := plugins.ParseStringSlice(config, plugins.SourceConfigFolders)
+	folders, _ := config.ParseStringSlice(configMap, config.SourceConfigFolders)
 	if len(folders) == 0 {
 		folders = []string{"INBOX"}
 	}

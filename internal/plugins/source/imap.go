@@ -13,6 +13,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/plugins/config"
 	"sync"
 )
 
@@ -34,17 +35,17 @@ type IMAPSource struct {
 	mu             sync.Mutex
 }
 
-func newIMapSource(config map[string]interface{}) (plugins.Source, error) {
-	host, _ := plugins.ParseString(config, plugins.SourceConfigHost, "")
-	port, _ := plugins.ParseInt(config, plugins.SourceConfigPort, 993)
-	username, _ := plugins.ParseString(config, plugins.SourceConfigUsername, "")
-	passwordRef, _ := plugins.ParseString(config, plugins.SourceConfigPasswordRef, "")
-	useTLS, _ := plugins.ParseBool(config, plugins.SourceConfigUseTLS, true)
-	startTLS, _ := plugins.ParseBool(config, plugins.SourceConfigStartTLS, false)
-	folders, _ := plugins.ParseStringSlice(config, plugins.SourceConfigFolders)
-	connTimeout, _ := plugins.ParseDuration(config, plugins.SourceConfigConnectionTimeout, 30*time.Second)
-	readTimeout, _ := plugins.ParseDuration(config, plugins.SourceConfigReadTimeout, 60*time.Second)
-	maxConns, _ := plugins.ParseInt(config, plugins.SourceConfigMaxConnections, 5)
+func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
+	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
+	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 993)
+	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
+	passwordRef, _ := config.ParseString(configMap, config.SourceConfigPasswordRef, "")
+	useTLS, _ := config.ParseBool(configMap, config.SourceConfigUseTLS, true)
+	startTLS, _ := config.ParseBool(configMap, config.SourceConfigStartTLS, false)
+	folders, _ := config.ParseStringSlice(configMap, config.SourceConfigFolders)
+	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
+	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
+	maxConns, _ := config.ParseInt(configMap, config.SourceConfigMaxConnections, 5)
 
 	if host == "" {
 		return nil, errors.New("host is required")
