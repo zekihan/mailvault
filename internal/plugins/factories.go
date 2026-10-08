@@ -31,8 +31,8 @@ func newS3Target(config map[string]interface{}) (Target, error) {
 	return nil, errors.New("s3 target not yet implemented")
 }
 
-// parseDuration parses a duration from config (supports string or int seconds).
-func parseDuration(config map[string]interface{}, key string, defaultVal time.Duration) (time.Duration, error) {
+// ParseDuration parses a duration from config (supports string or int seconds).
+func ParseDuration(config map[string]interface{}, key string, defaultVal time.Duration) (time.Duration, error) {
 	val, ok := config[key]
 	if !ok {
 		return defaultVal, nil
@@ -56,8 +56,8 @@ func parseDuration(config map[string]interface{}, key string, defaultVal time.Du
 	}
 }
 
-// parseInt parses an int from config.
-func parseInt(config map[string]interface{}, key string, defaultVal int) (int, error) {
+// ParseInt parses an int from config.
+func ParseInt(config map[string]interface{}, key string, defaultVal int) (int, error) {
 	val, ok := config[key]
 	if !ok {
 		return defaultVal, nil
@@ -75,8 +75,8 @@ func parseInt(config map[string]interface{}, key string, defaultVal int) (int, e
 	}
 }
 
-// parseString parses a string from config.
-func parseString(config map[string]interface{}, key string, defaultVal string) (string, error) {
+// ParseString parses a string from config.
+func ParseString(config map[string]interface{}, key string, defaultVal string) (string, error) {
 	val, ok := config[key]
 	if !ok {
 		return defaultVal, nil
@@ -89,8 +89,8 @@ func parseString(config map[string]interface{}, key string, defaultVal string) (
 	return s, nil
 }
 
-// parseStringSlice parses a []string from config.
-func parseStringSlice(config map[string]interface{}, key string) ([]string, error) {
+// ParseStringSlice parses a []string from config.
+func ParseStringSlice(config map[string]interface{}, key string) ([]string, error) {
 	val, ok := config[key]
 	if !ok {
 		return nil, nil
@@ -114,8 +114,8 @@ func parseStringSlice(config map[string]interface{}, key string) ([]string, erro
 	}
 }
 
-// parseBool parses a bool from config.
-func parseBool(config map[string]interface{}, key string, defaultVal bool) (bool, error) {
+// ParseBool parses a bool from config.
+func ParseBool(config map[string]interface{}, key string, defaultVal bool) (bool, error) {
 	val, ok := config[key]
 	if !ok {
 		return defaultVal, nil
