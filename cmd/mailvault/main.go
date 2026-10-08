@@ -2,4 +2,6 @@ package main
 
 var version = "dev"
 
-func main() {}
+func main() {
+	_ = version
+}
