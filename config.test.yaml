@@ -1,0 +1,26 @@
+sources:
+  - name: gmail
+    type: imap
+    host: imap.gmail.com
+    port: 993
+    username: user@gmail.com
+    password_ref: "test-password"
+    use_tls: true
+    folders:
+      - INBOX
+      - "[Gmail]/Sent Mail"
+    connection_timeout: 30s
+    read_timeout: 60s
+    max_connections: 5
+
+targets:
+  - name: local_maildir
+    type: maildir
+    config:
+      path: "/tmp/mail/backup"
+      create_if_missing: true
+
+pairs:
+  - source: gmail
+    targets:
+      - local_maildir

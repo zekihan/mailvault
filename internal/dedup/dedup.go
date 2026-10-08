@@ -1,6 +1,7 @@
 package dedup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
@@ -70,9 +71,9 @@ type DedupTracker struct {
 
 // StateStore is the interface for checking persisted state.
 type StateStore interface {
-	MessageExists(ctx interface{}, sourceName, folder, uid string) (bool, error)
-	FindByMessageID(ctx interface{}, messageID string) ([]MessageRecord, error)
-	FindByContentHash(ctx interface{}, contentHash string) ([]MessageRecord, error)
+	MessageExists(ctx context.Context, sourceName, folder, uid string) (bool, error)
+	FindByMessageID(ctx context.Context, messageID string) ([]MessageRecord, error)
+	FindByContentHash(ctx context.Context, contentHash string) ([]MessageRecord, error)
 }
 
 // MessageRecord represents a stored message (subset for dedup).
@@ -93,7 +94,7 @@ func NewDedupTracker(state StateStore, sourceName string) *DedupTracker {
 
 // ShouldSkip checks if a message should be skipped (already seen or in state).
 // Returns true if the message is a duplicate and should be skipped.
-func (d *DedupTracker) ShouldSkip(ctx interface{}, msg *plugins.Message, folder string) (bool, error) {
+func (d *DedupTracker) ShouldSkip(ctx context.Context, msg *plugins.Message, folder string) (bool, error) {
 	// Check in-memory tracker first (within this run)
 	key := DedupKey{MessageID: msg.MessageID, ContentHash: msg.ContentHash}.Key()
 	if key != "" {

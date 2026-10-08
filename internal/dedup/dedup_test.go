@@ -102,16 +102,16 @@ type mockStateStore struct {
 	foundByHash      map[string][]MessageRecord
 }
 
-func (m *mockStateStore) MessageExists(ctx interface{}, sourceName, folder, uid string) (bool, error) {
+func (m *mockStateStore) MessageExists(ctx context.Context, sourceName, folder, uid string) (bool, error) {
 	key := sourceName + "/" + folder + "/" + uid
 	return m.existsByUID[key], nil
 }
 
-func (m *mockStateStore) FindByMessageID(ctx interface{}, messageID string) ([]MessageRecord, error) {
+func (m *mockStateStore) FindByMessageID(ctx context.Context, messageID string) ([]MessageRecord, error) {
 	return m.foundByMessageID[messageID], nil
 }
 
-func (m *mockStateStore) FindByContentHash(ctx interface{}, contentHash string) ([]MessageRecord, error) {
+func (m *mockStateStore) FindByContentHash(ctx context.Context, contentHash string) ([]MessageRecord, error) {
 	return m.foundByHash[contentHash], nil
 }
 
