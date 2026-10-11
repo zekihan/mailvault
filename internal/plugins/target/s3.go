@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsv2config "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/plugins/config"
@@ -25,7 +25,7 @@ type S3Target struct {
 	prefix         string
 	credentialsRef string
 	client         *s3.Client
-	uploader       *manager.Uploader
+	uploader       *transfermanager.Client
 	mu             sync.Mutex
 }
 
@@ -83,25 +83,18 @@ func (t *S3Target) Initialize(ctx context.Context) error {
 		awsv2config.WithRegion(t.region),
 	}
 
-	if t.endpoint != "" {
-		cfgOpts = append(cfgOpts, awsv2config.WithEndpointResolverWithOptions(
-			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:           t.endpoint,
-					SigningRegion: t.region,
-				}, nil
-			}),
-		))
-	}
-
 	cfg, err := awsv2config.LoadDefaultConfig(ctx, cfgOpts...)
 	if err != nil {
 		return fmt.Errorf("load aws config: %w", err)
 	}
 
 	// Create S3 client
-	t.client = s3.NewFromConfig(cfg)
-	t.uploader = manager.NewUploader(t.client)
+	t.client = s3.NewFromConfig(cfg, func(opts *s3.Options) {
+		if t.endpoint != "" {
+			opts.BaseEndpoint = aws.String(t.endpoint)
+		}
+	})
+	t.uploader = transfermanager.New(t.client)
 
 	// Verify bucket exists
 	_, err = t.client.HeadBucket(ctx, &s3.HeadBucketInput{
@@ -130,7 +123,7 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 	)
 
 	// Upload message
-	_, err := t.uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
 		Bucket:      aws.String(t.bucket),
 		Key:         aws.String(key),
 		Body:        strings.NewReader(string(msg.Raw)),
