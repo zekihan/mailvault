@@ -116,6 +116,10 @@ func TestStore_Basic(t *testing.T) {
 }
 
 func TestStore_CleanOldMessages(t *testing.T) {
+	local := time.Local
+	time.Local = time.FixedZone("UTC+3", 3*60*60)
+	t.Cleanup(func() { time.Local = local })
+
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/test.db"
@@ -126,7 +130,7 @@ func TestStore_CleanOldMessages(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert a message with old fetched_at by directly manipulating
+	// Insert a recent message.
 	if err := store.UpsertSource(ctx, "src", "imap", "host", "user"); err != nil {
 		t.Fatalf("UpsertSource() = %v", err)
 	}
@@ -143,7 +147,27 @@ func TestStore_CleanOldMessages(t *testing.T) {
 		t.Fatalf("CleanOldMessages() = %d, want 0", deleted)
 	}
 
-	// Note: We can't easily test deletion of old messages without
-	// manipulating the fetched_at timestamp directly in the DB.
-	// The function is tested for execution path.
+	if err := store.MarkMessageFetched(ctx, "src", "INBOX", "2", "<msg2>", "hash2", 100, "2024-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("MarkMessageFetched() = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE messages SET fetched_at = datetime('now', '-2 hours') WHERE uid = ?", "2"); err != nil {
+		t.Fatalf("set old fetched_at: %v", err)
+	}
+
+	deleted, err = store.CleanOldMessages(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("CleanOldMessages() = %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("CleanOldMessages() = %d, want 1", deleted)
+	}
+	for uid, want := range map[string]bool{"1": true, "2": false} {
+		exists, err := store.MessageExists(ctx, "src", "INBOX", uid)
+		if err != nil {
+			t.Fatalf("MessageExists(%q) = %v", uid, err)
+		}
+		if exists != want {
+			t.Errorf("MessageExists(%q) = %v, want %v", uid, exists, want)
+		}
+	}
 }

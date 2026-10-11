@@ -116,8 +116,7 @@ func (s *POP3Source) Connect(ctx context.Context) error {
 
 	// Authenticate
 	if err := conn.Auth(s.username, s.password); err != nil {
-		conn.Quit()
-		return fmt.Errorf("auth: %w", err)
+		return errors.Join(fmt.Errorf("auth: %w", err), conn.Quit())
 	}
 
 	s.conn = conn
@@ -217,14 +216,15 @@ func (s *POP3Source) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var err error
 	if s.conn != nil {
 		// Send QUIT command
-		s.conn.Quit()
+		err = s.conn.Quit()
 		s.conn = nil
 	}
 	s.client = nil
 	s.connected = false
-	return nil
+	return err
 }
 
 // extractMessageIDFromRaw tries to extract Message-ID from raw message more thoroughly.
@@ -246,10 +246,6 @@ func extractMessageIDFromRaw(raw []byte) string {
 					return value[1 : len(value)-1]
 				}
 				return value
-			}
-			// Handle continuation lines (folded headers)
-			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "	") {
-				continue
 			}
 		}
 	}

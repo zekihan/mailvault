@@ -138,8 +138,7 @@ func (s *IMAPSource) Connect(ctx context.Context) error {
 
 	// Login
 	if err := client.Login(s.username, s.password).Wait(); err != nil {
-		client.Close()
-		return fmt.Errorf("login: %w", err)
+		return errors.Join(fmt.Errorf("login: %w", err), client.Close())
 	}
 
 	s.client = client
@@ -249,7 +248,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message) error {
+func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message) (err error) {
 	// Fetch RFC822 for each UID
 	seqSet := new(imap.SeqSet)
 	for _, uid := range uids {
@@ -261,7 +260,9 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 		Envelope:    true,
 	})
 
-	defer fetch.Close()
+	defer func() {
+		err = errors.Join(err, fetch.Close())
+	}()
 
 	for {
 		select {

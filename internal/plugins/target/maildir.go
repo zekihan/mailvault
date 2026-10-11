@@ -99,7 +99,9 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	}
 
 	if err := os.Rename(tmpPath, newPath); err != nil {
-		os.Remove(tmpPath)
+		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil {
+			return errors.Join(fmt.Errorf("move to new: %w", err), fmt.Errorf("remove tmp file: %w", cleanupErr))
+		}
 		return fmt.Errorf("move to new: %w", err)
 	}
 

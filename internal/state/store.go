@@ -25,8 +25,7 @@ func NewStore(path string) (*Store, error) {
 
 	s := &Store{db: db, path: path}
 	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, errors.Join(fmt.Errorf("migrate: %w", err), db.Close())
 	}
 
 	return s, nil
@@ -184,8 +183,6 @@ func (s *Store) FindByMessageID(ctx context.Context, messageID string) ([]Messag
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	return scanMessages(rows)
 }
 
@@ -201,8 +198,6 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash string) ([]Me
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	return scanMessages(rows)
 }
 
@@ -218,8 +213,10 @@ type MessageRecord struct {
 	FetchedAt    time.Time
 }
 
-func scanMessages(rows *sql.Rows) ([]MessageRecord, error) {
-	var results []MessageRecord
+func scanMessages(rows *sql.Rows) (results []MessageRecord, err error) {
+	defer func() {
+		err = errors.Join(err, rows.Close())
+	}()
 	for rows.Next() {
 		var r MessageRecord
 		if err := rows.Scan(&r.SourceName, &r.Folder, &r.UID, &r.MessageID, &r.ContentHash, &r.Size, &r.InternalDate, &r.FetchedAt); err != nil {
@@ -270,7 +267,7 @@ func (s *Store) UpsertOAuthToken(ctx context.Context, sourceName string, tok *OA
 
 // CleanOldMessages removes message records older than the given duration.
 func (s *Store) CleanOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
+	cutoff := time.Now().UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM messages WHERE fetched_at < ?
 	`, cutoff)

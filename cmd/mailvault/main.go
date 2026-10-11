@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -117,7 +118,7 @@ func loadStateStore() (*state.Store, error) {
 	return state.NewStore(dbPath)
 }
 
-func runSync(cmd *cobra.Command, args []string) error {
+func runSync(cmd *cobra.Command, args []string) (err error) {
 	ctx := context.Background()
 
 	cfg, err := loadConfig()
@@ -133,7 +134,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load state store: %w", err)
 	}
-	defer stateStore.Close()
+	defer func() {
+		err = errors.Join(err, stateStore.Close())
+	}()
 
 	registry := builtin.Registry()
 
@@ -175,16 +178,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sync failed: %w", err)
 	}
 
-	printStats(stats)
-	return nil
+	return printStats(stats)
 }
 
-func printStats(stats *sync.SyncStats) {
+func printStats(stats *sync.SyncStats) error {
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(stats)
-		return
+		return enc.Encode(stats)
 	}
 
 	fmt.Printf("Sync completed in %v\n", stats.Duration.Round(time.Millisecond))
@@ -205,9 +206,10 @@ func printStats(stats *sync.SyncStats) {
 			fmt.Printf("    ERROR: %v\n", err)
 		}
 	}
+	return nil
 }
 
-func runValidateConfig(cmd *cobra.Command, args []string) error {
+func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -239,7 +241,9 @@ func runValidateConfig(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("load state store: %w", err)
 		}
-		defer stateStore.Close()
+		defer func() {
+			err = errors.Join(err, stateStore.Close())
+		}()
 
 		ctx := context.Background()
 
@@ -267,7 +271,9 @@ func runValidateConfig(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  Source %s: FAILED - %v\n", srcCfg.Name, err)
 			} else {
 				fmt.Printf("  Source %s: OK\n", srcCfg.Name)
-				src.Close()
+				if err := src.Close(); err != nil {
+					fmt.Printf("  Source %s: close FAILED - %v\n", srcCfg.Name, err)
+				}
 			}
 		}
 
@@ -287,7 +293,9 @@ func runValidateConfig(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  Target %s: FAILED - %v\n", tgtCfg.Name, err)
 			} else {
 				fmt.Printf("  Target %s: OK\n", tgtCfg.Name)
-				tgt.Close()
+				if err := tgt.Close(); err != nil {
+					fmt.Printf("  Target %s: close FAILED - %v\n", tgtCfg.Name, err)
+				}
 			}
 		}
 	}
@@ -304,8 +312,7 @@ func runListSources(cmd *cobra.Command, args []string) error {
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(cfg.Sources)
-		return nil
+		return enc.Encode(cfg.Sources)
 	}
 
 	for _, src := range cfg.Sources {
@@ -326,8 +333,7 @@ func runListTargets(cmd *cobra.Command, args []string) error {
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(cfg.Targets)
-		return nil
+		return enc.Encode(cfg.Targets)
 	}
 
 	for _, tgt := range cfg.Targets {
