@@ -82,7 +82,13 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("source %q: username is required", s.Name)
 		}
 		if s.PasswordRef == "" && s.OAuth2 == nil {
-			return fmt.Errorf("source %q: password_ref or oauth2 is required", s.Name)
+			return fmt.Errorf("source %q: password_ref is required (OAuth2 authentication is not implemented)", s.Name)
+		}
+		if s.PasswordRef == "" && s.OAuth2 != nil {
+			return fmt.Errorf("source %q: OAuth2 authentication is not implemented; password_ref is required", s.Name)
+		}
+		if s.Type == "pop3" && s.StartTLS {
+			return fmt.Errorf("source %q: POP3 STARTTLS is unsupported; use implicit TLS with use_tls: true and start_tls: false", s.Name)
 		}
 		if s.MaxConnections <= 0 {
 			return fmt.Errorf("source %q: max_connections must be > 0", s.Name)

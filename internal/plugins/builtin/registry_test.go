@@ -27,7 +27,7 @@ func TestRegistryAppliesTargetNames(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			tgt, err := Registry().CreateTarget(kind, map[string]interface{}{
 				"name": "configured-target", "path": filepath.Join(t.TempDir(), "mail"),
-				"bucket": "test-bucket", "region": "us-east-1", "credentials_ref": "synthetic-value",
+				"bucket": "test-bucket", "region": "us-east-1",
 			})
 			if err != nil {
 				t.Fatal(err)

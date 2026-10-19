@@ -20,15 +20,15 @@ import (
 
 // S3Target implements the Target interface for S3-compatible storage.
 type S3Target struct {
-	name           string
-	bucket         string
-	region         string
-	endpoint       string
-	prefix         string
-	credentialsRef string
-	client         *s3.Client
-	uploader       *transfermanager.Client
-	mu             sync.Mutex
+	name        string
+	bucket      string
+	region      string
+	endpoint    string
+	prefix      string
+	credentials aws.CredentialsProvider
+	client      *s3.Client
+	uploader    *transfermanager.Client
+	mu          sync.Mutex
 }
 
 func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
@@ -36,16 +36,23 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	region, _ := config.ParseString(configMap, config.TargetConfigRegion, "")
 	endpoint, _ := config.ParseString(configMap, config.TargetConfigEndpoint, "")
 	prefix, _ := config.ParseString(configMap, config.TargetConfigPrefix, "")
-	credentialsRef, _ := config.ParseString(configMap, config.TargetConfigCredentialsRef, "")
+	credentialsRef, err := config.ParseString(configMap, config.TargetConfigCredentialsRef, "")
+	if err != nil {
+		return nil, errS3Credentials
+	}
+	if _, explicit := configMap[config.TargetConfigCredentialsRef]; explicit && credentialsRef == "" {
+		return nil, errS3Credentials
+	}
+	provider, err := s3CredentialProvider(credentialsRef)
+	if err != nil {
+		return nil, err
+	}
 
 	if bucket == "" {
 		return nil, errors.New("bucket is required")
 	}
 	if region == "" {
 		return nil, errors.New("region is required")
-	}
-	if credentialsRef == "" {
-		return nil, errors.New("credentials_ref is required")
 	}
 
 	// Ensure prefix ends with /
@@ -54,12 +61,12 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &S3Target{
-		name:           "s3:" + bucket, // Will be overridden by registry
-		bucket:         bucket,
-		region:         region,
-		endpoint:       endpoint,
-		prefix:         prefix,
-		credentialsRef: credentialsRef,
+		name:        "s3:" + bucket, // Will be overridden by registry
+		bucket:      bucket,
+		region:      region,
+		endpoint:    endpoint,
+		prefix:      prefix,
+		credentials: provider,
 	}, nil
 }
 
@@ -83,6 +90,9 @@ func (t *S3Target) Initialize(ctx context.Context) error {
 	// Load AWS config
 	cfgOpts := []func(*awsv2config.LoadOptions) error{
 		awsv2config.WithRegion(t.region),
+	}
+	if t.credentials != nil {
+		cfgOpts = append(cfgOpts, awsv2config.WithCredentialsProvider(t.credentials))
 	}
 
 	cfg, err := awsv2config.LoadDefaultConfig(ctx, cfgOpts...)

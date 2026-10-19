@@ -41,15 +41,20 @@ func (s *fixtureSource) FetchMessages(context.Context, []string, int64, int64) (
 }
 
 type fixtureTarget struct {
-	name   string
-	writes int
-	fail   bool
+	name            string
+	writes          int
+	fail            bool
+	initializations int
+	initializeErr   error
 }
 
-func (t *fixtureTarget) Name() string                   { return t.name }
-func (*fixtureTarget) Type() string                     { return "fixture" }
-func (*fixtureTarget) Initialize(context.Context) error { return nil }
-func (*fixtureTarget) Close() error                     { return nil }
+func (t *fixtureTarget) Name() string { return t.name }
+func (*fixtureTarget) Type() string   { return "fixture" }
+func (t *fixtureTarget) Initialize(context.Context) error {
+	t.initializations++
+	return t.initializeErr
+}
+func (*fixtureTarget) Close() error { return nil }
 func (t *fixtureTarget) WriteMessage(context.Context, *plugins.Message) error {
 	if t.fail {
 		return errFixture

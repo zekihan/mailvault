@@ -111,10 +111,18 @@ func loadStateStore() (*state.Store, error) {
 		home, _ := os.UserHomeDir()
 		dir = fmt.Sprintf("%s/.local/share/mailvault", home)
 	}
+	dbPath := fmt.Sprintf("%s/state.db", dir)
+	if dryRun {
+		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+			return state.NewStore(":memory:")
+		} else if err != nil {
+			return nil, fmt.Errorf("stat state database: %w", err)
+		}
+		return state.NewReadOnlyStore(dbPath)
+	}
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
-	dbPath := fmt.Sprintf("%s/state.db", dir)
 	return state.NewStore(dbPath)
 }
 

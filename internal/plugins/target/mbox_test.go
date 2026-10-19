@@ -12,7 +12,7 @@ import (
 
 func TestMboxTargetEscapesFromLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mailbox")
-	target := &MboxTarget{path: path}
+	target := &MboxTarget{path: path, create: true}
 	if err := target.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestMboxrdUsesFirstHeaderBoundary(t *testing.T) {
 
 func TestMboxTargetEmptyAndCRLF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mailbox")
-	target := &MboxTarget{path: path}
+	target := &MboxTarget{path: path, create: true}
 	if err := target.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -57,9 +57,22 @@ type SyncStats struct {
 
 // NewSyncEngine creates a new sync engine.
 func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugins.Registry, opts ...SyncOption) (*SyncEngine, error) {
+	usedSources, usedTargets := make(map[string]bool), make(map[string]bool)
+	for _, pair := range cfg.Pairs {
+		usedSources[pair.Source] = true
+		for _, name := range pair.Targets {
+			usedTargets[name] = true
+		}
+	}
 	// Initialize sources
 	sources := make(map[string]plugins.Source)
 	for _, srcCfg := range cfg.Sources {
+		if !usedSources[srcCfg.Name] {
+			continue
+		}
+		if srcCfg.OAuth2 != nil && srcCfg.PasswordRef == "" {
+			return nil, fmt.Errorf("source %q: OAuth2 authentication is not implemented; password_ref is required", srcCfg.Name)
+		}
 		srcConfig := srcConfigToMap(srcCfg)
 		srcConfig["name"] = srcCfg.Name
 		src, err := registry.CreateSource(srcCfg.Type, srcConfig)
@@ -72,6 +85,9 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 	// Initialize targets
 	targets := make(map[string]plugins.Target)
 	for _, tgtCfg := range cfg.Targets {
+		if !usedTargets[tgtCfg.Name] {
+			continue
+		}
 		tgtConfig := tgtCfg.Config
 		if tgtConfig == nil {
 			tgtConfig = make(map[string]interface{})
@@ -100,6 +116,23 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 	}
 	if engine.concurrency <= 0 || engine.maxRetries < 0 || engine.retryDelay < 0 {
 		return nil, errors.New("concurrency must be positive and retry settings must be nonnegative")
+	}
+	for _, pair := range cfg.Pairs {
+		if sources[pair.Source] == nil {
+			return nil, fmt.Errorf("source %q not found for pair", pair.Source)
+		}
+		for _, name := range pair.Targets {
+			if targets[name] == nil {
+				return nil, fmt.Errorf("target %q not found for pair", name)
+			}
+		}
+	}
+	if engine.since != 0 || engine.until != 0 {
+		for _, src := range sources {
+			if src.Type() == "pop3" {
+				return nil, errors.New("POP3 date filters are unsupported; omit --since and --until")
+			}
+		}
 	}
 
 	return engine, nil
@@ -179,6 +212,9 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 
 	// Initialize all targets
 	for _, target := range e.targets {
+		if e.dryRun {
+			continue
+		}
 		if err := target.Initialize(ctx); err != nil {
 			return nil, fmt.Errorf("initialize target %q: %w", target.Name(), err)
 		}
@@ -186,6 +222,9 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 
 	// Upsert sources in state store
 	for _, src := range e.sources {
+		if e.dryRun {
+			continue
+		}
 		if err := e.stateStore.UpsertSource(ctx, src.Name(), src.Type(), "", ""); err != nil {
 			return nil, fmt.Errorf("upsert source %q: %w", src.Name(), err)
 		}
@@ -235,6 +274,9 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 
 	// Close all targets
 	for _, target := range e.targets {
+		if e.dryRun {
+			continue
+		}
 		if err := target.Close(); err != nil {
 			// Log error but don't fail
 			fmt.Printf("Warning: closing target %q: %v\n", target.Name(), err)

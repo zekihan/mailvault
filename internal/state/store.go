@@ -12,8 +12,9 @@ import (
 
 // Store manages the SQLite database for sync state.
 type Store struct {
-	db   *sql.DB
-	path string
+	db                *sql.DB
+	path              string
+	missingDeliveries bool
 }
 
 // NewStore creates a new state store at the given path.
@@ -21,6 +22,9 @@ func NewStore(path string) (*Store, error) {
 	db, err := sql.Open("sqlite3", path+"?_fk=1&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	if path == ":memory:" {
+		db.SetMaxOpenConns(1)
 	}
 
 	s := &Store{db: db, path: path}
@@ -312,6 +316,9 @@ func (s *Store) Stats(ctx context.Context) (map[string]int64, error) {
 
 // DeliveryExists reports whether this target has received the stable message identity.
 func (s *Store) DeliveryExists(ctx context.Context, target, identity string) (bool, error) {
+	if s.missingDeliveries {
+		return false, ctx.Err()
+	}
 	var exists int
 	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM deliveries WHERE target_name=? AND identity=?`, target, identity).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {

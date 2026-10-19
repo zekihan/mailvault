@@ -35,6 +35,13 @@ type POP3Source struct {
 }
 
 func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
+	startTLS, err := config.ParseBool(configMap, config.SourceConfigStartTLS, false)
+	if err != nil {
+		return nil, err
+	}
+	if startTLS {
+		return nil, errors.New("POP3 STARTTLS is unsupported; use implicit TLS instead")
+	}
 	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
 	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 995)
 	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
@@ -153,6 +160,10 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 	go func() {
 		defer close(msgChan)
 		defer close(errChan)
+		if since != 0 || until != 0 {
+			errChan <- errors.New("POP3 date filters are unsupported; omit --since and --until")
+			return
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 

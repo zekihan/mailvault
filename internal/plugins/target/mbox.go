@@ -21,6 +21,7 @@ type MboxTarget struct {
 	path   string
 	create bool
 	file   *os.File
+	broken error
 	mu     sync.Mutex
 }
 
@@ -62,14 +63,18 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Create directory if needed
+	// Do not create either the parent directory or mailbox when disabled.
 	dir := filepath.Dir(t.path)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return fmt.Errorf("create mbox directory: %w", err)
+	flags := os.O_WRONLY | os.O_APPEND
+	if t.create {
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			return fmt.Errorf("create mbox directory: %w", err)
+		}
+		flags |= os.O_CREATE
 	}
 
 	// Open mbox file for appending
-	file, err := os.OpenFile(t.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	file, err := os.OpenFile(t.path, flags, 0640)
 	if err != nil {
 		return fmt.Errorf("open mbox file: %w", err)
 	}
@@ -78,12 +83,34 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	return nil
 }
 
-func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.file == nil {
 		return errors.New("mbox not initialized")
+	}
+	if t.broken != nil {
+		return t.broken
+	}
+	if err := lockMbox(ctx, t.file); err != nil {
+		return fmt.Errorf("lock mbox: %w", err)
+	}
+	defer func() {
+		if unlockErr := unlockMbox(t.file); unlockErr != nil {
+			t.broken = fmt.Errorf("unlock mbox: %w", unlockErr)
+			err = errors.Join(err, t.broken)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := t.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat mbox: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("mbox must be a regular file")
 	}
 
 	// Escape body lines using mboxrd: prefix one '>' to each line whose
@@ -93,20 +120,21 @@ func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) err
 		raw = append(raw, '\n')
 	}
 
-	// Write From_ line (mbox format separator)
+	// Append a complete record under the inode lock. On any failure restore
+	// the original length before another writer or retry can append.
 	fromLine := fmt.Sprintf("From MAILER-DAEMON %s\n", time.Now().Format(time.ANSIC))
-	if _, err := t.file.WriteString(fromLine); err != nil {
-		return fmt.Errorf("write From_ line: %w", err)
+	record := append([]byte(fromLine), raw...)
+	record = append(record, '\n')
+	_, writeErr := t.file.Write(record)
+	if writeErr == nil {
+		writeErr = t.file.Sync()
 	}
-
-	// Write message
-	if _, err := t.file.Write(raw); err != nil {
-		return fmt.Errorf("write message: %w", err)
-	}
-
-	// Ensure blank line after message
-	if _, err := t.file.WriteString("\n"); err != nil {
-		return fmt.Errorf("write separator: %w", err)
+	if writeErr != nil {
+		rollbackErr := errors.Join(t.file.Truncate(info.Size()), t.file.Sync())
+		if rollbackErr != nil {
+			t.broken = fmt.Errorf("mbox rollback failed; refusing further appends: %w", rollbackErr)
+		}
+		return errors.Join(fmt.Errorf("append mbox: %w", writeErr), t.broken)
 	}
 
 	return nil
