@@ -86,8 +86,8 @@ func Validate(cfg *Config) error {
 		if s.Host == "" {
 			return fmt.Errorf("source %q: host is required", s.Name)
 		}
-		if s.Port == 0 {
-			return fmt.Errorf("source %q: port is required", s.Name)
+		if s.Port < 1 || s.Port > 65535 {
+			return fmt.Errorf("source %q: port must be between 1 and 65535", s.Name)
 		}
 		if s.Username == "" {
 			return fmt.Errorf("source %q: username is required", s.Name)

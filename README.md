@@ -99,6 +99,20 @@ Do not hard-link SQLite state databases under different filenames.
   sync must be supported by the platform/filesystem; otherwise Maildir fails
   closed. Tests cover sync ordering and injected failures, not physical power loss.
 
+### S3 operation limits
+
+S3 initialization and each message upload have a five-minute total timeout,
+including SDK retries and response-body reads. Set `operation_timeout` in the
+target's `config` (for example, `operation_timeout: "10m"`) for larger uploads.
+The value must be positive; an earlier caller deadline still takes precedence.
+
+S3 user metadata is independently limited to 2,048 UTF-8 key/value bytes.
+Ordinary metadata remains unchanged. When it would exceed that budget, the
+largest folder/UID/Message-ID/date values are replaced by `<field>-sha256`
+metadata containing their hex digests until the budget is met. These digest
+fields cannot reconstruct the original oversized values; raw RFC822 message
+bytes and stable object keys are unaffected.
+
 ### S3 credentials
 
 Omit `credentials_ref` to use the standard AWS credential chain (environment,

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"time"
 )
 
@@ -22,11 +23,24 @@ func ParseDuration(config map[string]interface{}, key string, defaultVal time.Du
 		}
 		return d, nil
 	case int:
+		if int64(v) > math.MaxInt64/int64(time.Second) || int64(v) < math.MinInt64/int64(time.Second) {
+			return 0, errors.New("duration out of range")
+		}
 		return time.Duration(v) * time.Second, nil
 	case int64:
+		if v > math.MaxInt64/int64(time.Second) || v < math.MinInt64/int64(time.Second) {
+			return 0, errors.New("duration out of range")
+		}
 		return time.Duration(v) * time.Second, nil
 	case float64:
-		return time.Duration(v) * time.Second, nil
+		// Check after scaling: float64(MaxInt64) rounds up to 2^63, so
+		// comparing seconds against a rounded MaxInt64/second is unsafe.
+		nanos := v * float64(time.Second)
+		const int64Limit = 9223372036854775808.0 // 2^63
+		if math.IsNaN(v) || math.IsInf(v, 0) || nanos >= int64Limit || nanos < -int64Limit {
+			return 0, errors.New("duration out of range")
+		}
+		return time.Duration(nanos), nil
 	default:
 		return 0, errors.New("invalid duration format")
 	}
