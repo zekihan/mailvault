@@ -16,6 +16,9 @@ import (
 	"github.com/zekihan/mailvault/internal/sync"
 )
 
+// Set by the release build's -X main.version linker flag.
+var version = "dev"
+
 var (
 	cfgFile     string
 	dryRun      bool
@@ -269,7 +272,7 @@ func runListTargets(cmd *cobra.Command, args []string) error {
 }
 
 func runVersion(cmd *cobra.Command, args []string) {
-	fmt.Println("mailvault version dev")
+	fmt.Printf("mailvault version %s\n", version)
 }
 
 func main() {
