@@ -27,6 +27,7 @@ type SyncEngine struct {
 	since         int64
 	until         int64
 	deliveryLocks sync.Map
+	runGate       chan struct{}
 }
 
 // SyncResult holds the result of a sync operation.
@@ -110,6 +111,7 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 		maxRetries:  3,
 		retryDelay:  time.Second,
 		concurrency: 5,
+		runGate:     make(chan struct{}, 1),
 	}
 
 	for _, opt := range opts {
@@ -203,7 +205,15 @@ func srcConfigToMap(cfg config.SourceConfig) map[string]interface{} {
 // Run executes the full sync process. Setup failures are returned as errors;
 // delivery and finalization failures are aggregated in SyncStats.TotalErrors.
 func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
-	e.deliveryLocks = sync.Map{}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case e.runGate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-e.runGate }()
 	stats := &SyncStats{
 		TotalSources: len(e.sources),
 		TotalTargets: len(e.targets),
@@ -211,14 +221,30 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 		StartTime:    time.Now(),
 		Results:      make([]SyncResult, 0),
 	}
+	var release func() error
 	defer func() {
 		cleanupErr := e.closeResources(stats)
+		if release != nil {
+			if releaseErr := release(); releaseErr != nil {
+				wrapped := fmt.Errorf("release sync lock: %w", releaseErr)
+				stats.FinalizationErrors = append(stats.FinalizationErrors, wrapped.Error())
+				stats.TotalErrors++
+				cleanupErr = errors.Join(cleanupErr, wrapped)
+			}
+		}
 		if err != nil {
 			err = errors.Join(err, cleanupErr)
 		}
 		stats.EndTime = time.Now()
 		stats.Duration = stats.EndTime.Sub(stats.StartTime)
 	}()
+	if !e.dryRun {
+		release, err = e.stateStore.LockSync(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire sync lock: %w", err)
+		}
+	}
+	e.deliveryLocks = sync.Map{}
 
 	// Initialize all targets
 	for _, target := range e.targets {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -15,11 +16,18 @@ type Store struct {
 	db                *sql.DB
 	path              string
 	missingDeliveries bool
+	readOnly          bool
+	runGateOnce       sync.Once
+	runGate           chan struct{}
 }
 
 // NewStore creates a new state store at the given path.
 func NewStore(path string) (*Store, error) {
-	dsn, err := stateDSN(path, false)
+	filename, err := stateFilename(path, true)
+	if err != nil {
+		return nil, fmt.Errorf("state filename: %w", err)
+	}
+	dsn, err := stateDSN(filename, false)
 	if err != nil {
 		return nil, fmt.Errorf("state filename: %w", err)
 	}
@@ -31,7 +39,7 @@ func NewStore(path string) (*Store, error) {
 		db.SetMaxOpenConns(1)
 	}
 
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: filename}
 	if err := s.migrate(context.Background()); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate: %w", err), db.Close())
 	}

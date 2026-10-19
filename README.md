@@ -40,6 +40,17 @@ The first sync after this upgrade can therefore redeliver previously backed-up
 mail once; Maildir and mbox may gain duplicate copies. New content-hash receipts
 make subsequent runs stable. Existing `hash:` receipts remain usable.
 
+### overlapping writers
+
+Writer invocations sharing a canonical state database path serialize through
+`<database>.sync.lock`, held through state updates and resource finalization.
+Symlink aliases resolve to the same lock. Process termination releases ownership;
+the empty sidecar intentionally remains. Do not delete or replace it while any
+writer is running. Waiting Go callers can cancel through their context.
+Dry runs do not acquire or create writer locks. Separate state databases do not
+coordinate deliveries, even if they point at the same backup destination.
+Do not hard-link SQLite state databases under different filenames.
+
 ## authentication and storage behavior
 
 - Omitted source settings default to implicit TLS, a 30-second connection
@@ -81,9 +92,10 @@ make subsequent runs stable. Existing `hash:` receipts remain usable.
   an existing message. Cooperating mbox writers lock the mailbox while appending
   and rolling back failed appends; rollback failure disables further writes
   through that target instance. External mbox writers must use compatible locks.
-- Maildir syncs its directory structure and ancestors at initialization, and its
-  publication directory after each link before acknowledging delivery. Failed
-  publication sync attempts are rolled back and reported as failures. Directory
+- Maildir syncs newly created directories and their immediate parents during
+  initialization; unrelated existing ancestors need only traversal permissions.
+  It syncs the publication directory after each link before acknowledging delivery.
+  Failed publication sync attempts are rolled back and reported as failures. Directory
   sync must be supported by the platform/filesystem; otherwise Maildir fails
   closed. Tests cover sync ordering and injected failures, not physical power loss.
 

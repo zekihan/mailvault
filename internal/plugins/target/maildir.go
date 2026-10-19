@@ -64,16 +64,19 @@ func (t *MaildirTarget) Initialize(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Create Maildir directory structure: cur/, new/, tmp/
-	dirs := []string{
-		t.path,
-		filepath.Join(t.path, "cur"),
-		filepath.Join(t.path, "new"),
-		filepath.Join(t.path, "tmp"),
-	}
-
-	for _, dir := range dirs {
-		if !t.create {
+	// Create only the requested structure, tracking directories this call owns.
+	dirs := []string{t.path, filepath.Join(t.path, "cur"), filepath.Join(t.path, "new"), filepath.Join(t.path, "tmp")}
+	var created []string
+	if t.create {
+		for _, dir := range dirs {
+			owned, err := mkdirMaildirPath(dir)
+			created = append(created, owned...)
+			if err != nil {
+				return errors.Join(fmt.Errorf("create maildir %q: %w", dir, err), removeOwnedMaildirDirs(created))
+			}
+		}
+	} else {
+		for _, dir := range dirs {
 			info, err := os.Stat(dir)
 			if err != nil {
 				return fmt.Errorf("existing maildir %q: %w", dir, err)
@@ -81,13 +84,12 @@ func (t *MaildirTarget) Initialize(ctx context.Context) error {
 			if !info.IsDir() {
 				return fmt.Errorf("maildir path %q is not a directory", dir)
 			}
-			continue
-		}
-		if err := os.MkdirAll(dir, 0750); err != nil {
-			return fmt.Errorf("create maildir %q: %w", dir, err)
 		}
 	}
-	return t.syncStructure()
+	if err := t.syncStructure(created); err != nil {
+		return errors.Join(err, removeOwnedMaildirDirs(created))
+	}
+	return nil
 }
 
 func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (err error) {

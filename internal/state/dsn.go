@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// Retain the opened filename even if the caller later changes directories.
+func stateFilename(path string, allowMemory bool) (string, error) {
+	if allowMemory && path == ":memory:" {
+		return path, nil
+	}
+	return filepath.Abs(path)
+}
+
 // SQLite interprets query parameters even in plain filename DSNs. Encode the
 // absolute filename separately so literal ?, # and % cannot change its target.
 func stateDSN(path string, readOnly bool) (string, error) {
