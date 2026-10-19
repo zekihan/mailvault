@@ -202,7 +202,7 @@ func srcConfigToMap(cfg config.SourceConfig) map[string]interface{} {
 
 // Run executes the full sync process. Setup failures are returned as errors;
 // delivery and finalization failures are aggregated in SyncStats.TotalErrors.
-func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
+func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 	e.deliveryLocks = sync.Map{}
 	stats := &SyncStats{
 		TotalSources: len(e.sources),
@@ -211,6 +211,14 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 		StartTime:    time.Now(),
 		Results:      make([]SyncResult, 0),
 	}
+	defer func() {
+		cleanupErr := e.closeResources(stats)
+		if err != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+		stats.EndTime = time.Now()
+		stats.Duration = stats.EndTime.Sub(stats.StartTime)
+	}()
 
 	// Initialize all targets
 	for _, target := range e.targets {
@@ -273,28 +281,6 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 	}
 
 	wg.Wait()
-
-	// Close all targets
-	for _, target := range e.targets {
-		if e.dryRun {
-			continue
-		}
-		if err := target.Close(); err != nil {
-			stats.FinalizationErrors = append(stats.FinalizationErrors, fmt.Sprintf("closing target %q: %v", target.Name(), err))
-			stats.TotalErrors++
-		}
-	}
-
-	// Close all sources
-	for _, src := range e.sources {
-		if err := src.Close(); err != nil {
-			stats.FinalizationErrors = append(stats.FinalizationErrors, fmt.Sprintf("closing source %q: %v", src.Name(), err))
-			stats.TotalErrors++
-		}
-	}
-
-	stats.EndTime = time.Now()
-	stats.Duration = stats.EndTime.Sub(stats.StartTime)
 
 	return stats, nil
 }
@@ -359,7 +345,10 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 		result.Errors = append(result.Errors, err)
 		return
 	}
-	identity := dedup.DedupKey{MessageID: msg.MessageID, ContentHash: dedup.ComputeContentHash(msg.Raw)}.Key()
+	// Message-ID is sender-controlled and does not prove content equality.
+	// Ignore legacy mid: receipts rather than suppress an unverified variant.
+	contentHash := dedup.ComputeContentHash(msg.Raw)
+	identity := dedup.DedupKey{ContentHash: contentHash}.Key()
 	if delivery.seen[identity] {
 		result.MessagesSkipped++
 		return
@@ -385,7 +374,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	if !e.dryRun {
 		err := errors.Join(
 			e.stateStore.MarkDelivered(ctx, tgt.Name(), identity, src.Name(), msg.Folder, msg.UID),
-			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, msg.ContentHash, msg.Size, msg.InternalDate),
+			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
 		)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("persist delivery: %w", err))

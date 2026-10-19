@@ -11,6 +11,16 @@ import (
 
 // Load reads configuration from file and environment.
 func Load(path string) (*Config, error) {
+	return load(path, false)
+}
+
+// LoadForValidation resolves all declared resources for explicit connectivity
+// checks. Read fresh configuration rather than resolving active secrets twice.
+func LoadForValidation(path string) (*Config, error) {
+	return load(path, true)
+}
+
+func load(path string, resolveAll bool) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("yaml")
 
@@ -40,7 +50,7 @@ func Load(path string) (*Config, error) {
 	applySourceDefaults(&cfg, v)
 
 	// Expand credential references in config
-	if err := expandCredentialRefs(&cfg); err != nil {
+	if err := expandSelectedCredentialRefs(&cfg, resolveAll); err != nil {
 		return nil, fmt.Errorf("expand credentials: %w", err)
 	}
 
@@ -133,8 +143,22 @@ func Validate(cfg *Config) error {
 
 // expandCredentialRefs resolves env:, file:, keyring: references in config.
 func expandCredentialRefs(cfg *Config) error {
+	return expandSelectedCredentialRefs(cfg, true)
+}
+
+func expandSelectedCredentialRefs(cfg *Config, resolveAll bool) error {
+	sources, targets := make(map[string]bool), make(map[string]bool)
+	for _, pair := range cfg.Pairs {
+		sources[pair.Source] = true
+		for _, target := range pair.Targets {
+			targets[target] = true
+		}
+	}
 	for i := range cfg.Sources {
-		if expanded, err := resolveCredentialRef(cfg.Sources[i].PasswordRef); err != nil {
+		if !resolveAll && !sources[cfg.Sources[i].Name] {
+			continue
+		}
+		if expanded, err := resolveSourceCredentialRef(cfg.Sources[i].PasswordRef); err != nil {
 			return fmt.Errorf("source %q password_ref: %w", cfg.Sources[i].Name, err)
 		} else {
 			cfg.Sources[i].PasswordRef = expanded
@@ -148,6 +172,9 @@ func expandCredentialRefs(cfg *Config) error {
 		}
 	}
 	for i := range cfg.Targets {
+		if !resolveAll && !targets[cfg.Targets[i].Name] {
+			continue
+		}
 		if credRef, ok := cfg.Targets[i].Config["credentials_ref"].(string); ok {
 			if expanded, err := resolveCredentialRef(credRef); err != nil {
 				return fmt.Errorf("target %q credentials_ref: %w", cfg.Targets[i].Name, err)
@@ -163,7 +190,7 @@ func expandCredentialRefs(cfg *Config) error {
 // Supported formats:
 //
 //	env:VAR_NAME          - read from environment variable
-//	file:/path/to/file    - read first line from file
+//	file:/path/to/file    - read file contents (password normalization is source-specific)
 //	keyring:service:account - read from system keyring
 func resolveCredentialRef(ref string) (string, error) {
 	if ref == "" {

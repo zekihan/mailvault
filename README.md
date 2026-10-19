@@ -30,6 +30,16 @@ messages again. Maildir and mbox targets may receive duplicate copies on that
 first run. Subsequent syncs use per-target delivery state to skip them.
 Keep target names stable; a new target name is treated as a new destination.
 
+### content-identity upgrade
+
+Delivery identities now use the SHA-256 of the actual raw message bytes, not
+the sender-controlled Message-ID. Different content sharing an ID is preserved;
+identical raw content is deduplicated per target even if envelope metadata differs.
+Legacy `mid:` receipts cannot prove which content was delivered and are ignored.
+The first sync after this upgrade can therefore redeliver previously backed-up
+mail once; Maildir and mbox may gain duplicate copies. New content-hash receipts
+make subsequent runs stable. Existing `hash:` receipts remain usable.
+
 ## authentication and storage behavior
 
 - Omitted source settings default to implicit TLS, a 30-second connection
@@ -54,6 +64,12 @@ Keep target names stable; a new target name is treated as a new destination.
   Missing `INTERNALDATE` fails filtering rather than silently including mail.
 - OAuth2-only source configurations are rejected until OAuth2 authentication
   is implemented. Sources currently require `password_ref`.
+- Normal sync resolves credentials only for sources and targets referenced by
+  pairs. Unused secret references remain untouched; explicit `validate-config`
+  resolves all declared resources for connectivity checks. Source password files
+  may end with one LF or CRLF, which is removed without stripping password spaces.
+  Other embedded line breaks are rejected, including in env/literal passwords.
+  S3 JSON credential files remain byte-preserving and can contain multiple lines.
 - A sync only constructs and initializes sources/targets referenced by pairs.
   `--dry-run` fetches source messages, but does not initialize/write targets or
   update persistent state. Existing state is opened read-only; absent state is
@@ -65,6 +81,11 @@ Keep target names stable; a new target name is treated as a new destination.
   an existing message. Cooperating mbox writers lock the mailbox while appending
   and rolling back failed appends; rollback failure disables further writes
   through that target instance. External mbox writers must use compatible locks.
+- Maildir syncs its directory structure and ancestors at initialization, and its
+  publication directory after each link before acknowledging delivery. Failed
+  publication sync attempts are rolled back and reported as failures. Directory
+  sync must be supported by the platform/filesystem; otherwise Maildir fails
+  closed. Tests cover sync ordering and injected failures, not physical power loss.
 
 ### S3 credentials
 
@@ -75,6 +96,11 @@ with `access_key_id` and `secret_access_key`, plus optional `session_token`.
 Explicit empty or malformed values fail without falling back to ambient AWS
 credentials. Never commit the JSON credential object to configuration files.
 
+S3 string options reject malformed types instead of silently selecting defaults.
+Ordinary object keys retain their existing format; oversized folder/UID components
+use a bounded identity digest. Prefixes, including their trailing slash, must leave
+room for the bounded object name, keeping every key within S3's 1,024-byte limit.
+
 ## failure reporting
 
 Delivery and source/target finalization failures increment `TotalErrors`, and
@@ -83,6 +109,13 @@ error strings, while `FinalizationErrors` contains resource-specific close error
 The engine does not print close warnings to stdout, keeping `--json` parseable.
 For Go callers, `Run` returns setup failures directly; delivery and finalization
 failures are recorded in the returned statistics.
+Resources are closed on setup failures too, including partially initialized
+targets; cleanup errors are preserved alongside the original failure.
+
+`validate-config --json` reports configuration validity, whether connectivity was
+tested, source/target status, and error strings as one JSON document, including
+failed validations. Connectivity testing still initializes targets and can create
+missing destination directories/files; it does not require a state database.
 
 ## license
 

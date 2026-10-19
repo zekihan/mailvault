@@ -21,6 +21,7 @@ type MaildirTarget struct {
 	mu         sync.Mutex
 	removeTemp func(string) error
 	link       func(string, string) error
+	syncDir    func(string) error
 }
 
 func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) {
@@ -86,8 +87,7 @@ func (t *MaildirTarget) Initialize(ctx context.Context) error {
 			return fmt.Errorf("create maildir %q: %w", dir, err)
 		}
 	}
-
-	return nil
+	return t.syncStructure()
 }
 
 func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (err error) {
@@ -131,8 +131,12 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	// A hard link atomically publishes the complete message without replacing
 	// an existing new/ entry; Rename would silently overwrite on collision.
 	newDir := filepath.Join(t.path, "new")
-	if err := link(tmpPath, filepath.Join(newDir, filepath.Base(tmpPath))); err != nil {
+	newPath := filepath.Join(newDir, filepath.Base(tmpPath))
+	if err := link(tmpPath, newPath); err != nil {
 		return fmt.Errorf("publish maildir message: %w", err)
+	}
+	if syncErr := t.syncDirectory(newDir); syncErr != nil {
+		return errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(newPath, newDir))
 	}
 	return nil
 }
