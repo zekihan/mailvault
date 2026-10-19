@@ -32,18 +32,34 @@ Keep target names stable; a new target name is treated as a new destination.
 
 ## authentication and storage behavior
 
+- Omitted source settings default to implicit TLS, a 30-second connection
+  timeout, and a 60-second read timeout. Explicit `use_tls: false` and zero
+  timeouts are preserved. IMAP `start_tls: true` selects STARTTLS instead of
+  implicit TLS when `use_tls` is omitted.
+  Indexed `MAILVAULT_SOURCES_0_*` environment overrides are not supported;
+  define source settings in the configuration file and use `env:` credential
+  references for secrets.
 - POP3 supports implicit TLS (`use_tls: true`, normally port 995), not STARTTLS.
   `start_tls: true` is rejected for POP3 before connecting; it never falls back
   to plaintext authentication. Explicit plaintext POP3 remains available with
   both flags false for trusted local connections.
 - POP3 does not provide reliable server arrival dates. `--since` and `--until`
   are rejected when any active source is POP3 rather than silently ignored.
+- IMAP timestamp bounds apply to server `INTERNALDATE`, not the sender's Date
+  header: `--since` is inclusive and `--until` is exclusive. Calendar searches
+  are widened for timezone offsets, then exact bounds are applied locally.
+  Fractional RFC3339 bounds are rounded up to preserve comparisons against
+  second-resolution arrival dates. Bounds resolving to Unix epoch zero are
+  rejected because the source interface reserves zero for an absent bound.
+  Missing `INTERNALDATE` fails filtering rather than silently including mail.
 - OAuth2-only source configurations are rejected until OAuth2 authentication
   is implemented. Sources currently require `password_ref`.
 - A sync only constructs and initializes sources/targets referenced by pairs.
   `--dry-run` fetches source messages, but does not initialize/write targets or
   update persistent state. Existing state is opened read-only; absent state is
   represented by a private in-memory database.
+  State database paths are literal filesystem paths; characters such as `?`,
+  `#`, and `%` cannot redirect the database or inject SQLite connection options.
 - Filesystem targets honor `create_if_missing: false`: the mbox file, or all
   Maildir directories, must already exist. Maildir publication never replaces
   an existing message. Cooperating mbox writers lock the mailbox while appending
@@ -58,6 +74,15 @@ set `credentials_ref` to an `env:` or `file:` reference resolving to a JSON obje
 with `access_key_id` and `secret_access_key`, plus optional `session_token`.
 Explicit empty or malformed values fail without falling back to ambient AWS
 credentials. Never commit the JSON credential object to configuration files.
+
+## failure reporting
+
+Delivery and source/target finalization failures increment `TotalErrors`, and
+the CLI exits non-zero after printing the report. JSON `Results[].Errors` contains
+error strings, while `FinalizationErrors` contains resource-specific close errors.
+The engine does not print close warnings to stdout, keeping `--json` parseable.
+For Go callers, `Run` returns setup failures directly; delivery and finalization
+failures are recorded in the returned statistics.
 
 ## license
 

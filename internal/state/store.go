@@ -19,7 +19,11 @@ type Store struct {
 
 // NewStore creates a new state store at the given path.
 func NewStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path+"?_fk=1&_busy_timeout=5000")
+	dsn, err := stateDSN(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("state filename: %w", err)
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

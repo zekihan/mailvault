@@ -42,17 +42,18 @@ type SyncResult struct {
 
 // SyncStats holds overall sync statistics.
 type SyncStats struct {
-	TotalSources int
-	TotalTargets int
-	TotalPairs   int
-	Results      []SyncResult
-	TotalFetched int
-	TotalWritten int
-	TotalSkipped int
-	TotalErrors  int
-	StartTime    time.Time
-	EndTime      time.Time
-	Duration     time.Duration
+	TotalSources       int
+	TotalTargets       int
+	TotalPairs         int
+	Results            []SyncResult
+	TotalFetched       int
+	TotalWritten       int
+	TotalSkipped       int
+	TotalErrors        int
+	FinalizationErrors []string
+	StartTime          time.Time
+	EndTime            time.Time
+	Duration           time.Duration
 }
 
 // NewSyncEngine creates a new sync engine.
@@ -199,7 +200,8 @@ func srcConfigToMap(cfg config.SourceConfig) map[string]interface{} {
 	}
 }
 
-// Run executes the full sync process.
+// Run executes the full sync process. Setup failures are returned as errors;
+// delivery and finalization failures are aggregated in SyncStats.TotalErrors.
 func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 	e.deliveryLocks = sync.Map{}
 	stats := &SyncStats{
@@ -278,15 +280,16 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 			continue
 		}
 		if err := target.Close(); err != nil {
-			// Log error but don't fail
-			fmt.Printf("Warning: closing target %q: %v\n", target.Name(), err)
+			stats.FinalizationErrors = append(stats.FinalizationErrors, fmt.Sprintf("closing target %q: %v", target.Name(), err))
+			stats.TotalErrors++
 		}
 	}
 
 	// Close all sources
 	for _, src := range e.sources {
 		if err := src.Close(); err != nil {
-			fmt.Printf("Warning: closing source %q: %v\n", src.Name(), err)
+			stats.FinalizationErrors = append(stats.FinalizationErrors, fmt.Sprintf("closing source %q: %v", src.Name(), err))
+			stats.TotalErrors++
 		}
 	}
 

@@ -218,13 +218,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 
 	// Build search criteria
-	var criteria imap.SearchCriteria
-	if since > 0 {
-		criteria.Since = time.Unix(since, 0)
-	}
-	if until > 0 {
-		criteria.Before = time.Unix(until, 0)
-	}
+	criteria := timestampSearchCriteria(since, until)
 
 	// Search for messages
 	search := s.client.UIDSearch(&criteria, nil)
@@ -254,7 +248,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		batch := uids[i:end]
-		if err := s.fetchBatch(ctx, folder, batch, msgChan); err != nil {
+		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until); err != nil {
 			return err
 		}
 	}
@@ -262,7 +256,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message) (err error) {
+func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64) (err error) {
 	// Fetch RFC822 for each UID
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
@@ -295,6 +289,13 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 		buf, err := msg.Collect()
 		if err != nil {
 			return fmt.Errorf("collect message: %w", err)
+		}
+		matches, err := matchesTimestampBounds(buf.InternalDate, since, until)
+		if err != nil {
+			return err
+		}
+		if !matches {
+			continue
 		}
 
 		// Get RFC822 body

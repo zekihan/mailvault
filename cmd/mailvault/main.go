@@ -57,8 +57,8 @@ func init() {
 		RunE:  runSync,
 	}
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
-	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages after this date (RFC3339)")
-	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this date (RFC3339)")
+	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
+	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")
 	syncCmd.Flags().IntVar(&concurrency, "concurrency", 5, "maximum concurrent source-target pairs")
 	syncCmd.Flags().IntVar(&maxRetries, "max-retries", 3, "maximum retries for failed writes")
 	syncCmd.Flags().StringVar(&retryDelay, "retry-delay", "1s", "base delay between retries")
@@ -153,20 +153,13 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("parse retry-delay: %w", err)
 	}
 
-	var sinceTime, untilTime int64
-	if since != "" {
-		t, err := time.Parse(time.RFC3339, since)
-		if err != nil {
-			return fmt.Errorf("parse since: %w", err)
-		}
-		sinceTime = t.Unix()
+	sinceTime, err := parseTimeBound(since)
+	if err != nil {
+		return fmt.Errorf("parse since: %w", err)
 	}
-	if until != "" {
-		t, err := time.Parse(time.RFC3339, until)
-		if err != nil {
-			return fmt.Errorf("parse until: %w", err)
-		}
-		untilTime = t.Unix()
+	untilTime, err := parseTimeBound(until)
+	if err != nil {
+		return fmt.Errorf("parse until: %w", err)
 	}
 
 	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
@@ -219,6 +212,9 @@ func printStats(stats *sync.SyncStats) error {
 		for _, err := range result.Errors {
 			fmt.Printf("    ERROR: %v\n", err)
 		}
+	}
+	for _, message := range stats.FinalizationErrors {
+		fmt.Printf("  ERROR: %s\n", message)
 	}
 	return nil
 }

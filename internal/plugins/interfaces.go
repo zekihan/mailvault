@@ -44,7 +44,7 @@ type Source interface {
 	ListFolders(ctx context.Context) ([]string, error)
 
 	// FetchMessages retrieves messages from the given folders.
-	// If since is non-zero, only messages after that time are fetched.
+	// If since is non-zero, only messages at or after that time are fetched.
 	// If until is non-zero, only messages before that time are fetched.
 	FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *Message, <-chan error)
 

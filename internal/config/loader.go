@@ -37,6 +37,7 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	applySourceDefaults(&cfg, v)
 
 	// Expand credential references in config
 	if err := expandCredentialRefs(&cfg); err != nil {
