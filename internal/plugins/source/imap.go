@@ -31,6 +31,7 @@ type IMAPSource struct {
 	readTimeout time.Duration
 	maxConns    int
 	client      *imapclient.Client
+	wire        *deadlineConn
 	connected   bool
 	mu          sync.Mutex
 }
@@ -96,60 +97,69 @@ func (s *IMAPSource) Type() string {
 func (s *IMAPSource) Connect(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.connectLocked(ctx)
+}
 
+func (s *IMAPSource) connectLocked(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.connected {
-		return nil
+		select {
+		case <-s.client.Closed():
+			s.connected = false
+		default:
+			return nil
+		}
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-
-	// Create dialer with timeout
+	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
 	dialer := &net.Dialer{Timeout: s.connTimeout}
-
-	opts := &imapclient.Options{
-		Dialer: dialer,
-	}
-
-	var client *imapclient.Client
-	var err error
-
-	if s.useTLS {
-		// Implicit TLS (IMAPS)
-		opts.TLSConfig = &tls.Config{
-			ServerName: s.host,
-			MinVersion: tls.VersionTLS12,
-		}
-		client, err = imapclient.DialTLS(addr, opts)
-	} else if s.startTLS {
-		// Explicit TLS (STARTTLS)
-		opts.TLSConfig = &tls.Config{
-			ServerName: s.host,
-			MinVersion: tls.VersionTLS12,
-		}
-		client, err = imapclient.DialStartTLS(addr, opts)
-	} else {
-		// Plain connection
-		client, err = imapclient.DialInsecure(addr, opts)
-	}
-
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-
-	// Login
+	wire := &deadlineConn{Conn: raw, timeout: s.readTimeout}
+	finish := wire.beginIO(ctx)
+	defer finish()
+	tlsConfig := &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
+	opts := &imapclient.Options{TLSConfig: tlsConfig}
+	var client *imapclient.Client
+	if s.useTLS {
+		secure := tls.Client(wire, tlsConfig)
+		err = secure.HandshakeContext(ctx)
+		if err == nil {
+			client = imapclient.New(secure, opts)
+		}
+	} else if s.startTLS {
+		client, err = imapclient.NewStartTLS(wire, opts)
+	} else {
+		client = imapclient.New(wire, opts)
+	}
+	if err != nil {
+		return errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
+	}
+	if err := client.WaitGreeting(); err != nil {
+		return errors.Join(fmt.Errorf("greeting: %w", err), client.Close())
+	}
 	if err := client.Login(s.username, s.password).Wait(); err != nil {
 		return errors.Join(fmt.Errorf("login: %w", err), client.Close())
 	}
 
 	s.client = client
+	s.wire = wire
 	s.connected = true
 	return nil
 }
 
 func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
-	if err := s.Connect(ctx); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.connectLocked(ctx); err != nil {
 		return nil, err
 	}
+	finish := s.wire.beginIO(ctx)
+	defer finish()
 
 	list := s.client.List("", "*", &imap.ListOptions{})
 	data, err := list.Collect()
@@ -172,11 +182,15 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 	go func() {
 		defer close(msgChan)
 		defer close(errChan)
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
-		if err := s.Connect(ctx); err != nil {
+		if err := s.connectLocked(ctx); err != nil {
 			errChan <- err
 			return
 		}
+		finish := s.wire.beginIO(ctx)
+		defer finish()
 
 		for _, folder := range folders {
 			select {
@@ -213,7 +227,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 
 	// Search for messages
-	search := s.client.Search(&criteria, nil)
+	search := s.client.UIDSearch(&criteria, nil)
 	searchData, err := search.Wait()
 	if err != nil {
 		return fmt.Errorf("search: %w", err)
@@ -250,14 +264,15 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message) (err error) {
 	// Fetch RFC822 for each UID
-	seqSet := new(imap.SeqSet)
+	var seqSet imap.UIDSet
 	for _, uid := range uids {
-		seqSet.AddNum(uint32(uid))
+		seqSet.AddNum(uid)
 	}
 
 	fetch := s.client.Fetch(seqSet, &imap.FetchOptions{
-		BodySection: []*imap.FetchItemBodySection{{}},
-		Envelope:    true,
+		BodySection:  []*imap.FetchItemBodySection{{}},
+		Envelope:     true,
+		InternalDate: true,
 	})
 
 	defer func() {
@@ -299,12 +314,12 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 		// Compute content hash
 		contentHash := dedup.ComputeContentHash(raw)
 
-		// Internal date from envelope or buffer
+		// Prefer the server's arrival date to the sender's Date header.
 		internalDate := ""
-		if buf.Envelope != nil && !buf.Envelope.Date.IsZero() {
-			internalDate = buf.Envelope.Date.Format(time.RFC3339)
-		} else if !buf.InternalDate.IsZero() {
+		if !buf.InternalDate.IsZero() {
 			internalDate = buf.InternalDate.Format(time.RFC3339)
+		} else if buf.Envelope != nil && !buf.Envelope.Date.IsZero() {
+			internalDate = buf.Envelope.Date.Format(time.RFC3339)
 		}
 
 		pluginsMsg := &plugins.Message{

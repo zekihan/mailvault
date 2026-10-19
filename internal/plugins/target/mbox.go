@@ -1,6 +1,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -85,8 +86,9 @@ func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) err
 		return errors.New("mbox not initialized")
 	}
 
-	// Ensure message ends with newline
-	raw := msg.Raw
+	// Escape body lines using mboxrd: prefix one '>' to each line whose
+	// existing leading '>' run is followed by "From ". Headers remain untouched.
+	raw := escapeMboxrd(msg.Raw)
 	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
 		raw = append(raw, '\n')
 	}
@@ -108,6 +110,45 @@ func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) err
 	}
 
 	return nil
+}
+
+func escapeMboxrd(raw []byte) []byte {
+	sep := bytes.Index(raw, []byte("\n\n"))
+	crlf := bytes.Index(raw, []byte("\r\n\r\n"))
+	if crlf >= 0 && (sep < 0 || crlf < sep) {
+		sep = crlf + 4
+	} else if sep >= 0 {
+		sep += 2
+	} else {
+		// Headerless input is a body.
+		sep = 0
+	}
+	out := append([]byte(nil), raw[:sep]...)
+	for pos := sep; pos < len(raw); {
+		end := bytes.IndexByte(raw[pos:], '\n')
+		lineEnd := len(raw)
+		if end >= 0 {
+			lineEnd = pos + end + 1
+		}
+		line := raw[pos:lineEnd]
+		content := line
+		if len(content) > 0 && content[len(content)-1] == '\n' {
+			content = content[:len(content)-1]
+		}
+		if len(content) > 0 && content[len(content)-1] == '\r' {
+			content = content[:len(content)-1]
+		}
+		i := 0
+		for i < len(content) && content[i] == '>' {
+			i++
+		}
+		if bytes.HasPrefix(content[i:], []byte("From ")) {
+			out = append(out, '>')
+		}
+		out = append(out, line...)
+		pos = lineEnd
+	}
+	return out
 }
 
 func (t *MboxTarget) Close() error {

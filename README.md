@@ -20,6 +20,16 @@ make lint    # gofmt check and golangci-lint
 make test    # unit tests
 ```
 
+## delivery state upgrades
+
+Successful deliveries are tracked separately for each configured target name.
+Existing databases are upgraded automatically with a new `deliveries` table;
+old message records are preserved, but cannot prove which targets received mail.
+The first sync after this upgrade therefore conservatively delivers existing
+messages again. Maildir and mbox targets may receive duplicate copies on that
+first run. Subsequent syncs use per-target delivery state to skip them.
+Keep target names stable; a new target name is treated as a new destination.
+
 ## license
 
 [GNU Affero General Public License v3.0](LICENSE).

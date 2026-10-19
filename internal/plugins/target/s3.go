@@ -2,11 +2,13 @@ package target
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsv2config "github.com/aws/aws-sdk-go-v2/config"
@@ -115,12 +117,9 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 		return errors.New("S3 target not initialized")
 	}
 
-	// Generate object key: prefix + timestamp + UID + .eml
-	key := fmt.Sprintf("%s%d-%s.eml",
-		t.prefix,
-		time.Now().Unix(),
-		msg.UID,
-	)
+	// Generate a stable key from the raw content, folder, and UID.
+	hash := sha256.Sum256(msg.Raw)
+	key := fmt.Sprintf("%s%s-%s-%s.eml", t.prefix, hex.EncodeToString(hash[:]), hex.EncodeToString([]byte(msg.Folder)), url.PathEscape(msg.UID))
 
 	// Upload message
 	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
@@ -132,7 +131,7 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 			"source-folder": msg.Folder,
 			"source-uid":    msg.UID,
 			"message-id":    msg.MessageID,
-			"content-hash":  msg.ContentHash,
+			"content-hash":  hex.EncodeToString(hash[:]),
 			"internal-date": msg.InternalDate,
 			"size":          fmt.Sprintf("%d", msg.Size),
 		},

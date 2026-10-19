@@ -66,6 +66,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		UNIQUE(source_name, folder, uid)
 	);
 
+	CREATE TABLE IF NOT EXISTS deliveries (
+		target_name TEXT NOT NULL,
+		identity TEXT NOT NULL,
+		source_name TEXT NOT NULL,
+		folder TEXT NOT NULL,
+		uid TEXT NOT NULL,
+		delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(target_name, identity)
+	);
+
 	CREATE TABLE IF NOT EXISTS oauth_tokens (
 		source_name TEXT PRIMARY KEY REFERENCES sources(name) ON DELETE CASCADE,
 		access_token TEXT,
@@ -74,6 +84,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_name);
 	CREATE INDEX IF NOT EXISTS idx_messages_source_folder ON messages(source_name, folder);
 	CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
 	CREATE INDEX IF NOT EXISTS idx_messages_content_hash ON messages(content_hash);
@@ -297,4 +308,20 @@ func (s *Store) Stats(ctx context.Context) (map[string]int64, error) {
 	}
 
 	return stats, nil
+}
+
+// DeliveryExists reports whether this target has received the stable message identity.
+func (s *Store) DeliveryExists(ctx context.Context, target, identity string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM deliveries WHERE target_name=? AND identity=?`, target, identity).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// MarkDelivered records successful delivery to a target.
+func (s *Store) MarkDelivered(ctx context.Context, target, identity, source, folder, uid string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO deliveries(target_name,identity,source_name,folder,uid) VALUES(?,?,?,?,?)`, target, identity, source, folder, uid)
+	return err
 }

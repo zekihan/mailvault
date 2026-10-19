@@ -13,6 +13,8 @@ func ParseDuration(config map[string]interface{}, key string, defaultVal time.Du
 	}
 
 	switch v := val.(type) {
+	case time.Duration:
+		return v, nil
 	case string:
 		d, err := time.ParseDuration(v)
 		if err != nil {

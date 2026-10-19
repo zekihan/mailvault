@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -162,19 +163,15 @@ func resolveCredentialRef(ref string) (string, error) {
 		return "", nil
 	}
 
-	if len(ref) < 5 {
-		return ref, nil // Not a recognized prefix, return as-is
-	}
-
 	switch {
-	case ref[:4] == "env:":
+	case strings.HasPrefix(ref, "env:"):
 		val := os.Getenv(ref[4:])
 		if val == "" {
 			return "", fmt.Errorf("environment variable %q not set", ref[4:])
 		}
 		return val, nil
 
-	case ref[:5] == "file:":
+	case strings.HasPrefix(ref, "file:"):
 		path := ref[5:]
 		if !filepath.IsAbs(path) {
 			// Relative to config file directory? For now, require absolute.
@@ -186,7 +183,7 @@ func resolveCredentialRef(ref string) (string, error) {
 		}
 		return string(data), nil
 
-	case ref[:8] == "keyring:":
+	case strings.HasPrefix(ref, "keyring:"):
 		// TODO: implement keyring lookup (libsecret/WinCred)
 		return "", fmt.Errorf("keyring: not yet implemented")
 

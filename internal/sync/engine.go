@@ -15,17 +15,18 @@ import (
 
 // SyncEngine coordinates the sync process between sources and targets.
 type SyncEngine struct {
-	config      *config.Config
-	stateStore  *state.Store
-	registry    *plugins.Registry
-	sources     map[string]plugins.Source
-	targets     map[string]plugins.Target
-	dryRun      bool
-	maxRetries  int
-	retryDelay  time.Duration
-	concurrency int
-	since       int64
-	until       int64
+	config        *config.Config
+	stateStore    *state.Store
+	registry      *plugins.Registry
+	sources       map[string]plugins.Source
+	targets       map[string]plugins.Target
+	dryRun        bool
+	maxRetries    int
+	retryDelay    time.Duration
+	concurrency   int
+	since         int64
+	until         int64
+	deliveryLocks sync.Map
 }
 
 // SyncResult holds the result of a sync operation.
@@ -97,6 +98,9 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 	for _, opt := range opts {
 		opt(engine)
 	}
+	if engine.concurrency <= 0 || engine.maxRetries < 0 || engine.retryDelay < 0 {
+		return nil, errors.New("concurrency must be positive and retry settings must be nonnegative")
+	}
 
 	return engine, nil
 }
@@ -164,6 +168,7 @@ func srcConfigToMap(cfg config.SourceConfig) map[string]interface{} {
 
 // Run executes the full sync process.
 func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
+	e.deliveryLocks = sync.Map{}
 	stats := &SyncStats{
 		TotalSources: len(e.sources),
 		TotalTargets: len(e.targets),
@@ -186,10 +191,10 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 		}
 	}
 
-	// Create dedup tracker
-	dedupTracker := dedup.NewDedupTracker(&stateAdapter{store: e.stateStore}, "")
-
 	// Process each pair
+	if e.concurrency <= 0 {
+		e.concurrency = 1
+	}
 	semaphore := make(chan struct{}, e.concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -213,7 +218,7 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 				defer wg.Done()
 				defer func() { <-semaphore }()
 
-				result := e.syncPair(ctx, src, tgt, dedupTracker)
+				result := e.syncPair(ctx, src, tgt)
 
 				mu.Lock()
 				stats.Results = append(stats.Results, result)
@@ -250,9 +255,12 @@ func (e *SyncEngine) Run(ctx context.Context) (*SyncStats, error) {
 }
 
 // syncPair syncs a single source to a single target.
-func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugins.Target, dedupTracker *dedup.DedupTracker) SyncResult {
+func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugins.Target) (result SyncResult) {
 	startTime := time.Now()
-	result := SyncResult{
+	defer func() { result.Duration = time.Since(startTime) }()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result = SyncResult{
 		SourceName: src.Name(),
 		TargetName: tgt.Name(),
 	}
@@ -268,55 +276,74 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 	msgChan, errChan := src.FetchMessages(ctx, folders, e.since, e.until)
 
 	// Process messages
-	for {
+	for msgChan != nil || errChan != nil {
 		select {
 		case <-ctx.Done():
 			result.Errors = append(result.Errors, ctx.Err())
-			result.Duration = time.Since(startTime)
 			return result
-		case err := <-errChan:
-			if err != nil {
+		case err, ok := <-errChan:
+			if !ok {
+				errChan = nil
+			} else if err != nil {
 				result.Errors = append(result.Errors, err)
 			}
 		case msg, ok := <-msgChan:
 			if !ok {
-				// Channel closed, done fetching
-				result.Duration = time.Since(startTime)
-				return result
+				msgChan = nil
+				continue
 			}
 
 			result.MessagesFetched++
+			e.syncMessage(ctx, src, tgt, msg, &result)
+		}
+	}
+	return result
+}
 
-			// Check deduplication
-			skip, err := dedupTracker.ShouldSkip(ctx, msg, msg.Folder)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("dedup check: %w", err))
-				continue
-			}
-			if skip {
-				result.MessagesSkipped++
-				continue
-			}
+type targetDelivery struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
 
-			// Write to target (with retry)
-			if !e.dryRun {
-				if err := e.writeWithRetry(ctx, tgt, msg); err != nil {
-					result.Errors = append(result.Errors, fmt.Errorf("write message: %w", err))
-					continue
-				}
-			}
-
-			result.MessagesWritten++
-
-			// Mark in dedup tracker
-			dedupTracker.MarkSeen(msg)
-
-			// Persist to state store
-			if !e.dryRun {
-				if err := e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, msg.ContentHash, msg.Size, msg.InternalDate); err != nil {
-					result.Errors = append(result.Errors, fmt.Errorf("persist state: %w", err))
-				}
-			}
+func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message, result *SyncResult) {
+	value, _ := e.deliveryLocks.LoadOrStore(tgt.Name(), &targetDelivery{seen: make(map[string]bool)})
+	delivery := value.(*targetDelivery)
+	delivery.mu.Lock()
+	defer delivery.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		result.Errors = append(result.Errors, err)
+		return
+	}
+	identity := dedup.DedupKey{MessageID: msg.MessageID, ContentHash: dedup.ComputeContentHash(msg.Raw)}.Key()
+	if delivery.seen[identity] {
+		result.MessagesSkipped++
+		return
+	}
+	exists, err := e.stateStore.DeliveryExists(ctx, tgt.Name(), identity)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("delivery check: %w", err))
+		return
+	}
+	if exists {
+		delivery.seen[identity] = true
+		result.MessagesSkipped++
+		return
+	}
+	if !e.dryRun {
+		if err := e.writeWithRetry(ctx, tgt, msg); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("write message: %w", err))
+			return
+		}
+	}
+	delivery.seen[identity] = true
+	result.MessagesWritten++
+	if !e.dryRun {
+		err := errors.Join(
+			e.stateStore.MarkDelivered(ctx, tgt.Name(), identity, src.Name(), msg.Folder, msg.UID),
+			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, msg.ContentHash, msg.Size, msg.InternalDate),
+		)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("persist delivery: %w", err))
 		}
 	}
 }
@@ -353,45 +380,4 @@ func (e *SyncEngine) getFoldersForSource(sourceName string) []string {
 		}
 	}
 	return []string{"INBOX"}
-}
-
-// stateAdapter adapts state.Store to dedup.StateStore interface.
-type stateAdapter struct {
-	store *state.Store
-}
-
-func (a *stateAdapter) MessageExists(ctx context.Context, sourceName, folder, uid string) (bool, error) {
-	return a.store.MessageExists(ctx, sourceName, folder, uid)
-}
-
-func (a *stateAdapter) FindByMessageID(ctx context.Context, messageID string) ([]dedup.MessageRecord, error) {
-	records, err := a.store.FindByMessageID(ctx, messageID)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]dedup.MessageRecord, len(records))
-	for i, r := range records {
-		result[i] = dedup.MessageRecord{
-			SourceName: r.SourceName,
-			Folder:     r.Folder,
-			UID:        r.UID,
-		}
-	}
-	return result, nil
-}
-
-func (a *stateAdapter) FindByContentHash(ctx context.Context, contentHash string) ([]dedup.MessageRecord, error) {
-	records, err := a.store.FindByContentHash(ctx, contentHash)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]dedup.MessageRecord, len(records))
-	for i, r := range records {
-		result[i] = dedup.MessageRecord{
-			SourceName: r.SourceName,
-			Folder:     r.Folder,
-			UID:        r.UID,
-		}
-	}
-	return result, nil
 }

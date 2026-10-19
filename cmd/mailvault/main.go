@@ -178,7 +178,13 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("sync failed: %w", err)
 	}
 
-	return printStats(stats)
+	if err := printStats(stats); err != nil {
+		return err
+	}
+	if stats.TotalErrors > 0 {
+		return fmt.Errorf("sync completed with %d errors", stats.TotalErrors)
+	}
+	return nil
 }
 
 func printStats(stats *sync.SyncStats) error {
@@ -210,6 +216,7 @@ func printStats(stats *sync.SyncStats) error {
 }
 
 func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
+	var failures []error
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -265,14 +272,17 @@ func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
 			src, err := registry.CreateSource(srcCfg.Type, srcConfig)
 			if err != nil {
 				fmt.Printf("  Source %s: FAILED - %v\n", srcCfg.Name, err)
+				failures = append(failures, err)
 				continue
 			}
 			if err := src.Connect(ctx); err != nil {
 				fmt.Printf("  Source %s: FAILED - %v\n", srcCfg.Name, err)
+				failures = append(failures, err)
 			} else {
 				fmt.Printf("  Source %s: OK\n", srcCfg.Name)
 				if err := src.Close(); err != nil {
 					fmt.Printf("  Source %s: close FAILED - %v\n", srcCfg.Name, err)
+					failures = append(failures, err)
 				}
 			}
 		}
@@ -287,20 +297,23 @@ func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
 			tgt, err := registry.CreateTarget(tgtCfg.Type, tgtConfig)
 			if err != nil {
 				fmt.Printf("  Target %s: FAILED - %v\n", tgtCfg.Name, err)
+				failures = append(failures, err)
 				continue
 			}
 			if err := tgt.Initialize(ctx); err != nil {
 				fmt.Printf("  Target %s: FAILED - %v\n", tgtCfg.Name, err)
+				failures = append(failures, err)
 			} else {
 				fmt.Printf("  Target %s: OK\n", tgtCfg.Name)
 				if err := tgt.Close(); err != nil {
 					fmt.Printf("  Target %s: close FAILED - %v\n", tgtCfg.Name, err)
+					failures = append(failures, err)
 				}
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 func runListSources(cmd *cobra.Command, args []string) error {
@@ -308,6 +321,7 @@ func runListSources(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	cfg = listingConfig(cfg)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -329,6 +343,7 @@ func runListTargets(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	cfg = listingConfig(cfg)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
