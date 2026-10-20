@@ -175,7 +175,7 @@ func (s *IMAPSource) openSession(ctx context.Context) (*imapSession, error) {
 			return nil, errors.Join(fmt.Errorf("get OAuth2 access token: %w", err), client.Close())
 		}
 		if err := client.Authenticate(auth.NewXOAUTH2(s.username, token)); err != nil {
-			return nil, errors.Join(errors.New("IMAP OAuth2 authentication failed"), client.Close())
+			return nil, errors.Join(fmt.Errorf("IMAP OAuth2 authentication failed for mailbox %q; the server rejected access but did not establish the cause. Check that device/browser login used the account owning this mailbox, IMAP is enabled, and delegated IMAP permission was granted; then run mailvault auth login --source %q again", s.username, s.name), client.Close())
 		}
 	} else if err := client.Login(s.username, s.password).Wait(); err != nil {
 		return nil, errors.Join(fmt.Errorf("login: %w", err), client.Close())

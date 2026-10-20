@@ -35,6 +35,8 @@ type Config struct {
 	AuthorizationURL string
 	TokenURL         string
 	HTTPClient       *http.Client
+	// ValidateAccessToken checks mailbox access before a login replaces saved credentials.
+	ValidateAccessToken func(context.Context, string) error
 }
 
 // Store keeps OAuth state as one opaque value per account.
@@ -105,12 +107,17 @@ func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, o
 		if state.RefreshToken == "" {
 			return errors.New("authorization response did not include a refresh token; ensure offline_access is requested")
 		}
+		if cfg.ValidateAccessToken != nil {
+			if err := cfg.ValidateAccessToken(ctx, state.AccessToken); err != nil {
+				return fmt.Errorf("OAuth authorization completed, but mailbox access could not be verified; new credentials were not saved: %w", err)
+			}
+		}
 		encoded, err := json.Marshal(state)
 		if err != nil {
 			return fmt.Errorf("encode OAuth state: %w", err)
 		}
 		if err := store.Set(ctx, account, string(encoded)); err != nil {
-			return fmt.Errorf("save OAuth state to keyring: %w", err)
+			return fmt.Errorf("save OAuth state: %w", err)
 		}
 		return nil
 	}
@@ -201,7 +208,7 @@ func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store,
 			}
 			return
 		}
-		_, _ = io.WriteString(w, "Mailvault authorization complete. You may close this window.\n")
+		_, _ = io.WriteString(w, "Authorization received. Return to Mailvault for the mailbox verification result. You may close this window.\n")
 		select {
 		case callbackCh <- callback{code: code}:
 		default:
@@ -226,6 +233,11 @@ func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store,
 		}
 		if state.RefreshToken == "" {
 			return errors.New("authorization response did not include a refresh token; retry consent with offline access")
+		}
+		if cfg.ValidateAccessToken != nil {
+			if err := cfg.ValidateAccessToken(ctx, state.AccessToken); err != nil {
+				return fmt.Errorf("OAuth authorization completed, but mailbox access could not be verified; new credentials were not saved: %w", err)
+			}
 		}
 		encoded, err := json.Marshal(state)
 		if err != nil {

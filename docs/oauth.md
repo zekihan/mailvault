@@ -66,6 +66,15 @@ URL; after consent, its redirect reaches the local callback and completes the
 login. Device codes, authorization codes, access tokens, and refresh tokens are
 never printed or saved in the YAML configuration.
 
+Login prints the configured mailbox username so you can choose the correct
+account in the browser. After authorization, Mailvault tests an IMAP or POP
+connection with the new access token before saving it. This check authenticates
+and disconnects without listing folders or downloading messages. Failed checks
+leave previously saved credentials unchanged. A rejected connection can mean a
+wrong account, disabled protocol access, or missing delegated permissions; it
+does not conclusively identify which account was used. Mailvault treats access
+tokens as opaque and does not compare email aliases extracted from tokens.
+
 The OS keyring stores the token set under service `mailvault`. By default, the
 keyring account is a stable hash of the mailbox host, username, provider,
 tenant, and client ID. Set `oauth2.token_key` to choose an explicit keyring

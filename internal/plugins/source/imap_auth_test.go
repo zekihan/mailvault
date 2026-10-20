@@ -92,4 +92,9 @@ func TestIMAPXOAUTH2FailureRedactsEchoedPayload(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "sensitive-fixture-token") || strings.Contains(err.Error(), base64.StdEncoding.EncodeToString([]byte("user=fixture-user\x01auth=Bearer sensitive-fixture-token\x01\x01"))) {
 		t.Fatalf("OAuth error leaked token or unexpectedly succeeded: %v", err)
 	}
+	for _, hint := range []string{"fixture-user", "account owning this mailbox", "IMAP is enabled", "delegated IMAP permission", "mailvault auth login"} {
+		if !strings.Contains(err.Error(), hint) {
+			t.Fatalf("OAuth rejection missing hint %q: %v", hint, err)
+		}
+	}
 }
