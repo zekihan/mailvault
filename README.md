@@ -52,7 +52,15 @@ IMAP folder UIDVALIDITY, UIDNEXT, and available MODSEQ values are recorded as
 server observations. Download decisions use per-target receipts, not a global
 high-water mark that could skip failed deliveries or holes left by date filters.
 `max_connections` bounds the IMAP connection pool; downloads stream through
-bounded batches and channels.
+bounded batches and channels. Compact sets of delivered UIDs are excluded by the
+server search, preserving holes from failures and date filters. If the exclusion
+would exceed 4 KiB, the client filters the search result locally instead.
+
+Downloads retry transient connection failures up to two times with a short
+backoff. Stable IMAP UIDs and POP3 UIDLs already streamed in the current run are
+excluded on reconnect. POP3 without UIDL does not retry after streaming a message,
+because sequence numbers cannot safely identify it after reconnecting. Authentication
+and protocol errors fail immediately; Ctrl+C cancels retries.
 
 ## delivery state upgrades
 
@@ -120,10 +128,11 @@ mailvault cleanup-state --older-than 720h --apply
   second-resolution arrival dates. Bounds resolving to Unix epoch zero are
   rejected because the source interface reserves zero for an absent bound.
   Missing `INTERNALDATE` fails filtering rather than silently including mail.
-- Sources accept either `password_ref` or `oauth2`, never both. Microsoft public
-  client OAuth uses device login and automatic refresh, with tokens stored in
-  the OS keyring. See [Hotmail / Outlook setup](docs/oauth.md). No client secret
-  is needed for the public-client flow.
+- Sources accept either `password_ref` or `oauth2`, never both. Microsoft OAuth uses device login;
+  Google uses desktop loopback login with PKCE. Both refresh automatically and
+  store tokens in the OS keyring by default, with an explicit private token-file
+  option for headless hosts. See [OAuth setup](docs/oauth.md). No client secret
+  is needed for these public-client flows.
 - Credential references support `env:NAME`, `file:path`, and
   `keyring:service:account`. Relative file paths resolve from the configuration
   file's directory. Keyring access requires a working OS credential service.
@@ -159,10 +168,13 @@ example configuration does so explicitly. Preserved folder labels are encoded
 into safe directory components under `.folders`, with `/` retaining hierarchy.
 The initial IMAP system flags map to Maildir filename flags (`Seen` to `S`,
 `Answered` to `R`, `Flagged` to `F`, `Deleted` to `T`, and `Draft` to `D`). This
-captures flags when a message is archived; it does not mirror later flag changes
-or deletions on the source server. Flagged messages are published in `cur/` as
-required by Maildir. Only the five standard IMAP system flags are mapped; custom
-keyword flags are ignored. Windows cannot represent the standard `:2,` filename
+captures flags when a message is archived. Run `sync --refresh-flags` to refresh
+flags for previously delivered IMAP messages without downloading their bodies.
+This updates Maildir filenames when `preserve_flags` is enabled and updates the
+integrity manifest for all targets. It never deletes backups when source mail is
+deleted. Older receipts without a manifest need a repair run before flag refresh.
+Custom IMAP keywords are retained in the manifest for restore; Maildir filenames
+map the five standard system flags. Flagged messages are published in `cur/`. Windows cannot represent the standard `:2,` filename
 suffix, so set `preserve_flags: false` on Windows. Switching preservation modes
 creates a separate receipt scope and can write new copies for the new layout;
 existing backup files are retained.

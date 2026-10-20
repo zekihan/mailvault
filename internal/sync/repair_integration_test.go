@@ -78,4 +78,29 @@ func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
 	if locator() != before {
 		t.Fatal("dry run changed manifest")
 	}
+	source.messages = nil
+	if err := os.WriteFile(before, []byte("lost source copy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := engine.Run(ctx)
+	if err != nil || stats.TotalErrors == 0 {
+		t.Fatalf("missing source falsely repaired: %+v %v", stats, err)
+	}
+}
+
+func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
+	msg := &plugins.Message{UID: "sequence:1"}
+	first := backupMessageUID(msg, "first-hash")
+	second := backupMessageUID(msg, "second-hash")
+	if first == second {
+		t.Fatal("reused POP sequence number overwrites manifest identity")
+	}
+	msg.UIDScope = "stable-account"
+	if backupMessageUID(msg, "first-hash") != msg.UID {
+		t.Fatal("stable UID lost")
+	}
 }

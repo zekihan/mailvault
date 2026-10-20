@@ -25,6 +25,7 @@ var (
 	cfgFile       string
 	dryRun        bool
 	forceFetchAll bool
+	refreshFlags  bool
 	jsonOutput    bool
 	since         string
 	until         string
@@ -84,6 +85,7 @@ func init() {
 		RunE:  runSync,
 	}
 	syncCmd.Flags().BoolVar(&forceFetchAll, "force-fetch-all", false, "download all selected messages again, ignoring incremental receipts")
+	syncCmd.Flags().BoolVar(&refreshFlags, "refresh-flags", false, "refresh saved IMAP flags without downloading existing message bodies")
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
 	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
 	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")
@@ -220,6 +222,7 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		sync.WithConcurrency(concurrency),
 		sync.WithMaxRetries(maxRetries),
 		sync.WithRetryDelay(retryDelayDur),
+		sync.WithRefreshFlags(refreshFlags),
 		sync.WithSince(sinceTime),
 		sync.WithUntil(untilTime),
 	)

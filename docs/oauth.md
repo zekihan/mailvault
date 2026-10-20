@@ -79,6 +79,12 @@ the file with mode `0600`, atomically replaces it when tokens rotate, and
 refuses to read a file with group or world permissions. Protect and back up
 this file as a credential; do not commit it.
 
+Google's initial login still needs a browser that can reach the printed loopback
+address. On a remote host, forward that loopback port over SSH before opening
+the authorization URL, or authorize on a trusted local machine and securely
+transfer the account-bound token file. Microsoft device login can be completed
+in a browser on another device. Subsequent token refresh runs without a browser.
+
 ```yaml
 oauth2:
   provider: google

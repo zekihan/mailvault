@@ -23,6 +23,7 @@ type SyncEngine struct {
 	dryRun        bool
 	forceFetchAll bool
 	repair        bool
+	refreshFlags  bool
 	maxRetries    int
 	retryDelay    time.Duration
 	concurrency   int
@@ -373,6 +374,12 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 		})
 	}
 
+	if e.refreshFlags {
+		ctx = plugins.WithMetadataObserver(ctx, func(msg *plugins.Message) error {
+			return e.refreshMetadata(ctx, src, tgt, msg)
+		})
+	}
+
 	// Fetch messages from source
 	msgChan, errChan := src.FetchMessages(ctx, folders, e.since, e.until)
 
@@ -398,6 +405,11 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			report("processing message")
 			errorsBefore := len(result.Errors)
 			e.syncMessage(ctx, src, tgt, msg, &result)
+			if e.refreshFlags && e.forceFetchAll && !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
+				if err := e.refreshMetadata(ctx, src, tgt, msg); err != nil {
+					result.Errors = append(result.Errors, fmt.Errorf("refresh metadata: %w", err))
+				}
+			}
 			if !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
 				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID); err != nil {
 					result.Errors = append(result.Errors, fmt.Errorf("persist incremental receipt: %w", err))
@@ -405,6 +417,9 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			}
 			report("waiting for next message")
 		}
+	}
+	if e.repair && !e.dryRun {
+		result.Errors = append(result.Errors, e.validateRepairedBackups(ctx, src, tgt)...)
 	}
 	return result
 }
@@ -557,7 +572,7 @@ func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, 
 }
 
 func backupMessageUID(msg *plugins.Message, rawHash string) string {
-	if msg.UID != "" {
+	if msg.UIDScope != "" && msg.UID != "" {
 		return msg.UID
 	}
 	return "content:" + rawHash
