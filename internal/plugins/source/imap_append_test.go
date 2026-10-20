@@ -69,15 +69,15 @@ func TestAppendRejectsRecreatedMailboxGenerationOnWire(t *testing.T) {
 	if err != nil || validity != "8" {
 		t.Fatalf("recreated mailbox generation = %q, err = %v", validity, err)
 	}
-	if err := source.AppendMessage(ctx, "Restored", &plugins.Message{Raw: []byte("message")}, "7"); err == nil {
-		t.Fatal("APPEND accepted a mailbox generation different from the restore job")
+	if err := source.AppendMessage(ctx, "Restored", &plugins.Message{Raw: []byte("message")}, "7"); err == nil || !strings.Contains(err.Error(), "UIDVALIDITY changed from 7 to 8 before APPEND") {
+		t.Fatalf("expected generation rejection before APPEND, got %v", err)
 	}
 	if appendReceived.Load() {
 		t.Fatal("APPEND was sent to the recreated mailbox")
 	}
 }
 
-func TestAppendKeepsUncertainReceiptOnGenerationChange(t *testing.T) {
+func TestAppendRejectsGenerationChangeAfterUpload(t *testing.T) {
 	for _, mode := range []string{"appenduid", "postselect"} {
 		t.Run(mode, func(t *testing.T) {
 			var appendReceived atomic.Bool
@@ -141,8 +141,8 @@ func TestAppendKeepsUncertainReceiptOnGenerationChange(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			err := source.AppendMessage(ctx, "Restored", &plugins.Message{Raw: []byte("message")}, "7")
-			if err == nil {
-				t.Fatal("APPEND accepted a changed mailbox generation")
+			if err == nil || !strings.Contains(err.Error(), "UIDVALIDITY changed during APPEND from 7 to 8") {
+				t.Fatalf("expected generation rejection after APPEND, got %v", err)
 			}
 			if !appendReceived.Load() {
 				t.Fatal("fixture did not receive APPEND")
