@@ -32,7 +32,7 @@ func TestMboxRollsBackPartialAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer target.Close()
-	original := []byte("From existing\nSubject: existing\n\nold body\n\n")
+	original := []byte("From existing\nSubject: existing\n\nold body")
 	if _, err := target.file.Write(original); err != nil {
 		t.Fatal(err)
 	}

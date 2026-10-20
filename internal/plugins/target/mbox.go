@@ -70,7 +70,7 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 
 	// Do not create either the parent directory or mailbox when disabled.
 	dir := filepath.Dir(t.path)
-	flags := os.O_WRONLY | os.O_APPEND
+	flags := os.O_RDWR | os.O_APPEND
 	if t.create {
 		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("create mbox directory: %w", err)
@@ -133,6 +133,16 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 	if !info.Mode().IsRegular() {
 		return "", errors.New("mbox must be a regular file")
 	}
+	var padding []byte
+	if info.Size() > 0 {
+		var lastByte [1]byte
+		if _, err := t.file.ReadAt(lastByte[:], info.Size()-1); err != nil {
+			return "", fmt.Errorf("read mbox boundary: %w", err)
+		}
+		if lastByte[0] != '\n' {
+			padding = []byte{'\n'}
+		}
+	}
 
 	// Escape body lines using mboxrd: prefix one '>' to each line whose
 	// existing leading '>' run is followed by "From ". Headers remain untouched.
@@ -146,7 +156,11 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 	fromLine := fmt.Sprintf("From MAILER-DAEMON %s\n", time.Now().Format(time.ANSIC))
 	record := append([]byte(fromLine), raw...)
 	record = append(record, '\n')
-	_, writeErr := t.file.Write(record)
+	writeData := append(padding, record...)
+	n, writeErr := t.file.Write(writeData)
+	if writeErr == nil && n != len(writeData) {
+		writeErr = errors.New("short write")
+	}
 	if writeErr == nil {
 		writeErr = t.file.Sync()
 	}
@@ -158,7 +172,7 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 		return "", errors.Join(fmt.Errorf("append mbox: %w", writeErr), t.broken)
 	}
 
-	t.lastLocator = fmt.Sprintf("%d:%d:%d:%d", info.Size(), len(record), len(raw), len(msg.Raw))
+	t.lastLocator = fmt.Sprintf("%d:%d:%d:%d", info.Size()+int64(len(padding)), len(record), len(raw), len(msg.Raw))
 	return t.lastLocator, nil
 }
 
