@@ -47,7 +47,11 @@ func OAuthTokenAccount(source SourceConfig) string {
 		}
 		clientID = source.OAuth2.ClientID
 	}
-	hash := sha256.Sum256([]byte(source.Host + "\x00" + source.Username + "\x00" + provider + "\x00" + tenant + "\x00" + clientID))
+	identity := source.Host + "\x00" + source.Username + "\x00" + tenant + "\x00" + clientID
+	if provider != "microsoft" {
+		identity = provider + "\x00" + identity
+	}
+	hash := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("source-%x", hash[:12])
 }
 
