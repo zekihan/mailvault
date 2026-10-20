@@ -6,14 +6,17 @@ and existing local backups. The default test backs up **Inbox only**; edit
 `deploy/proton/mailvault.yaml` to include the exact archive, sent, drafts, and
 custom folder names you want. Keep Spam and Trash out of that list.
 
-Bridge is built from Proton's v3.27.1 release commit, not a third-party binary
-image. Both images support native builds on ARM64 and AMD64. The first build
-compiles Bridge and may take several minutes.
+Bridge uses the digest-pinned `ghcr.io/zekihan/protonmailbridge:3.27.1` image,
+built from official Proton source in the
+[dockerfiles repository](https://github.com/zekihan/dockerfiles/tree/main/protonmailbridge).
+The published image supports ARM64 and AMD64 and includes the initialization
+wrapper. Mailvault is built locally.
 
 ## Build and initialize
 
 ```sh
-docker compose -f compose.proton.yaml build bridge mailvault
+docker compose -f compose.proton.yaml pull bridge
+docker compose -f compose.proton.yaml build mailvault
 docker compose -f compose.proton.yaml run --rm bridge-init
 ```
 
@@ -39,6 +42,11 @@ Then enter `exit` and let the container finish normally. The wrapper copies only
 `cert.pem` into the shared certificate volume. The private key stays in Bridge's
 private state volume. Do not interrupt the wrapper before it prints its
 certificate-copy confirmation.
+
+Existing installations can pull the image and run `up -d --wait bridge` to
+replace the local build. The same named volumes retain the login, certificate,
+state, and backups; do not repeat initialization unless reauthorization or
+certificate export is needed.
 
 ## Configure the client credentials
 

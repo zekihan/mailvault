@@ -1,15 +1,10 @@
 name: mailvault-proton
 
 x-bridge: &bridge
-  image: mailvault-proton-bridge:3.27.1
-  build:
-    context: ./deploy/proton
-    dockerfile: Dockerfile.bridge
-  entrypoint: ["bash", "/setup/bridge.sh"]
+  image: ghcr.io/zekihan/protonmailbridge:3.27.1@sha256:266811f4c5902a746b152fe14b93aaac12c25d65d26faffb6a08bceffd0026d6
   volumes:
     - bridge-state:/root
     - bridge-certs:/bridge-certs
-    - ./deploy/proton/bridge.sh:/setup/bridge.sh:ro
 
 services:
   bridge-init:

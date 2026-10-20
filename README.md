@@ -262,7 +262,7 @@ state, Maildir backups, and verified STARTTLS, see
 The `Container Release` GitHub Actions workflow publishes Mailvault for
 `linux/amd64` and `linux/arm64` to `ghcr.io/zekihan/mailvault` and
 `docker.io/<DOCKER_USERNAME>/mailvault` after the checks workflow passes.
-Bridge remains a separate, locally built image.
+Bridge uses a separate GHCR image published from the `zekihan/dockerfiles` repository.
 
 Set these GitHub repository Actions secrets before the first release:
 
