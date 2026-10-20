@@ -15,6 +15,9 @@ func NewOAuthTokenProvider(source SourceConfig) (func(context.Context) (string, 
 		return nil, nil
 	}
 	options := source.OAuth2
+	if options.ClientSecret != "" {
+		return nil, fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", source.Name)
+	}
 	provider, err := auth.NewTokenProvider(auth.Config{
 		ClientID: options.ClientID, Tenant: options.Tenant, Scopes: options.Scopes,
 		DeviceCodeURL: options.DeviceCodeURL, TokenURL: options.TokenURL,

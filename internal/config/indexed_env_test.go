@@ -52,3 +52,85 @@ func TestLoadOAuthSourceSkipsUnrelatedCredentialsAndRejectsClientSecret(t *testi
 		t.Fatalf("OAuth client secret was silently accepted: %v", err)
 	}
 }
+
+func TestIndexedEnvironmentPreservesExplicitFalseAndZero(t *testing.T) {
+	path := writeEnvironmentConfig(t)
+	t.Setenv("MAILVAULT_SOURCES_0_USE_TLS", "false")
+	t.Setenv("MAILVAULT_SOURCES_0_CONNECTION_TIMEOUT", "0s")
+	t.Setenv("MAILVAULT_SOURCES_0_READ_TIMEOUT", "0s")
+	t.Setenv("MAILVAULT_SOURCES_0_MAX_CONNECTIONS", "0")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := cfg.Sources[0]
+	if source.UseTLS || source.ConnectionTimeout != 0 || source.ReadTimeout != 0 || source.MaxConnections != 0 {
+		t.Fatalf("explicit indexed environment values were defaulted: %+v", source)
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "max_connections") {
+		t.Fatalf("invalid explicit zero max_connections did not fail validation: %v", err)
+	}
+}
+
+func TestIndexedEnvironmentRejectsMalformedTypedValues(t *testing.T) {
+	for _, test := range []struct{ key, value string }{
+		{"USE_TLS", "perhaps"}, {"PORT", "nine"}, {"CONNECTION_TIMEOUT", "soon"}, {"MAX_CONNECTIONS", "many"},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			t.Setenv("MAILVAULT_SOURCES_0_"+test.key, test.value)
+			if _, err := Load(writeEnvironmentConfig(t)); err == nil {
+				t.Fatalf("malformed %s override was accepted", test.key)
+			}
+		})
+	}
+}
+
+func TestKeyringReferenceUsesInjectedLookup(t *testing.T) {
+	var gotService, gotAccount string
+	value, err := resolveCredentialRefAtWithKeyring("keyring:mailvault:account:one", t.TempDir(), func(service, account string) (string, error) {
+		gotService, gotAccount = service, account
+		return "synthetic-secret", nil
+	})
+	if err != nil || value != "synthetic-secret" || gotService != "mailvault" || gotAccount != "account:one" {
+		t.Fatalf("injected lookup returned value=%q service=%q account=%q err=%v", value, gotService, gotAccount, err)
+	}
+}
+
+func TestNewOAuthTokenProviderRejectsClientSecret(t *testing.T) {
+	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", OAuth2: &OAuth2Config{ClientID: "public-client", ClientSecret: "unused-secret"}})
+	if err == nil || !strings.Contains(err.Error(), "client_secret is not supported") {
+		t.Fatalf("provider silently accepted an OAuth client secret: %v", err)
+	}
+}
+
+func TestOAuthTokenAccountIsolatesClientAndTenant(t *testing.T) {
+	source := SourceConfig{Host: "mail.example.invalid", Username: "user@example.invalid", OAuth2: &OAuth2Config{ClientID: "client-one", Tenant: "consumers"}}
+	base := OAuthTokenAccount(source)
+	if base != OAuthTokenAccount(source) {
+		t.Fatal("same mailbox did not receive a stable account key")
+	}
+	changedClient := source
+	changedClient.OAuth2 = &OAuth2Config{ClientID: "client-two", Tenant: "consumers"}
+	changedTenant := source
+	changedTenant.OAuth2 = &OAuth2Config{ClientID: "client-one", Tenant: "organizations"}
+	if base == OAuthTokenAccount(changedClient) || base == OAuthTokenAccount(changedTenant) {
+		t.Fatal("different client or tenant reused a keyring account")
+	}
+	source.OAuth2.TokenKey = "explicit-account"
+	if got := OAuthTokenAccount(source); got != "explicit-account" {
+		t.Fatalf("explicit token key = %q", got)
+	}
+}
+
+func writeEnvironmentConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := "sources:\n" +
+		"  - name: account\n    type: imap\n    host: mail.example.invalid\n    port: 993\n    username: user@example.invalid\n    password_ref: synthetic-password\n    max_connections: 1\n" +
+		"targets:\n  - name: local\n    type: maildir\n    config: {}\n" +
+		"pairs:\n  - source: account\n    targets: [local]\n"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

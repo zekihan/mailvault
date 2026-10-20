@@ -196,7 +196,7 @@ func (c Config) validate() error {
 	}
 	for _, endpoint := range []string{c.DeviceCodeURL, c.TokenURL} {
 		u, err := url.Parse(endpoint)
-		if err != nil || (!httpsURL(u.Scheme) && !httpTestURL(u.Scheme, u.Hostname())) || u.Host == "" || u.User != nil {
+		if err != nil || (!httpsURL(u.Scheme) && !httpTestURL(u.Scheme, u.Hostname())) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return errors.New("OAuth2 endpoints must use HTTPS (HTTP is allowed only for localhost tests)")
 		}
 	}
@@ -246,7 +246,7 @@ func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, err
 		return deviceCodeResponse{}, errors.New("incomplete device authorization response")
 	}
 	verificationURI, err := url.Parse(result.VerificationURI)
-	if err != nil || verificationURI.Scheme != "https" || verificationURI.Host == "" || verificationURI.User != nil || strings.ContainsAny(result.UserCode+result.VerificationURI, "\x00\r\n") || !deviceCodePattern.MatchString(result.UserCode) {
+	if err != nil || verificationURI.Scheme != "https" || verificationURI.Host == "" || verificationURI.User != nil || containsControl(result.UserCode+result.VerificationURI) || !deviceCodePattern.MatchString(result.UserCode) {
 		return deviceCodeResponse{}, errors.New("invalid device authorization instructions")
 	}
 	return result, nil
@@ -294,4 +294,13 @@ func httpsURL(scheme string) bool { return scheme == "https" }
 
 func httpTestURL(scheme, hostname string) bool {
 	return scheme == "http" && (hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1")
+}
+
+func containsControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }

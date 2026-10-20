@@ -233,6 +233,10 @@ func resolveCredentialRef(ref string) (string, error) {
 }
 
 func resolveCredentialRefAt(ref, configDir string) (string, error) {
+	return resolveCredentialRefAtWithKeyring(ref, configDir, keyring.Get)
+}
+
+func resolveCredentialRefAtWithKeyring(ref, configDir string, lookup func(service, account string) (string, error)) (string, error) {
 	if ref == "" {
 		return "", nil
 	}
@@ -264,7 +268,10 @@ func resolveCredentialRefAt(ref, configDir string) (string, error) {
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return "", fmt.Errorf("keyring reference must be keyring:service:account")
 		}
-		return keyring.Get(parts[0], parts[1])
+		if lookup == nil {
+			return "", fmt.Errorf("keyring lookup is unavailable")
+		}
+		return lookup(parts[0], parts[1])
 
 	default:
 		return ref, nil // Plain value, return as-is
