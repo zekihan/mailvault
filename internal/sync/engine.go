@@ -248,6 +248,9 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 		}
 	}
 	e.deliveryLocks = sync.Map{}
+	e.repairCacheMu.Lock()
+	e.repairCache = nil
+	e.repairCacheMu.Unlock()
 
 	// Initialize all targets
 	for _, target := range e.targets {

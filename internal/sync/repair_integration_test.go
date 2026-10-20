@@ -97,6 +97,70 @@ func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
 	}
 }
 
+func TestRepairCacheRefreshesAcrossRuns(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	raw := []byte("Subject: original\r\n\r\ncomplete message\r\n")
+	source := &fixtureSource{name: "account", messages: []*plugins.Message{{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}}}
+	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"local"}}}}
+	registry := plugins.NewRegistry()
+	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
+	registry.RegisterTarget("maildir", target.NewMaildirTarget)
+	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(wantWritten int) {
+		t.Helper()
+		stats, err := engine.Run(ctx)
+		if err != nil || stats.TotalErrors != 0 || stats.TotalWritten != wantWritten {
+			t.Fatalf("repair run: %+v, %v; want %d writes", stats, err, wantWritten)
+		}
+	}
+	maildir, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maildir.(interface{ SetName(string) }).SetName("local")
+	locators := func() []string {
+		t.Helper()
+		entries, err := store.BackupMessages(ctx, plugins.TargetStateKey(maildir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(entries))
+		for i, entry := range entries {
+			out[i] = entry.Locator
+		}
+		return out
+	}
+
+	run(1)
+	original := locators()[0]
+	originalPath := filepath.Join(root, filepath.FromSlash(original))
+	if err := os.WriteFile(originalPath, []byte("corrupt original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(1)
+	entries := locators()
+	if len(entries) != 1 || entries[0] == original {
+		t.Fatalf("manifest after repair = %v, original locator %q", entries, original)
+	}
+	if data, err := os.ReadFile(originalPath); err != nil || string(data) != "corrupt original" {
+		t.Fatalf("corrupt original changed: %q, %v", data, err)
+	}
+	replacementPath := filepath.Join(root, filepath.FromSlash(entries[0]))
+	if data, err := os.ReadFile(replacementPath); err != nil || string(data) != string(raw) {
+		t.Fatalf("replacement data = %q, %v", data, err)
+	}
+	run(0)
+}
+
 func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
 	msg := &plugins.Message{UID: "sequence:1"}
 	first := backupMessageUID(msg, "first-hash")
