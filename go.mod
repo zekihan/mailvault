@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.4.16
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
+	github.com/aws/smithy-go v1.28.5
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/knadh/go-pop3 v1.0.2
@@ -33,7 +34,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
-	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/emersion/go-message v0.18.2 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
