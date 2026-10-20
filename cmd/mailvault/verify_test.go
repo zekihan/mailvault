@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,5 +94,64 @@ func TestVerifyDoesNotResolveMailboxCredentials(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 	if err := cmd.RunE(cmd, []string{"local"}); err != nil {
 		t.Fatalf("offline verify required source credentials: %v", err)
+	}
+}
+
+type singleBackupReader struct {
+	entry plugins.BackupMessage
+	raw   []byte
+}
+
+func (r singleBackupReader) ListBackupMessages(context.Context) ([]plugins.BackupMessage, error) {
+	return []plugins.BackupMessage{r.entry}, nil
+}
+
+func (r singleBackupReader) ReadBackupMessage(context.Context, string) (*plugins.Message, error) {
+	return &plugins.Message{Raw: r.raw}, nil
+}
+
+func TestVerifyDoesNotDoubleCountManifestedLegacyReceiptAfterCleanup(t *testing.T) {
+	configureCLI(t)
+	raw := []byte("Subject: fixture\n\nbody\n")
+	hash := dedup.ComputeContentHash(raw)
+	store, err := state.NewStore(filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSource(context.Background(), "src", "imap", "host", "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkMessageFetched(context.Background(), "src", "INBOX", "1", "<id>", hash, int64(len(raw)), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDelivered(context.Background(), "target", "hash:"+hash, "src", "INBOX", "1"); err != nil {
+		t.Fatal(err)
+	}
+	entry := plugins.BackupMessage{Source: "src", Target: "target", Scope: "scope", Folder: "INBOX", UID: "1", Locator: "object-1", RawSHA256: hash}
+	if err := store.RecordBackupMessage(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", filepath.Join(stateDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE messages SET fetched_at=datetime('now','-48 hours')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DELETE FROM messages WHERE fetched_at < datetime('now','-24 hours')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := verifyTarget(context.Background(), "target", singleBackupReader{entry: entry, raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Verified != 1 || report.Unverifiable != 0 {
+		t.Fatalf("report = %+v; want one verified object and no duplicate legacy finding", report)
 	}
 }

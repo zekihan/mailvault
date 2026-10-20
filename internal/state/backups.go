@@ -103,10 +103,30 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')`).Scan(&messages); err != nil {
 		return nil, err
 	}
-	if !deliveries || !messages {
+	if !deliveries {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT d.source_name,d.target_name,d.folder,d.uid,COALESCE(m.content_hash,'') FROM deliveries d LEFT JOIN messages m ON m.source_name=d.source_name AND m.folder=d.folder AND m.uid=d.uid WHERE d.target_name=?`, target)
+	identityHash := `CASE WHEN d.identity LIKE 'hash:%' THEN substr(d.identity,6) ELSE '' END`
+	hashExpression := identityHash
+	joinMessages := ""
+	if messages {
+		joinMessages = `LEFT JOIN messages m ON m.source_name=d.source_name AND m.folder=d.folder AND m.uid=d.uid`
+		hashExpression = `COALESCE(m.content_hash, ` + identityHash + `)`
+	}
+	excludeManifest := ""
+	var manifestExists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&manifestExists); err != nil {
+		return nil, err
+	}
+	if manifestExists {
+		excludeManifest = `AND NOT EXISTS (
+			SELECT 1 FROM backup_messages b
+			WHERE b.source_name=d.source_name AND b.target_name=d.target_name AND b.folder=d.folder
+			AND (b.uid=d.uid OR (d.uid='' AND b.raw_sha256=` + hashExpression + `))
+		)`
+	}
+	query := `SELECT d.source_name,d.target_name,d.folder,d.uid,` + hashExpression + ` FROM deliveries d ` + joinMessages + ` WHERE d.target_name=? ` + excludeManifest
+	rows, err := s.db.QueryContext(ctx, query, target)
 	if err != nil {
 		return nil, err
 	}
@@ -117,9 +137,7 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 		if err := rows.Scan(&item.Source, &item.Target, &item.Folder, &item.UID, &item.RawSHA256); err != nil {
 			return nil, err
 		}
-		if item.RawSHA256 != "" {
-			result = append(result, item)
-		}
+		result = append(result, item)
 	}
 	return result, rows.Err()
 }
