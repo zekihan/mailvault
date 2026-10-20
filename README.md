@@ -256,3 +256,27 @@ missing destination directories/files; it does not require a state database.
 For an isolated local Proton test with persistent Bridge credentials, Mailvault
 state, Maildir backups, and verified STARTTLS, see
 [the Proton Compose guide](docs/proton-compose.md).
+
+## Container publishing
+
+The `Container Release` GitHub Actions workflow publishes Mailvault for
+`linux/amd64` and `linux/arm64` to `ghcr.io/zekihan/mailvault` and
+`docker.io/<DOCKER_USERNAME>/mailvault` after the checks workflow passes.
+Bridge remains a separate, locally built image.
+
+Set these GitHub repository Actions secrets before the first release:
+
+- `DOCKER_USERNAME`: Docker Hub account name owning the `mailvault` repository.
+- `DOCKER_PASSWORD`: Docker Hub access token with write permission for that repository.
+
+Create the Docker Hub repository first. GHCR authentication uses the automatic
+`GITHUB_TOKEN` with package write permission. Set the GHCR package visibility to
+public after its first publication if anonymous pulls are desired.
+
+Pushing a semantic version tag such as `v1.2.3` publishes `1.2.3`, `1.2`, `latest`,
+and `sha-<full commit SHA>` to both registries. Prerelease tags such as
+`v1.3.0-rc.1` do not update `latest`. Manual workflow runs on a branch publish only
+the commit SHA tag; they do not replace release tags. The image's `version`
+command includes the build version.
+
+The workflow follows Docker's [multiple-registry publishing guide](https://docs.docker.com/build/ci/github-actions/push-multi-registries/).
