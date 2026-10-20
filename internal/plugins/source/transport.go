@@ -15,6 +15,7 @@ type deadlineConn struct {
 	mu      sync.Mutex
 	timeout time.Duration
 	active  bool
+	lastErr error
 }
 
 func (c *deadlineConn) SetReadDeadline(deadline time.Time) error {
@@ -31,19 +32,33 @@ func (c *deadlineConn) SetReadDeadline(deadline time.Time) error {
 
 func (c *deadlineConn) Read(p []byte) (int, error) {
 	if err := c.SetReadDeadline(time.Time{}); err != nil {
+		c.recordError(err)
 		return 0, err
 	}
-	return c.Conn.Read(p)
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.recordError(err)
+	}
+	return n, err
 }
 
 func (c *deadlineConn) Write(p []byte) (int, error) {
 	if c.timeout > 0 {
 		if err := c.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+			c.recordError(err)
 			return 0, err
 		}
 	}
-	return c.Conn.Write(p)
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.recordError(err)
+	}
+	return n, err
 }
+
+func (c *deadlineConn) recordError(err error) { c.mu.Lock(); c.lastErr = err; c.mu.Unlock() }
+
+func (c *deadlineConn) transportError() error { c.mu.Lock(); defer c.mu.Unlock(); return c.lastErr }
 
 // beginIO must be paired with its returned cleanup before the source lock is
 // released. Closing the transport on cancellation interrupts TLS handshakes as
@@ -51,6 +66,7 @@ func (c *deadlineConn) Write(p []byte) (int, error) {
 func (c *deadlineConn) beginIO(ctx context.Context) func() {
 	c.mu.Lock()
 	c.active = true
+	c.lastErr = nil
 	if c.timeout > 0 {
 		_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
 	}

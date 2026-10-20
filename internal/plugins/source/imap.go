@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
@@ -225,6 +226,7 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 					return err
 				}
 				if err := s.fetchFolder(ctx, folder, output, since, until, sessions); err != nil {
+					err = joinTransportError(err, s.wire)
 					_ = s.client.Close()
 					s.connected = false
 					return fmt.Errorf("fetch folder %q: %w", folder, err)
@@ -354,6 +356,10 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 				selected, err := session.client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
 				ioDone()
 				if err != nil {
+					if workerCtx.Err() != nil {
+						return
+					}
+					err = joinTransportError(err, session.wire)
 					select {
 					case errCh <- fmt.Errorf("select %q for fetch: %w", folder, err):
 					default:
@@ -378,6 +384,10 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 				})
 				ioDone()
 				if err != nil {
+					if workerCtx.Err() != nil {
+						return
+					}
+					err = joinTransportError(err, session.wire)
 					select {
 					case errCh <- err:
 					default:
@@ -447,7 +457,7 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 		}
 
 		// Collect message data into buffer
-		buf, err := msg.Collect()
+		buf, err := collectFetchMessage(msg)
 		if err != nil {
 			return fmt.Errorf("collect message: %w", err)
 		}
@@ -508,6 +518,59 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 	}
 
 	return nil
+}
+
+func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMessageBuffer, error) {
+	buf := &imapclient.FetchMessageBuffer{SeqNum: data.SeqNum}
+	for item := data.Next(); item != nil; item = data.Next() {
+		switch item := item.(type) {
+		case imapclient.FetchItemDataBodySection:
+			var body []byte
+			if item.Literal != nil {
+				want := item.Literal.Size()
+				var err error
+				body, err = io.ReadAll(item.Literal)
+				if err != nil {
+					return nil, err
+				}
+				if int64(len(body)) != want {
+					return nil, io.ErrUnexpectedEOF
+				}
+			}
+			buf.BodySection = append(buf.BodySection, imapclient.FetchBodySectionBuffer{Section: item.Section, Bytes: body})
+		case imapclient.FetchItemDataFlags:
+			buf.Flags = item.Flags
+		case imapclient.FetchItemDataEnvelope:
+			buf.Envelope = item.Envelope
+		case imapclient.FetchItemDataInternalDate:
+			buf.InternalDate = item.Time
+		case imapclient.FetchItemDataUID:
+			buf.UID = item.UID
+		case imapclient.FetchItemDataRFC822Size:
+			buf.RFC822Size = item.Size
+		case imapclient.FetchItemDataModSeq:
+			buf.ModSeq = item.ModSeq
+		case imapclient.FetchItemDataBodyStructure:
+			buf.BodyStructure = item.BodyStructure
+		case imapclient.FetchItemDataBinarySection:
+			var body []byte
+			if item.Literal != nil {
+				want := item.Literal.Size()
+				var err error
+				body, err = io.ReadAll(item.Literal)
+				if err != nil {
+					return nil, err
+				}
+				if int64(len(body)) != want {
+					return nil, io.ErrUnexpectedEOF
+				}
+			}
+			buf.BinarySection = append(buf.BinarySection, imapclient.FetchBinarySectionBuffer{Section: item.Section, Bytes: body})
+		case imapclient.FetchItemDataBinarySectionSize:
+			buf.BinarySectionSize = append(buf.BinarySectionSize, item)
+		}
+	}
+	return buf, nil
 }
 
 func (s *IMAPSource) Close() error {

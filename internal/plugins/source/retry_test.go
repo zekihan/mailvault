@@ -49,6 +49,13 @@ func TestRetryFetchDoesNotReplayUnstableIdentity(t *testing.T) {
 	}
 }
 
+func TestServerRejectionIsNotMarkedAsTransportFailure(t *testing.T) {
+	err := joinTransportError(errors.New("IMAP server rejected UID FETCH"), &deadlineConn{})
+	if transientSourceError(err) {
+		t.Fatalf("server rejection classified as transient transport failure: %v", err)
+	}
+}
+
 func TestRetryFetchCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	attempts := 0

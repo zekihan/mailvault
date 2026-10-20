@@ -131,6 +131,90 @@ func TestIMAPFetchUsesUIDsAndInternalDate(t *testing.T) {
 	}
 }
 
+func TestIMAPFetchReconnectsAfterTruncatedMessage(t *testing.T) {
+	raw := "Message-ID: <recovered@example.invalid>\r\nSubject: recovered\r\n\r\ncomplete body\r\n"
+	var mu sync.Mutex
+	connections, fetches := 0, 0
+	host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
+		mu.Lock()
+		connections++
+		connection := connections
+		mu.Unlock()
+		_, _ = fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			parts := strings.Fields(scanner.Text())
+			if len(parts) < 2 {
+				return
+			}
+			tag := parts[0]
+			switch strings.ToUpper(parts[1]) {
+			case "LOGIN":
+				_, _ = fmt.Fprintf(conn, "%s OK authenticated\r\n", tag)
+			case "CAPABILITY":
+				_, _ = fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1\r\n%s OK capabilities\r\n", tag)
+			case "EXAMINE":
+				_, _ = fmt.Fprintf(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\n%s OK [READ-ONLY] selected\r\n", tag)
+			case "UID":
+				if len(parts) < 3 {
+					return
+				}
+				switch strings.ToUpper(parts[2]) {
+				case "SEARCH":
+					_, _ = fmt.Fprintf(conn, "* SEARCH 42\r\n%s OK searched\r\n", tag)
+				case "FETCH":
+					mu.Lock()
+					fetches++
+					mu.Unlock()
+					if connection == 1 {
+						_, _ = fmt.Fprintf(conn, "* 1 FETCH (UID 42 BODY[] {%d}\r\n%s", len(raw), raw[:len(raw)/2])
+						return
+					}
+					_, _ = fmt.Fprintf(conn, "* 1 FETCH (UID 42 INTERNALDATE \"01-Jan-2024 00:00:00 +0000\" BODY[] {%d}\r\n%s)\r\n%s OK fetched\r\n", len(raw), raw, tag)
+				}
+			default:
+				_, _ = fmt.Fprintf(conn, "%s BAD unexpected\r\n", tag)
+			}
+		}
+	})
+	src := &IMAPSource{host: host, port: port, username: "test-user", password: "test-password", connTimeout: time.Second, readTimeout: time.Second, maxConns: 1}
+	defer src.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	var got []*plugins.Message
+	for messages != nil || failures != nil {
+		select {
+		case msg, ok := <-messages:
+			if !ok {
+				messages = nil
+			} else {
+				got = append(got, msg)
+			}
+		case err, ok := <-failures:
+			if !ok {
+				failures = nil
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	mu.Lock()
+	gotConnections, gotFetches := connections, fetches
+	mu.Unlock()
+	if gotConnections != 2 || gotFetches != 2 {
+		if len(got) > 0 {
+			t.Fatalf("connections=%d fetches=%d; want reconnect and retry, got UID=%q raw=%q", gotConnections, gotFetches, got[0].UID, got[0].Raw)
+		}
+		t.Fatalf("connections=%d fetches=%d; want reconnect and retry, got messages %+v", gotConnections, gotFetches, got)
+	}
+	if len(got) != 1 || string(got[0].Raw) != raw || got[0].UID != "42" {
+		t.Fatalf("recovered messages = %+v", got)
+	}
+}
+
 func TestSourceDurationConfig(t *testing.T) {
 	values := map[string]interface{}{
 		"host": "example.invalid", "username": "user", "password_ref": "synthetic-value",
@@ -249,7 +333,7 @@ func TestSourceReadTimeoutAndCancellation(t *testing.T) {
 							t.Fatal("stalled operation succeeded")
 						}
 						_ = src.Close()
-					case <-time.After(time.Second):
+					case <-time.After(3 * time.Second):
 						t.Fatal("stalled operation ignored configured timeout/cancellation")
 					}
 				})

@@ -15,6 +15,13 @@ func transientSourceError(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport)
 }
 
+func joinTransportError(err error, wire *deadlineConn) error {
+	if transportErr := wire.transportError(); transportErr != nil {
+		return errors.Join(err, transportErr)
+	}
+	return err
+}
+
 // Retry transport failures without re-emitting stable identities already streamed.
 func retryFetch(ctx context.Context, out chan<- *plugins.Message, fetch func(context.Context, chan<- *plugins.Message) error) error {
 	type identity struct{ scope, folder, uid string }
