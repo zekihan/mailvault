@@ -19,6 +19,8 @@ const (
 const (
 	TargetConfigPath             = "path"
 	TargetConfigCreateIfMissing  = "create_if_missing"
+	TargetConfigPreserveFolders  = "preserve_folders"
+	TargetConfigPreserveFlags    = "preserve_flags"
 	TargetConfigBucket           = "bucket"
 	TargetConfigRegion           = "region"
 	TargetConfigEndpoint         = "endpoint"

@@ -27,7 +27,9 @@ successful delivery receipt for the current target. Receipts include the source,
 account/server identity, folder, and UIDVALIDITY, so new targets, changed accounts,
 and reset mailboxes are scanned safely. Failed deliveries remain eligible for retry.
 Newly labeled or moved messages may have new folder UIDs; content deduplication
-still prevents writing identical bytes again.
+prevents writing identical bytes again by default. Maildir `preserve_folders: true`
+scopes delivery identities by folder so duplicate content is retained in each
+preserved folder.
 
 ```sh
 go run ./cmd/mailvault --config ./config.yaml sync
@@ -71,6 +73,17 @@ writer is running. Waiting Go callers can cancel through their context.
 Dry runs do not acquire or create writer locks. Separate state databases do not
 coordinate deliveries, even if they point at the same backup destination.
 Do not hard-link SQLite state databases under different filenames.
+
+### pruning old metadata
+
+`cleanup-state` previews fetched-message metadata older than a requested age.
+Apply pruning explicitly with `--apply`; delivery and incremental UID receipts
+are retained in either mode.
+
+```sh
+mailvault cleanup-state --older-than 720h
+mailvault cleanup-state --older-than 720h --apply
+```
 
 ## authentication and storage behavior
 
@@ -119,6 +132,20 @@ Do not hard-link SQLite state databases under different filenames.
   Failed publication sync attempts are rolled back and reported as failures. Directory
   sync must be supported by the platform/filesystem; otherwise Maildir fails
   closed. Tests cover sync ordering and injected failures, not physical power loss.
+
+### Maildir folder and flag preservation
+
+Maildir targets keep the legacy flat layout when `preserve_folders` and
+`preserve_flags` are omitted or false. New configurations can enable both; the
+example configuration does so explicitly. Preserved folder labels are encoded
+into safe directory components under `.folders`, with `/` retaining hierarchy.
+The initial IMAP system flags map to Maildir filename flags (`Seen` to `S`,
+`Answered` to `R`, `Flagged` to `F`, `Deleted` to `T`, and `Draft` to `D`). This
+captures flags when a message is archived; it does not mirror later flag changes
+or deletions on the source server. Flagged messages are published in `cur/` as
+required by Maildir. Only the five standard IMAP system flags are mapped; custom
+keyword flags are ignored. Windows cannot represent the standard `:2,` filename
+suffix, so set `preserve_flags: false` on Windows.
 
 ### S3 operation limits
 

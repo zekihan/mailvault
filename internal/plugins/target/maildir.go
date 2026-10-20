@@ -2,10 +2,13 @@ package target
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -15,18 +18,31 @@ import (
 
 // MaildirTarget implements the Target interface for Maildir format.
 type MaildirTarget struct {
-	name       string
-	path       string
-	create     bool
-	mu         sync.Mutex
-	removeTemp func(string) error
-	link       func(string, string) error
-	syncDir    func(string) error
+	name            string
+	path            string
+	create          bool
+	preserveFolders bool
+	preserveFlags   bool
+	mu              sync.Mutex
+	removeTemp      func(string) error
+	link            func(string, string) error
+	syncDir         func(string) error
 }
 
 func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
+	preserveFolders, err := config.ParseBool(configMap, config.TargetConfigPreserveFolders, false)
+	if err != nil {
+		return nil, fmt.Errorf("preserve_folders: %w", err)
+	}
+	preserveFlags, err := config.ParseBool(configMap, config.TargetConfigPreserveFlags, false)
+	if err != nil {
+		return nil, fmt.Errorf("preserve_flags: %w", err)
+	}
+	if preserveFlags && runtime.GOOS == "windows" {
+		return nil, errors.New("maildir flag preservation requires ':' in filenames, which Windows does not support; set preserve_flags: false")
+	}
 
 	if path == "" {
 		return nil, errors.New("path is required")
@@ -39,11 +55,13 @@ func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) 
 	}
 
 	return &MaildirTarget{
-		name:       "maildir:" + path, // Will be overridden by registry
-		path:       path,
-		create:     create,
-		removeTemp: os.Remove,
-		link:       os.Link,
+		name:            "maildir:" + path, // Will be overridden by registry
+		path:            path,
+		create:          create,
+		preserveFolders: preserveFolders,
+		preserveFlags:   preserveFlags,
+		removeTemp:      os.Remove,
+		link:            os.Link,
 	}, nil
 }
 
@@ -105,9 +123,24 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	if link == nil {
 		link = os.Link
 	}
+	messagePath, err := t.messagePath(msg.Folder)
+	if err != nil {
+		return err
+	}
+	if messagePath != t.path {
+		if err := t.ensureMaildir(messagePath); err != nil {
+			return fmt.Errorf("create folder maildir: %w", err)
+		}
+	}
+	flagSuffix := t.maildirFlags(msg.Flags)
+	newDirName := "new"
+	if flagSuffix != "" {
+		newDirName = "cur"
+	}
+	newDir := filepath.Join(messagePath, newDirName)
 	// CreateTemp reserves the name exclusively, even across processes and when
 	// the clock does not advance. Keep mail private with its default 0600 mode.
-	file, err := os.CreateTemp(filepath.Join(t.path, "tmp"), "mailvault-*")
+	file, err := os.CreateTemp(filepath.Join(messagePath, "tmp"), "mailvault-*")
 	if err != nil {
 		return fmt.Errorf("create tmp message: %w", err)
 	}
@@ -132,8 +165,7 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	}
 	// A hard link atomically publishes the complete message without replacing
 	// an existing new/ entry; Rename would silently overwrite on collision.
-	newDir := filepath.Join(t.path, "new")
-	newPath := filepath.Join(newDir, filepath.Base(tmpPath))
+	newPath := filepath.Join(newDir, filepath.Base(tmpPath)+flagSuffix)
 	if err := link(tmpPath, newPath); err != nil {
 		return fmt.Errorf("publish maildir message: %w", err)
 	}
@@ -141,6 +173,105 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 		return errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(newPath, newDir))
 	}
 	return nil
+}
+
+// DeliveryIdentity scopes content deduplication to a source folder when folder
+// preservation is enabled. Targets without this method retain their old policy.
+func (t *MaildirTarget) DeliveryIdentity(msg *plugins.Message, identity string) string {
+	if !t.preserveFolders || msg == nil {
+		return identity
+	}
+	return identity + "\x00folder:" + msg.Folder
+}
+
+// ReceiptScope separates incremental receipts when preservation settings change.
+func (t *MaildirTarget) ReceiptScope() string {
+	if !t.preserveFolders && !t.preserveFlags {
+		return ""
+	}
+	return fmt.Sprintf("maildir-preserve-v1:folders=%t:flags=%t", t.preserveFolders, t.preserveFlags)
+}
+
+func (t *MaildirTarget) messagePath(folder string) (string, error) {
+	if !t.preserveFolders || folder == "" {
+		return t.path, nil
+	}
+	parts := strings.Split(folder, "/")
+	path := filepath.Join(t.path, ".folders")
+	for _, part := range parts {
+		encoded := base64.RawURLEncoding.EncodeToString([]byte(part))
+		if encoded == "" {
+			encoded = "~"
+		}
+		if len(encoded) > 240 {
+			return "", fmt.Errorf("folder component is too long to encode safely")
+		}
+		path = filepath.Join(path, encoded)
+	}
+	return path, nil
+}
+
+func (t *MaildirTarget) ensureMaildir(path string) error {
+	dirs := []string{path, filepath.Join(path, "cur"), filepath.Join(path, "new"), filepath.Join(path, "tmp")}
+	if !t.create {
+		for _, dir := range dirs {
+			info, err := os.Stat(dir)
+			if err != nil {
+				return fmt.Errorf("existing maildir %q: %w", dir, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("maildir path %q is not a directory", dir)
+			}
+		}
+		return nil
+	}
+	var created []string
+	for _, dir := range dirs {
+		owned, err := mkdirMaildirPath(dir)
+		created = append(created, owned...)
+		if err != nil {
+			return errors.Join(fmt.Errorf("create maildir %q: %w", dir, err), removeOwnedMaildirDirs(created))
+		}
+	}
+	if err := t.syncStructure(created); err != nil {
+		return errors.Join(err, removeOwnedMaildirDirs(created))
+	}
+	return nil
+}
+
+func (t *MaildirTarget) maildirFlags(flags []string) string {
+	if !t.preserveFlags {
+		return ""
+	}
+	letters := make(map[rune]bool)
+	for _, flag := range flags {
+		switch strings.ToLower(flag) {
+		case "\\seen", "seen":
+			letters['S'] = true
+		case "\\answered", "answered":
+			letters['R'] = true
+		case "\\flagged", "flagged":
+			letters['F'] = true
+		case "\\deleted", "deleted":
+			letters['T'] = true
+		case "\\draft", "draft":
+			letters['D'] = true
+		}
+	}
+	if len(letters) == 0 {
+		return ""
+	}
+	ordered := make([]rune, 0, len(letters))
+	for letter := range letters {
+		ordered = append(ordered, letter)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	var out strings.Builder
+	out.WriteString(":2,")
+	for _, letter := range ordered {
+		out.WriteRune(letter)
+	}
+	return out.String()
 }
 
 func (t *MaildirTarget) Close() error {

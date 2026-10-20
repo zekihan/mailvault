@@ -32,6 +32,8 @@ targets:
     config:
       path: "~/mail/backup"
       create_if_missing: true
+      preserve_folders: true
+      preserve_flags: true
 
   - name: local_mbox
     type: mbox
