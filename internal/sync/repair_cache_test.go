@@ -36,6 +36,12 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 		return sources[values["name"].(string)], nil
 	})
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
+	stateTarget, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateTarget.(interface{ SetName(string) }).SetName("local")
+	stateKey := plugins.TargetStateKey(stateTarget)
 	run := func(options ...SyncOption) *SyncStats {
 		t.Helper()
 		engine, err := NewSyncEngine(cfg, store, registry, options...)
@@ -51,7 +57,7 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	if stats := run(); stats.TotalErrors != 0 || stats.TotalWritten != 1 {
 		t.Fatalf("initial sync: %+v", stats)
 	}
-	entries, err := store.BackupMessages(ctx, "local")
+	entries, err := store.BackupMessages(ctx, stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator != entries[1].Locator {
 		t.Fatalf("initial aliases: %+v, %v", entries, err)
 	}
@@ -64,7 +70,7 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	if stats.TotalErrors != 0 || stats.TotalWritten != 1 {
 		t.Fatalf("repair aliases: %+v", stats)
 	}
-	entries, err = store.BackupMessages(ctx, "local")
+	entries, err = store.BackupMessages(ctx, stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator != entries[1].Locator || entries[0].Locator == originalLocator {
 		t.Fatalf("repaired aliases: %+v, %v", entries, err)
 	}
@@ -85,7 +91,7 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	if err != nil || len(physical) != 2 {
 		t.Fatalf("physical Maildir objects = %d, %v; want damaged original and one replacement", len(physical), err)
 	}
-	superseded, err := store.SupersededBackupObjects(ctx, "local")
+	superseded, err := store.SupersededBackupObjects(ctx, stateKey)
 	if err != nil || !superseded[originalLocator] {
 		t.Fatalf("superseded original = %#v, %v", superseded, err)
 	}
@@ -230,6 +236,12 @@ func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
 	registry := plugins.NewRegistry()
 	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
+	stateTarget, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateTarget.(interface{ SetName(string) }).SetName("local")
+	stateKey := plugins.TargetStateKey(stateTarget)
 	run := func(options ...SyncOption) *SyncStats {
 		t.Helper()
 		engine, err := NewSyncEngine(cfg, store, registry, options...)
@@ -245,7 +257,7 @@ func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
 	if stats := run(); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
 		t.Fatalf("initial sync: %+v", stats)
 	}
-	entries, err := store.BackupMessages(ctx, "local")
+	entries, err := store.BackupMessages(ctx, stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator == entries[1].Locator {
 		t.Fatalf("folder manifests: %+v, %v", entries, err)
 	}
@@ -258,7 +270,7 @@ func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
 	if stats := run(WithRepair(true)); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
 		t.Fatalf("repair folders: %+v", stats)
 	}
-	entries, err = store.BackupMessages(ctx, "local")
+	entries, err = store.BackupMessages(ctx, stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator == entries[1].Locator {
 		t.Fatalf("repaired folder manifests: %+v, %v", entries, err)
 	}
