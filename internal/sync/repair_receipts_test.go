@@ -39,7 +39,7 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			store := openReceiptTestStore(t, statePath)
+			store := openReceiptTestStore(t, filepath.Join(t.TempDir(), "fresh-state.db"))
 			stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
 			if stats.TotalWritten != 0 || stats.TotalSkipped != 1 || stats.TotalErrors != 0 {
 				t.Fatalf("adoption stats: %+v", stats)
@@ -104,13 +104,25 @@ func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	deleteRepairReceipts(t, statePath)
-	addDeliveryFailureTrigger(t, statePath)
-
-	store := openReceiptTestStore(t, statePath)
-	t.Cleanup(func() { _ = store.Close() })
-	stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
-	if stats.TotalErrors == 0 || stats.TotalSkipped != 0 || stats.TotalWritten != 0 {
-		t.Fatalf("failed receipt was reported as successful adoption: %+v", stats)
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "healthy-manifest", path: statePath},
+		{name: "hash-scan", path: filepath.Join(t.TempDir(), "fresh-state.db")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setupStore := openReceiptTestStore(t, test.path)
+			if err := setupStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			addDeliveryFailureTrigger(t, test.path)
+			store := openReceiptTestStore(t, test.path)
+			stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
+			if stats.TotalErrors == 0 || stats.TotalSkipped != 0 || stats.TotalWritten != 0 {
+				t.Fatalf("failed receipt was reported as successful adoption: %+v", stats)
+			}
+		})
 	}
 }
 
