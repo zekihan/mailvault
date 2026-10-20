@@ -62,6 +62,18 @@ excluded on reconnect. POP3 without UIDL does not retry after streaming a messag
 because sequence numbers cannot safely identify it after reconnecting. Authentication
 and protocol errors fail immediately; Ctrl+C cancels retries.
 
+## verification and restore
+
+Use `mailvault verify <target>` to check backup integrity, and
+`mailvault repair --source <source> --target <target> --apply` to recover
+missing or corrupt copies while retaining originals. See the
+[verification and repair guide](docs/backup-integrity.md).
+
+Use `mailvault restore --from <target> --source <imap-source> --folder <new-folder>`
+to restore into a separate mailbox. Preview with `--dry-run`; resumable restore
+receipts prevent replaying acknowledged uploads. See the
+[restore guide](docs/restore.md), including uncertain upload recovery.
+
 ## delivery state upgrades
 
 Successful deliveries are tracked separately for each configured target name.

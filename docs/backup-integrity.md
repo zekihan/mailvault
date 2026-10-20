@@ -28,3 +28,5 @@ Backups written before manifests existed are checked against legacy delivery rec
 When repair finds a damaged object, it keeps the original object and records it as superseded in the state database. The repaired copy becomes the active manifest location; the damaged original remains on disk or in the bucket for inspection. Preserve the state database so verification can distinguish that retained copy from an active backup.
 
 Verification can identify missing or changed objects represented in the manifest. It cannot prove that a source message still exists unless a repair run fetches and checks that source-target pair. A successful historical receipt alone is not evidence that the current target bytes are intact.
+
+Readers currently limit individual messages to 512 MiB during verification and restore. An oversized message fails explicitly rather than being skipped or counted as verified.
