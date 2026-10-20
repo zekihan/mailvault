@@ -28,6 +28,7 @@ type SyncEngine struct {
 	until         int64
 	deliveryLocks sync.Map
 	runGate       chan struct{}
+	progress      func(string, string)
 }
 
 // SyncResult holds the result of a sync operation.
@@ -144,6 +145,17 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 // SyncOption configures the sync engine.
 type SyncOption func(*SyncEngine)
 
+// WithProgress receives concurrent status updates keyed by operation.
+func WithProgress(report func(string, string)) SyncOption {
+	return func(e *SyncEngine) { e.progress = report }
+}
+
+func (e *SyncEngine) reportProgress(key, status string) {
+	if e.progress != nil {
+		e.progress(key, status)
+	}
+}
+
 // WithDryRun enables dry-run mode.
 func WithDryRun(dryRun bool) SyncOption {
 	return func(e *SyncEngine) {
@@ -223,6 +235,7 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 	}
 	var release func() error
 	defer func() {
+		e.reportProgress("setup", "closing connections and finalizing state")
 		cleanupErr := e.closeResources(stats)
 		if release != nil {
 			if releaseErr := release(); releaseErr != nil {
@@ -239,6 +252,7 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 		stats.Duration = stats.EndTime.Sub(stats.StartTime)
 	}()
 	if !e.dryRun {
+		e.reportProgress("setup", "waiting for sync lock")
 		release, err = e.stateStore.LockSync(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("acquire sync lock: %w", err)
@@ -251,6 +265,7 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 		if e.dryRun {
 			continue
 		}
+		e.reportProgress("setup", fmt.Sprintf("initializing target %s", target.Name()))
 		if err := target.Initialize(ctx); err != nil {
 			return nil, fmt.Errorf("initialize target %q: %w", target.Name(), err)
 		}
@@ -265,6 +280,8 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 			return nil, fmt.Errorf("upsert source %q: %w", src.Name(), err)
 		}
 	}
+
+	e.reportProgress("setup", "processing source-target pairs")
 
 	// Process each pair
 	if e.concurrency <= 0 {
@@ -329,6 +346,18 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 		return result
 	}
 
+	key := src.Name() + " -> " + tgt.Name()
+	e.reportProgress(key, "connecting / waiting for source messages")
+	writtenLabel := "written"
+	if e.dryRun {
+		writtenLabel = "would write"
+	}
+	report := func(stage string) {
+		e.reportProgress(key, fmt.Sprintf("%s: %d fetched, %d %s, %d skipped, %d errors",
+			stage, result.MessagesFetched, result.MessagesWritten, writtenLabel, result.MessagesSkipped, len(result.Errors)))
+	}
+	defer func() { report("finished") }()
+
 	// Fetch messages from source
 	msgChan, errChan := src.FetchMessages(ctx, folders, e.since, e.until)
 
@@ -351,7 +380,9 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			}
 
 			result.MessagesFetched++
+			report("processing message")
 			e.syncMessage(ctx, src, tgt, msg, &result)
+			report("waiting for next message")
 		}
 	}
 	return result

@@ -165,8 +165,12 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("parse until: %w", err)
 	}
 
+	progress, stopProgress := startSyncProgress(os.Stderr, dryRun)
+	defer stopProgress()
+
 	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
 		sync.WithDryRun(dryRun),
+		sync.WithProgress(progress),
 		sync.WithConcurrency(concurrency),
 		sync.WithMaxRetries(maxRetries),
 		sync.WithRetryDelay(retryDelayDur),
