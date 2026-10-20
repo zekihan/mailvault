@@ -1,8 +1,10 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,6 +65,72 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 	}
 	if dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(raw) {
 		t.Fatalf("mbox roundtrip changed raw bytes: %q", stored.Raw)
+	}
+}
+
+func TestMboxListingStreamsLongLinesAndMboxrdEscapes(t *testing.T) {
+	ctx := context.Background()
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mbox := target.(*MboxTarget)
+	if err := mbox.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mbox.Close()
+	raw := append([]byte("Subject: fixture\n\n"), bytes.Repeat([]byte("x"), 128*1024)...)
+	raw = append(raw, []byte("\nFrom body\n>From escaped\n>>From double\n")...)
+	raw = append(raw, bytes.Repeat([]byte(">"), 32*1024-2)...)
+	raw = append(raw, []byte("From crossing chunk boundary\n")...)
+	locator, err := mbox.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := mbox.ListBackupMessages(ctx)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("listed %d messages, %v", len(entries), err)
+	}
+	if entries[0].Locator != locator {
+		t.Fatalf("listed locator = %q, want exact writer locator %q", entries[0].Locator, locator)
+	}
+	stored, err := mbox.ReadBackupMessage(ctx, entries[0].Locator)
+	if err != nil {
+		t.Fatalf("read listed record: %v", err)
+	}
+	if !bytes.Equal(stored.Raw, raw) {
+		t.Fatalf("read listed record = %q, want original bytes", stored.Raw)
+	}
+}
+
+func TestMboxRecordLengthStreamingMatchesMboxrdUnescape(t *testing.T) {
+	for split := 0; split <= len("From "); split++ {
+		t.Run(fmt.Sprintf("split_%d", split), func(t *testing.T) {
+			encoded := append(bytes.Repeat([]byte(">"), 32*1024-split), []byte("From cross-chunk\n")...)
+			encoded = append(encoded, []byte("\n>FromX\n")...)
+			record := append([]byte("From sender\n"), encoded...)
+			record = append(record, '\n')
+			path := filepath.Join(t.TempDir(), "record.mbox")
+			if err := os.WriteFile(path, record, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(context.Background(), file, 0, int64(len(record)))
+			if err != nil || !hasSeparatorNewline {
+				t.Fatalf("record lengths error = %v, separator newline = %v", err, hasSeparatorNewline)
+			}
+			if encodedLength != int64(len(encoded)) {
+				t.Fatalf("encoded length = %d, want %d", encodedLength, len(encoded))
+			}
+			wantDecoded := len(unescapeMboxrd(encoded))
+			if decodedLength != int64(wantDecoded) {
+				t.Fatalf("decoded length = %d, want %d", decodedLength, wantDecoded)
+			}
+		})
 	}
 }
 

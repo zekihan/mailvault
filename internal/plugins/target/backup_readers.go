@@ -191,7 +191,7 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 		return nil, err
 	}
 	var starts []int64
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(io.NewSectionReader(file, 0, info.Size()))
 	var offset int64
 	lineStart := true
 	for {
@@ -224,6 +224,9 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 			break
 		}
 	}
+	if offset != info.Size() {
+		return nil, io.ErrUnexpectedEOF
+	}
 	if info.Size() > 0 && (len(starts) == 0 || starts[0] != 0) {
 		return nil, fmt.Errorf("%w: mbox record missing initial separator", plugins.ErrBackupMessageCorrupt)
 	}
@@ -240,28 +243,153 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 		if length > maxRecordBytes {
 			return nil, fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
 		}
-		record := make([]byte, length)
-		n, readErr := file.ReadAt(record, start)
-		if readErr != nil && readErr != io.EOF {
-			return nil, readErr
+		encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(ctx, file, start, length)
+		if err != nil {
+			return nil, err
 		}
-		record = record[:n]
-		lineEnd := bytes.IndexByte(record, '\n')
-		if lineEnd < 0 {
+		if !hasSeparatorNewline {
 			result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: fmt.Sprintf("%d:%d:0:0", start, length)})
 			continue
 		}
-		encodedLength := len(record) - lineEnd - 2
-		if encodedLength < 0 {
-			encodedLength = 0
-		}
-		if encodedLength > 0 && record[lineEnd+1+encodedLength-1] != '\n' {
-			encodedLength = 0
-		}
-		decodedLength := len(unescapeMboxrd(record[lineEnd+1 : lineEnd+1+encodedLength]))
 		result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: fmt.Sprintf("%d:%d:%d:%d", start, length, encodedLength, decodedLength)})
 	}
+	latestInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if latestInfo.Size() < info.Size() {
+		return nil, io.ErrUnexpectedEOF
+	}
 	return result, ctx.Err()
+}
+
+func mboxRecordLengths(ctx context.Context, file *os.File, start, length int64) (encodedLength, decodedLength int64, hasSeparatorNewline bool, err error) {
+	const chunkSize = 32 * 1024
+	var buf [chunkSize]byte
+	var position int64
+	var lineEnd int64
+	lineFound := false
+	for position < length {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, false, err
+		}
+		want := int64(len(buf))
+		if remaining := length - position; want > remaining {
+			want = remaining
+		}
+		n, readErr := file.ReadAt(buf[:int(want)], start+position)
+		if n > 0 {
+			if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+				lineEnd = position + int64(i)
+				lineFound = true
+			} else {
+				position += int64(n)
+			}
+		}
+		if readErr != nil && readErr != io.EOF {
+			return 0, 0, false, readErr
+		}
+		if n == 0 {
+			if position < length {
+				return 0, 0, false, io.ErrUnexpectedEOF
+			}
+			break
+		}
+		if lineFound {
+			break
+		}
+	}
+	if !lineFound {
+		return 0, 0, false, nil
+	}
+	encodedLength = length - lineEnd - 2
+	if encodedLength < 0 {
+		encodedLength = 0
+	}
+	if encodedLength > 0 {
+		var secondLast [1]byte
+		n, readErr := file.ReadAt(secondLast[:], start+length-2)
+		if readErr != nil {
+			return 0, 0, false, readErr
+		}
+		if n != 1 {
+			return 0, 0, false, io.ErrUnexpectedEOF
+		}
+		if secondLast[0] != '\n' {
+			encodedLength = 0
+		}
+	}
+	if encodedLength == 0 {
+		return encodedLength, 0, true, nil
+	}
+
+	decodedLength = encodedLength
+	section := io.NewSectionReader(file, start+lineEnd+1, encodedLength)
+	pattern := []byte("From ")
+	var leadingGTs int64
+	var matching bool
+	var matchIndex int
+	var disabledLine bool
+	var removed int64
+	var scanned int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, false, err
+		}
+		n, readErr := section.Read(buf[:])
+		scanned += int64(n)
+		if n == 0 && readErr == nil {
+			return 0, 0, false, io.ErrUnexpectedEOF
+		}
+		for _, b := range buf[:n] {
+			if b == '\n' {
+				leadingGTs, matching, matchIndex, disabledLine = 0, false, 0, false
+				continue
+			}
+			if disabledLine {
+				continue
+			}
+			if matching {
+				if b != pattern[matchIndex] {
+					disabledLine = true
+					continue
+				}
+				matchIndex++
+				if matchIndex == len(pattern) {
+					removed++
+					disabledLine = true
+				}
+				continue
+			}
+			if leadingGTs > 0 {
+				switch b {
+				case '>':
+					leadingGTs++
+				case 'F':
+					matching, matchIndex = true, 1
+				default:
+					disabledLine = true
+				}
+				continue
+			}
+			if b == '>' {
+				leadingGTs = 1
+			} else {
+				disabledLine = true
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return 0, 0, false, readErr
+		}
+	}
+	if scanned != encodedLength {
+		return 0, 0, false, io.ErrUnexpectedEOF
+	}
+	decodedLength -= removed
+	return encodedLength, decodedLength, true, nil
 }
 
 func (t *MboxTarget) CanonicalBackupLocator(locator string) string {
