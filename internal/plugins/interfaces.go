@@ -7,7 +7,7 @@ import (
 
 // Message represents a single email message.
 type Message struct {
-	// UIDScope identifies the account and IMAP UIDVALIDITY generation.
+	// UIDScope identifies the account and, for IMAP, its UIDVALIDITY generation.
 	UIDScope string
 
 	// UID is the server-side unique identifier (IMAP UID or POP3 UIDL).

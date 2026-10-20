@@ -74,11 +74,10 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 		if !usedSources[srcCfg.Name] {
 			continue
 		}
-		if srcCfg.OAuth2 != nil && srcCfg.PasswordRef == "" {
-			return nil, fmt.Errorf("source %q: OAuth2 authentication is not implemented; password_ref is required", srcCfg.Name)
+		srcConfig, err := config.SourcePluginConfig(srcCfg)
+		if err != nil {
+			return nil, err
 		}
-		srcConfig := srcConfigToMap(srcCfg)
-		srcConfig["name"] = srcCfg.Name
 		src, err := registry.CreateSource(srcCfg.Type, srcConfig)
 		if err != nil {
 			return nil, fmt.Errorf("create source %q: %w", srcCfg.Name, err)
@@ -129,13 +128,6 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 		for _, name := range pair.Targets {
 			if targets[name] == nil {
 				return nil, fmt.Errorf("target %q not found for pair", name)
-			}
-		}
-	}
-	if engine.since != 0 || engine.until != 0 {
-		for _, src := range sources {
-			if src.Type() == "pop3" {
-				return nil, errors.New("POP3 date filters are unsupported; omit --since and --until")
 			}
 		}
 	}
@@ -201,22 +193,6 @@ func WithSince(since int64) SyncOption {
 func WithUntil(until int64) SyncOption {
 	return func(e *SyncEngine) {
 		e.until = until
-	}
-}
-
-// srcConfigToMap converts SourceConfig to map for plugin factory.
-func srcConfigToMap(cfg config.SourceConfig) map[string]interface{} {
-	return map[string]interface{}{
-		"host":               cfg.Host,
-		"port":               cfg.Port,
-		"username":           cfg.Username,
-		"password_ref":       cfg.PasswordRef,
-		"use_tls":            cfg.UseTLS,
-		"start_tls":          cfg.StartTLS,
-		"folders":            cfg.Folders,
-		"connection_timeout": cfg.ConnectionTimeout,
-		"read_timeout":       cfg.ReadTimeout,
-		"max_connections":    cfg.MaxConnections,
 	}
 }
 
@@ -378,6 +354,13 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			progress.Folder, progress.Fetched, total, progress.Stage))
 	})
 
+	if !e.dryRun {
+		ctx = plugins.WithFolderStateObserver(ctx, func(observed plugins.FolderStateObservation) error {
+			return e.stateStore.UpsertFolderState(ctx, src.Name(), observed.Folder, &state.FolderState{
+				UIDValidity: observed.UIDValidity, UIDNext: observed.UIDNext, ModSeq: observed.ModSeq,
+			})
+		})
+	}
 	if !e.forceFetchAll {
 		ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
 			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, scope), folder)
@@ -411,7 +394,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			e.syncMessage(ctx, src, tgt, msg, &result)
 			if !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
 				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID); err != nil {
-					result.Errors = append(result.Errors, fmt.Errorf("persist IMAP receipt: %w", err))
+					result.Errors = append(result.Errors, fmt.Errorf("persist incremental receipt: %w", err))
 				}
 			}
 			report("waiting for next message")

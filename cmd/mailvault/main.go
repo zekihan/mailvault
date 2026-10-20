@@ -63,7 +63,7 @@ func init() {
 		Short: "Synchronize mail from sources to targets",
 		RunE:  runSync,
 	}
-	syncCmd.Flags().BoolVar(&forceFetchAll, "force-fetch-all", false, "download all messages again, including previously backed-up IMAP UIDs")
+	syncCmd.Flags().BoolVar(&forceFetchAll, "force-fetch-all", false, "download all selected messages again, ignoring incremental receipts")
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
 	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
 	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")

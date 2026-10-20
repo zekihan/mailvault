@@ -2,13 +2,14 @@
 
 Back up mail from multiple sources to multiple targets.
 
-> **Status:** early scaffolding. The application does not do anything yet.
+Read mail from IMAP or POP3 accounts and back it up to Maildir, mbox, or
+S3-compatible storage. Each invocation runs once, reports per-source and
+per-target results, and exits non-zero on failure.
 
-## planned scope
-
-- Read mail from several sources (for example IMAP accounts).
-- Write the same messages to several targets (for example local Maildir, S3-compatible object storage).
-- Run once per invocation, report per-source and per-target results, and exit non-zero on failure.
+Supported hosts are macOS, Linux, Windows, and the BSDs covered by the platform
+locking implementations. Other platforms fail closed when safe locking is
+unavailable. Press Ctrl+C to cancel an active sync and close its resources;
+successful delivery receipts remain available to the next run.
 
 ## development
 
@@ -41,7 +42,17 @@ Older state has no trustworthy UIDVALIDITY receipts and needs one full scan afte
 this upgrade. Dry runs use existing receipts but never save new ones. Date filters
 still apply, including with `--force-fetch-all`. Folder progress totals count the
 pending server-search candidates, before exact date filtering and deduplication.
-POP3 continues to download all messages on each run.
+POP3 uses stable UIDL identifiers to skip successful deliveries. Servers that
+explicitly reject UIDL fall back to full downloads and content deduplication.
+Malformed UIDL responses fail the sync rather than guessing message identities.
+POP3 date filtering uses the sender's Date header after retrieval, so excluded
+messages may need to be retrieved again on later filtered runs.
+
+IMAP folder UIDVALIDITY, UIDNEXT, and available MODSEQ values are recorded as
+server observations. Download decisions use per-target receipts, not a global
+high-water mark that could skip failed deliveries or holes left by date filters.
+`max_connections` bounds the IMAP connection pool; downloads stream through
+bounded batches and channels.
 
 ## delivery state upgrades
 
@@ -89,17 +100,19 @@ mailvault cleanup-state --older-than 720h --apply
 
 - Omitted source settings default to implicit TLS, a 30-second connection
   timeout, and a 60-second read timeout. Explicit `use_tls: false` and zero
-  timeouts are preserved. IMAP `start_tls: true` selects STARTTLS instead of
-  implicit TLS when `use_tls` is omitted.
-  Indexed `MAILVAULT_SOURCES_0_*` environment overrides are not supported;
-  define source settings in the configuration file and use `env:` credential
-  references for secrets.
-- POP3 supports implicit TLS (`use_tls: true`, normally port 995), not STARTTLS.
-  `start_tls: true` is rejected for POP3 before connecting; it never falls back
-  to plaintext authentication. Explicit plaintext POP3 remains available with
-  both flags false for trusted local connections.
-- POP3 does not provide reliable server arrival dates. `--since` and `--until`
-  are rejected when any active source is POP3 rather than silently ignored.
+  timeouts are preserved. `start_tls: true` selects STARTTLS instead of
+  implicit TLS when `use_tls` is omitted, for both IMAP and POP3.
+  Indexed environment overrides apply to existing configuration entries, for
+  example `MAILVAULT_SOURCES_0_HOST`, `MAILVAULT_SOURCES_0_USE_TLS=false`, and
+  `MAILVAULT_SOURCES_0_READ_TIMEOUT=60s`. List overrides use comma-separated values.
+  Invalid boolean, integer, and duration overrides fail configuration loading.
+- POP3 supports implicit TLS (normally port 995) and STARTTLS/STLS (normally
+  port 110). STARTTLS failures never fall back to plaintext authentication.
+  Both TLS flags may be false for explicitly trusted local connections; enabling
+  both together is rejected.
+- POP3 date bounds use the sender-provided Date header, which may be inaccurate
+  and is not the server arrival date. Missing or invalid dates fail filtered
+  syncs. `--since` is inclusive and `--until` is exclusive.
 - IMAP timestamp bounds apply to server `INTERNALDATE`, not the sender's Date
   header: `--since` is inclusive and `--until` is exclusive. Calendar searches
   are widened for timezone offsets, then exact bounds are applied locally.
@@ -107,8 +120,13 @@ mailvault cleanup-state --older-than 720h --apply
   second-resolution arrival dates. Bounds resolving to Unix epoch zero are
   rejected because the source interface reserves zero for an absent bound.
   Missing `INTERNALDATE` fails filtering rather than silently including mail.
-- OAuth2-only source configurations are rejected until OAuth2 authentication
-  is implemented. Sources currently require `password_ref`.
+- Sources accept either `password_ref` or `oauth2`, never both. Microsoft public
+  client OAuth uses device login and automatic refresh, with tokens stored in
+  the OS keyring. See [Hotmail / Outlook setup](docs/oauth.md). No client secret
+  is needed for the public-client flow.
+- Credential references support `env:NAME`, `file:path`, and
+  `keyring:service:account`. Relative file paths resolve from the configuration
+  file's directory. Keyring access requires a working OS credential service.
 - Normal sync resolves credentials only for sources and targets referenced by
   pairs. Unused secret references remain untouched; explicit `validate-config`
   resolves all declared resources for connectivity checks. Source password files
@@ -145,7 +163,9 @@ captures flags when a message is archived; it does not mirror later flag changes
 or deletions on the source server. Flagged messages are published in `cur/` as
 required by Maildir. Only the five standard IMAP system flags are mapped; custom
 keyword flags are ignored. Windows cannot represent the standard `:2,` filename
-suffix, so set `preserve_flags: false` on Windows.
+suffix, so set `preserve_flags: false` on Windows. Switching preservation modes
+creates a separate receipt scope and can write new copies for the new layout;
+existing backup files are retained.
 
 ### S3 operation limits
 

@@ -30,8 +30,8 @@ mailvault --config ./config.yaml auth login --source outlook
 ```
 
 Open the displayed Microsoft verification page, enter the one-time code, and
-complete sign-in. Device codes and tokens are never saved in the config file or
-printed by Mailvault. The OS keyring stores the token set under service
+complete sign-in. The short user verification code is displayed; the underlying device code and
+access/refresh tokens are never printed or saved in the configuration file. The OS keyring stores the token set under service
 `mailvault`. By default, the keyring account is a stable hash of the mailbox
 host, username, tenant, and client ID; set `oauth2.token_key` to choose an
 explicit keyring account. If the keyring entry is removed or consent is
@@ -49,3 +49,5 @@ newline; other source password line breaks are rejected. Indexed environment
 overrides use names such as `MAILVAULT_SOURCES_0_HOST` and
 `MAILVAULT_SOURCES_0_OAUTH2_CLIENT_ID` and apply to entries declared in the
 configuration file.
+
+Microsoft reference: [OAuth for IMAP and POP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).

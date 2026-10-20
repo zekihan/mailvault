@@ -83,7 +83,11 @@ func validateConfiguration(contexts ...context.Context) (report validationReport
 		failures = append(failures, wrapped)
 	}
 	for i, sourceConfig := range cfg.Sources {
-		values := map[string]interface{}{"host": sourceConfig.Host, "port": sourceConfig.Port, "username": sourceConfig.Username, "password_ref": sourceConfig.PasswordRef, "use_tls": sourceConfig.UseTLS, "start_tls": sourceConfig.StartTLS, "folders": sourceConfig.Folders, "connection_timeout": sourceConfig.ConnectionTimeout, "read_timeout": sourceConfig.ReadTimeout, "max_connections": sourceConfig.MaxConnections, "name": sourceConfig.Name}
+		values, failure := config.SourcePluginConfig(sourceConfig)
+		if failure != nil {
+			record(&report.Sources[i], "source", failure)
+			continue
+		}
 		source, failure := registry.CreateSource(sourceConfig.Type, values)
 		if failure == nil {
 			failure = errors.Join(source.Connect(ctx), source.Close())
