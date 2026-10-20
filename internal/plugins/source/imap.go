@@ -226,8 +226,7 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 					return err
 				}
 				if err := s.fetchFolder(ctx, folder, output, since, until, sessions); err != nil {
-					_ = s.client.Close()
-					s.connected = false
+					_ = s.closeLocked()
 					return fmt.Errorf("fetch folder %q: %w", folder, err)
 				}
 			}
@@ -582,12 +581,16 @@ func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMe
 func (s *IMAPSource) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.closeLocked()
+}
 
-	if s.client != nil {
-		err := s.client.Close()
-		s.client = nil
-		s.connected = false
-		return err
+func (s *IMAPSource) closeLocked() error {
+	client := s.client
+	s.client = nil
+	s.wire = nil
+	s.connected = false
+	if client != nil {
+		return client.Close()
 	}
 	return nil
 }
