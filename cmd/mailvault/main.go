@@ -52,6 +52,7 @@ func Execute() error {
 }
 
 func init() {
+	rootCmd.AddCommand(newStateCleanupCommand())
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./config.yaml, ~/.config/mailvault/config.yaml, /etc/mailvault/config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output JSON instead of human-readable format")
 	rootCmd.PersistentFlags().StringVar(&stateDir, "state-dir", "", "directory for state database (default: ~/.local/share/mailvault)")

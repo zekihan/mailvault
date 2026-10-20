@@ -16,6 +16,9 @@ type Message struct {
 	// Folder is the source folder/mailbox name.
 	Folder string
 
+	// Flags are the source-provided message flags (for example, IMAP system flags).
+	Flags []string
+
 	// Raw is the full RFC822 message bytes.
 	Raw []byte
 
