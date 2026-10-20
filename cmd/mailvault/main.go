@@ -20,15 +20,16 @@ import (
 var version = "dev"
 
 var (
-	cfgFile     string
-	dryRun      bool
-	jsonOutput  bool
-	since       string
-	until       string
-	concurrency int
-	maxRetries  int
-	retryDelay  string
-	stateDir    string
+	cfgFile       string
+	dryRun        bool
+	forceFetchAll bool
+	jsonOutput    bool
+	since         string
+	until         string
+	concurrency   int
+	maxRetries    int
+	retryDelay    string
+	stateDir      string
 )
 
 var rootCmd = &cobra.Command{
@@ -59,6 +60,7 @@ func init() {
 		Short: "Synchronize mail from sources to targets",
 		RunE:  runSync,
 	}
+	syncCmd.Flags().BoolVar(&forceFetchAll, "force-fetch-all", false, "download all messages again, including previously backed-up IMAP UIDs")
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
 	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
 	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")
@@ -170,6 +172,7 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 
 	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
 		sync.WithDryRun(dryRun),
+		sync.WithForceFetchAll(forceFetchAll),
 		sync.WithProgress(progress),
 		sync.WithConcurrency(concurrency),
 		sync.WithMaxRetries(maxRetries),

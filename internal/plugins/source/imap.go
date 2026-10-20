@@ -216,8 +216,19 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 	// Select mailbox
 	selectCmd := s.client.Select(folder, &imap.SelectOptions{ReadOnly: true})
-	if _, err := selectCmd.Wait(); err != nil {
+	selected, err := selectCmd.Wait()
+	if err != nil {
 		return fmt.Errorf("select %q: %w", folder, err)
+	}
+
+	scope := ""
+	var known map[string]bool
+	if selected.UIDValidity != 0 {
+		scope = dedup.ComputeContentHash([]byte(fmt.Sprintf("%s:%d\x00%s\x00%d", s.host, s.port, s.username, selected.UIDValidity)))
+		known, err = plugins.KnownUIDs(ctx, scope, folder)
+		if err != nil {
+			return fmt.Errorf("load incremental state: %w", err)
+		}
 	}
 
 	// Build search criteria
@@ -231,6 +242,13 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 
 	uids := searchData.AllUIDs()
+	pending := make([]imap.UID, 0, len(uids))
+	for _, uid := range uids {
+		if !known[strconv.FormatUint(uint64(uid), 10)] {
+			pending = append(pending, uid)
+		}
+	}
+	uids = pending
 	progress.Total = len(uids)
 	progress.Stage = "fetching"
 	plugins.ReportFetchProgress(ctx, progress)
@@ -259,7 +277,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		batch := uids[i:end]
-		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until, func() {
+		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until, scope, func() {
 			progress.Fetched++
 			plugins.ReportFetchProgress(ctx, progress)
 		}); err != nil {
@@ -271,7 +289,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, fetched func()) (err error) {
+func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, scope string, fetched func()) (err error) {
 	// Fetch RFC822 for each UID
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
@@ -340,6 +358,7 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 		}
 
 		pluginsMsg := &plugins.Message{
+			UIDScope:     scope,
 			UID:          strconv.FormatUint(uint64(buf.UID), 10),
 			Folder:       folder,
 			Raw:          raw,

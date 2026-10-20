@@ -20,6 +20,27 @@ make lint    # gofmt check and golangci-lint
 make test    # unit tests
 ```
 
+## incremental backups
+
+IMAP syncs search for message UIDs but download bodies only for UIDs without a
+successful delivery receipt for the current target. Receipts include the source,
+account/server identity, folder, and UIDVALIDITY, so new targets, changed accounts,
+and reset mailboxes are scanned safely. Failed deliveries remain eligible for retry.
+Newly labeled or moved messages may have new folder UIDs; content deduplication
+still prevents writing identical bytes again.
+
+```sh
+go run ./cmd/mailvault --config ./config.yaml sync
+# Download all selected messages again; existing content is still deduplicated.
+go run ./cmd/mailvault --config ./config.yaml sync --force-fetch-all
+```
+
+Older state has no trustworthy UIDVALIDITY receipts and needs one full scan after
+this upgrade. Dry runs use existing receipts but never save new ones. Date filters
+still apply, including with `--force-fetch-all`. Folder progress totals count the
+pending server-search candidates, before exact date filtering and deduplication.
+POP3 continues to download all messages on each run.
+
 ## delivery state upgrades
 
 Successful deliveries are tracked separately for each configured target name.

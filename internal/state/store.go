@@ -50,6 +50,12 @@ func NewStore(path string) (*Store, error) {
 // migrate creates the schema if needed.
 func (s *Store) migrate(ctx context.Context) error {
 	schema := `
+	CREATE TABLE IF NOT EXISTS imap_receipts (
+		source TEXT NOT NULL, target TEXT NOT NULL, scope TEXT NOT NULL,
+		folder TEXT NOT NULL, uid TEXT NOT NULL,
+		PRIMARY KEY(source,target,scope,folder,uid)
+	);
+
 	CREATE TABLE IF NOT EXISTS sources (
 		name TEXT PRIMARY KEY,
 		type TEXT NOT NULL,

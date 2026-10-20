@@ -21,6 +21,7 @@ type SyncEngine struct {
 	sources       map[string]plugins.Source
 	targets       map[string]plugins.Target
 	dryRun        bool
+	forceFetchAll bool
 	maxRetries    int
 	retryDelay    time.Duration
 	concurrency   int
@@ -154,6 +155,11 @@ func (e *SyncEngine) reportProgress(key, status string) {
 	if e.progress != nil {
 		e.progress(key, status)
 	}
+}
+
+// WithForceFetchAll bypasses IMAP download receipts without bypassing content deduplication.
+func WithForceFetchAll(force bool) SyncOption {
+	return func(e *SyncEngine) { e.forceFetchAll = force }
 }
 
 // WithDryRun enables dry-run mode.
@@ -367,6 +373,12 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			progress.Folder, progress.Fetched, total, progress.Stage))
 	})
 
+	if !e.forceFetchAll {
+		ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
+			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), scope, folder)
+		})
+	}
+
 	// Fetch messages from source
 	msgChan, errChan := src.FetchMessages(ctx, folders, e.since, e.until)
 
@@ -390,7 +402,13 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 
 			result.MessagesFetched++
 			report("processing message")
+			errorsBefore := len(result.Errors)
 			e.syncMessage(ctx, src, tgt, msg, &result)
+			if !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
+				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), msg.UIDScope, msg.Folder, msg.UID); err != nil {
+					result.Errors = append(result.Errors, fmt.Errorf("persist IMAP receipt: %w", err))
+				}
+			}
 			report("waiting for next message")
 		}
 	}
