@@ -102,6 +102,41 @@ func TestMaildirDeliveryIdentityPreservesDuplicateFolderPlacement(t *testing.T) 
 	}
 }
 
+func TestMaildirWritesDuplicateContentToEachPreservedFolder(t *testing.T) {
+	root := t.TempDir()
+	target, err := NewMaildirTarget(map[string]interface{}{"path": root, "preserve_folders": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	message := []byte("same message in two folders")
+	for _, folder := range []string{"INBOX", "Starred"} {
+		if err := target.WriteMessage(context.Background(), &plugins.Message{Folder: folder, Raw: message}); err != nil {
+			t.Fatalf("write folder %q: %v", folder, err)
+		}
+	}
+	maildir := target.(*MaildirTarget)
+	for _, folder := range []string{"INBOX", "Starred"} {
+		folderPath, err := maildir.messagePath(folder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(filepath.Join(folderPath, "new"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("folder %q contains %d messages, want one", folder, len(entries))
+		}
+		got, err := os.ReadFile(filepath.Join(folderPath, "new", entries[0].Name()))
+		if err != nil || string(got) != string(message) {
+			t.Fatalf("folder %q message = %q, %v", folder, got, err)
+		}
+	}
+}
+
 func TestMaildirOversizedFolderComponentFailsBeforeCreatingFolders(t *testing.T) {
 	root := t.TempDir()
 	target, err := NewMaildirTarget(map[string]interface{}{"path": root, "preserve_folders": true})
