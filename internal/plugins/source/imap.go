@@ -11,6 +11,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/zekihan/mailvault/internal/auth"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/plugins/config"
@@ -30,10 +31,16 @@ type IMAPSource struct {
 	connTimeout time.Duration
 	readTimeout time.Duration
 	maxConns    int
+	tokenSource func(context.Context) (string, error)
 	client      *imapclient.Client
 	wire        *deadlineConn
 	connected   bool
 	mu          sync.Mutex
+}
+
+type imapSession struct {
+	client *imapclient.Client
+	wire   *deadlineConn
 }
 
 func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
@@ -47,6 +54,7 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
 	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
 	maxConns, _ := config.ParseInt(configMap, config.SourceConfigMaxConnections, 5)
+	tokenSource, _ := configMap["oauth2_token_provider"].(func(context.Context) (string, error))
 
 	if host == "" {
 		return nil, errors.New("host is required")
@@ -54,11 +62,17 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	if username == "" {
 		return nil, errors.New("username is required")
 	}
-	if passwordRef == "" {
+	if passwordRef == "" && tokenSource == nil {
 		return nil, errors.New("password_ref is required")
 	}
 	if maxConns <= 0 {
 		maxConns = 5
+	}
+	if useTLS && startTLS {
+		return nil, errors.New("use_tls and start_tls cannot both be enabled")
+	}
+	if tokenSource != nil && !useTLS && !startTLS {
+		return nil, errors.New("IMAP OAuth2 requires TLS; enable use_tls or start_tls")
 	}
 
 	// Default folders
@@ -78,6 +92,7 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 		connTimeout: connTimeout,
 		readTimeout: readTimeout,
 		maxConns:    maxConns,
+		tokenSource: tokenSource,
 	}, nil
 }
 
@@ -113,11 +128,22 @@ func (s *IMAPSource) connectLocked(ctx context.Context) error {
 		}
 	}
 
+	session, err := s.openSession(ctx)
+	if err != nil {
+		return err
+	}
+	s.client = session.client
+	s.wire = session.wire
+	s.connected = true
+	return nil
+}
+
+func (s *IMAPSource) openSession(ctx context.Context) (*imapSession, error) {
 	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
 	dialer := &net.Dialer{Timeout: s.connTimeout}
 	raw, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return nil, fmt.Errorf("dial: %w", err)
 	}
 	wire := &deadlineConn{Conn: raw, timeout: s.readTimeout}
 	finish := wire.beginIO(ctx)
@@ -127,29 +153,33 @@ func (s *IMAPSource) connectLocked(ctx context.Context) error {
 	var client *imapclient.Client
 	if s.useTLS {
 		secure := tls.Client(wire, tlsConfig)
-		err = secure.HandshakeContext(ctx)
-		if err == nil {
-			client = imapclient.New(secure, opts)
+		if err := secure.HandshakeContext(ctx); err != nil {
+			return nil, errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
 		}
+		client = imapclient.New(secure, opts)
 	} else if s.startTLS {
 		client, err = imapclient.NewStartTLS(wire, opts)
 	} else {
 		client = imapclient.New(wire, opts)
 	}
 	if err != nil {
-		return errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
+		return nil, errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
 	}
 	if err := client.WaitGreeting(); err != nil {
-		return errors.Join(fmt.Errorf("greeting: %w", err), client.Close())
+		return nil, errors.Join(fmt.Errorf("greeting: %w", err), client.Close())
 	}
-	if err := client.Login(s.username, s.password).Wait(); err != nil {
-		return errors.Join(fmt.Errorf("login: %w", err), client.Close())
+	if s.tokenSource != nil {
+		token, err := s.tokenSource(ctx)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("get OAuth2 access token: %w", err), client.Close())
+		}
+		if err := client.Authenticate(auth.NewXOAUTH2(s.username, token)); err != nil {
+			return nil, errors.Join(errors.New("IMAP OAuth2 authentication failed"), client.Close())
+		}
+	} else if err := client.Login(s.username, s.password).Wait(); err != nil {
+		return nil, errors.Join(fmt.Errorf("login: %w", err), client.Close())
 	}
-
-	s.client = client
-	s.wire = wire
-	s.connected = true
-	return nil
+	return &imapSession{client: client, wire: wire}, nil
 }
 
 func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
@@ -189,8 +219,7 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 			errChan <- err
 			return
 		}
-		finish := s.wire.beginIO(ctx)
-		defer finish()
+		sessions := []*imapSession{{client: s.client, wire: s.wire}}
 
 		for _, folder := range folders {
 			select {
@@ -200,7 +229,7 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 			default:
 			}
 
-			if err := s.fetchFolder(ctx, folder, msgChan, since, until); err != nil {
+			if err := s.fetchFolder(ctx, folder, msgChan, since, until, sessions); err != nil {
 				errChan <- fmt.Errorf("fetch folder %q: %w", folder, err)
 				return
 			}
@@ -210,15 +239,31 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 	return msgChan, errChan
 }
 
-func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan chan<- *plugins.Message, since, until int64) error {
+func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan chan<- *plugins.Message, since, until int64, sessions []*imapSession) error {
 	progress := plugins.FetchProgress{Folder: folder, Total: -1, Stage: "searching"}
 	plugins.ReportFetchProgress(ctx, progress)
 
 	// Select mailbox
-	selectCmd := s.client.Select(folder, &imap.SelectOptions{ReadOnly: true})
+	finish := sessions[0].wire.beginIO(ctx)
+	selectCmd := sessions[0].client.Select(folder, &imap.SelectOptions{ReadOnly: true})
 	selected, err := selectCmd.Wait()
+	finish()
 	if err != nil {
 		return fmt.Errorf("select %q: %w", folder, err)
+	}
+	selectedUIDValidity := selected.UIDValidity
+	observation := plugins.FolderStateObservation{Folder: folder}
+	if selected.UIDValidity != 0 {
+		observation.UIDValidity = strconv.FormatUint(uint64(selected.UIDValidity), 10)
+	}
+	if selected.UIDNext != 0 {
+		observation.UIDNext = strconv.FormatUint(uint64(selected.UIDNext), 10)
+	}
+	if selected.HighestModSeq != 0 {
+		observation.ModSeq = strconv.FormatUint(selected.HighestModSeq, 10)
+	}
+	if err := plugins.ObserveFolderState(ctx, observation); err != nil {
+		return fmt.Errorf("record folder state: %w", err)
 	}
 
 	scope := ""
@@ -235,8 +280,10 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	criteria := timestampSearchCriteria(since, until)
 
 	// Search for messages
-	search := s.client.UIDSearch(&criteria, nil)
+	finish = sessions[0].wire.beginIO(ctx)
+	search := sessions[0].client.UIDSearch(&criteria, nil)
 	searchData, err := search.Wait()
+	finish()
 	if err != nil {
 		return fmt.Errorf("search: %w", err)
 	}
@@ -262,44 +309,119 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 		return nil
 	}
 
-	// Fetch messages in batches
-	batchSize := s.maxConns
-	for i := 0; i < len(uids); i += batchSize {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	const batchSize = 25
+	batchCount := (len(uids) + batchSize - 1) / batchSize
+	wantedSessions := s.maxConns
+	if wantedSessions > batchCount {
+		wantedSessions = batchCount
+	}
+	activeSessions := append([]*imapSession(nil), sessions[:1]...)
+	for len(activeSessions) < wantedSessions {
+		session, err := s.openSession(ctx)
+		if err != nil {
+			for _, opened := range activeSessions[1:] {
+				_ = opened.client.Close()
+			}
+			return fmt.Errorf("open IMAP connection pool: %w", err)
 		}
-
-		end := i + batchSize
-		if end > len(uids) {
-			end = len(uids)
+		activeSessions = append(activeSessions, session)
+	}
+	defer func() {
+		for _, session := range activeSessions[1:] {
+			_ = session.client.Close()
 		}
-
-		batch := uids[i:end]
-		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until, scope, func() {
-			progress.Fetched++
-			plugins.ReportFetchProgress(ctx, progress)
-		}); err != nil {
-			return err
+	}()
+	workerCount := len(activeSessions)
+	jobs := make(chan []imap.UID)
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, workerCount)
+	var wg sync.WaitGroup
+	var progressMu sync.Mutex
+	for i := 0; i < workerCount; i++ {
+		session := activeSessions[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range jobs {
+				ioDone := session.wire.beginIO(workerCtx)
+				selected, err := session.client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
+				ioDone()
+				if err != nil {
+					select {
+					case errCh <- fmt.Errorf("select %q for fetch: %w", folder, err):
+					default:
+					}
+					cancel()
+					return
+				}
+				if selected.UIDValidity != selectedUIDValidity {
+					select {
+					case errCh <- fmt.Errorf("mailbox %q UIDVALIDITY changed during fetch", folder):
+					default:
+					}
+					cancel()
+					return
+				}
+				ioDone = session.wire.beginIO(workerCtx)
+				err = s.fetchBatch(workerCtx, session.client, folder, batch, msgChan, since, until, scope, func() {
+					progressMu.Lock()
+					progress.Fetched++
+					plugins.ReportFetchProgress(ctx, progress)
+					progressMu.Unlock()
+				})
+				ioDone()
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for i := 0; i < len(uids); i += batchSize {
+			end := i + batchSize
+			if end > len(uids) {
+				end = len(uids)
+			}
+			select {
+			case <-workerCtx.Done():
+				return
+			case jobs <- uids[i:end]:
+			}
 		}
+	}()
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case err := <-errCh:
+		return err
+	default:
 	}
 
 	completed()
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, scope string, fetched func()) (err error) {
-	// Fetch RFC822 for each UID
+func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, scope string, fetched func()) (err error) {
+	// Fetch RFC822 for each UID.
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
 		seqSet.AddNum(uid)
 	}
 
-	fetch := s.client.Fetch(seqSet, &imap.FetchOptions{
+	fetch := client.Fetch(seqSet, &imap.FetchOptions{
 		BodySection:  []*imap.FetchItemBodySection{{}},
 		Envelope:     true,
 		InternalDate: true,
+		Flags:        true,
 	})
 
 	defer func() {
@@ -366,6 +488,10 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 			ContentHash:  contentHash,
 			Size:         int64(len(raw)),
 			InternalDate: internalDate,
+			Flags:        make([]string, 0, len(buf.Flags)),
+		}
+		for _, flag := range buf.Flags {
+			pluginsMsg.Flags = append(pluginsMsg.Flags, string(flag))
 		}
 
 		select {

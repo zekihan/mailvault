@@ -2,40 +2,44 @@ package source
 
 import (
 	"context"
-	"net"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestPOP3RejectsSTARTTLS(t *testing.T) {
-	_, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": false, "start_tls": true})
-	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
-		t.Fatalf("unsupported STARTTLS accepted: %v", err)
+func TestPOP3AcceptsSTARTTLS(t *testing.T) {
+	source, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": false, "start_tls": true})
+	if err != nil {
+		t.Fatalf("STARTTLS rejected: %v", err)
+	}
+	_ = source.Close()
+}
+
+func TestPOP3RejectsConflictingTLSModes(t *testing.T) {
+	_, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": true, "start_tls": true})
+	if err == nil {
+		t.Fatal("conflicting TLS modes accepted")
 	}
 }
-func TestPOP3RejectsDateFiltersBeforeConnecting(t *testing.T) {
-	accepted := make(chan struct{}, 1)
-	host, port := protocolServer(t, func(net.Conn, <-chan struct{}) { accepted <- struct{}{} })
-	for _, bounds := range [][2]int64{{1, 0}, {0, 2}, {1, 2}} {
-		src := &POP3Source{host: host, port: port, username: "test-user", password: "synthetic-value", connTimeout: time.Second, readTimeout: time.Second}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		messages, errs := src.FetchMessages(ctx, []string{"INBOX"}, bounds[0], bounds[1])
-		for range messages {
-			t.Error("filtered fetch emitted a message")
-		}
-		var failure error
-		for err := range errs {
-			failure = err
-		}
-		cancel()
-		if failure == nil || !strings.Contains(failure.Error(), "date filters") {
-			t.Fatalf("missing unsupported-filter error: %v", failure)
-		}
-		select {
-		case <-accepted:
-			t.Fatal("unsupported filter connected to server")
-		default:
-		}
+
+func TestSourcesRejectOAuthWithoutTLS(t *testing.T) {
+	provider := func(context.Context) (string, error) { return "synthetic-token", nil }
+	for _, tc := range []struct {
+		name string
+		new  func() error
+	}{
+		{"imap", func() error {
+			_, err := NewIMapSource(map[string]interface{}{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
+			return err
+		}},
+		{"pop3", func() error {
+			_, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.new(); err == nil || !strings.Contains(err.Error(), "requires TLS") {
+				t.Fatalf("cleartext OAuth accepted: %v", err)
+			}
+		})
 	}
 }

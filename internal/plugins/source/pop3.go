@@ -1,15 +1,21 @@
 package source
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/knadh/go-pop3"
+	"github.com/zekihan/mailvault/internal/auth"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/plugins/config"
@@ -24,12 +30,15 @@ type POP3Source struct {
 	username    string
 	password    string
 	useTLS      bool
+	startTLS    bool
 	folders     []string
 	connTimeout time.Duration
 	readTimeout time.Duration
 	client      *pop3.Client
 	conn        *pop3.Conn
 	wire        *deadlineConn
+	tlsConfig   *tls.Config
+	tokenSource func(context.Context) (string, error)
 	connected   bool
 	mu          sync.Mutex
 }
@@ -39,9 +48,6 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	if startTLS {
-		return nil, errors.New("POP3 STARTTLS is unsupported; use implicit TLS instead")
-	}
 	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
 	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 995)
 	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
@@ -49,6 +55,7 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	useTLS, _ := config.ParseBool(configMap, config.SourceConfigUseTLS, true)
 	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
 	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
+	tokenSource, _ := configMap["oauth2_token_provider"].(func(context.Context) (string, error))
 
 	if host == "" {
 		return nil, errors.New("host is required")
@@ -56,8 +63,14 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	if username == "" {
 		return nil, errors.New("username is required")
 	}
-	if passwordRef == "" {
+	if passwordRef == "" && tokenSource == nil {
 		return nil, errors.New("password_ref is required")
+	}
+	if startTLS && useTLS {
+		return nil, errors.New("POP3 start_tls and use_tls cannot both be enabled")
+	}
+	if tokenSource != nil && !useTLS && !startTLS {
+		return nil, errors.New("POP3 OAuth2 requires TLS; enable use_tls or start_tls")
 	}
 
 	// POP3 doesn't support folders, but we keep the config for consistency
@@ -73,6 +86,8 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 		username:    username,
 		password:    passwordRef,
 		useTLS:      useTLS,
+		startTLS:    startTLS,
+		tokenSource: tokenSource,
 		folders:     folders,
 		connTimeout: connTimeout,
 		readTimeout: readTimeout,
@@ -107,6 +122,7 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 	}
 
 	var wire *deadlineConn
+	var upgraded *switchConn
 	finish := func() {}
 	defer func() { finish() }()
 	dialer := &net.Dialer{Timeout: s.connTimeout}
@@ -114,7 +130,7 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 		Host:        s.host,
 		Port:        s.port,
 		DialTimeout: s.connTimeout,
-		TLSEnabled:  s.useTLS,
+		TLSEnabled:  false,
 		Dialer: dialFunc(func(network, address string) (net.Conn, error) {
 			raw, err := dialer.DialContext(ctx, network, address)
 			if err != nil {
@@ -122,7 +138,16 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 			}
 			wire = &deadlineConn{Conn: raw, timeout: s.readTimeout}
 			finish = wire.beginIO(ctx)
-			return wire, nil
+			upgraded = &switchConn{Conn: wire}
+			if s.useTLS {
+				tlsConn := tls.Client(wire, s.tlsOptions())
+				if err := tlsConn.HandshakeContext(ctx); err != nil {
+					_ = wire.Close()
+					return nil, fmt.Errorf("TLS handshake: %w", err)
+				}
+				upgraded.set(tlsConn)
+			}
+			return upgraded, nil
 		}),
 	}
 
@@ -137,8 +162,29 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 
-	// Authenticate
-	if err := conn.Auth(s.username, s.password); err != nil {
+	if s.startTLS {
+		if _, err := conn.Cmd("STLS", false); err != nil {
+			return errors.Join(fmt.Errorf("STARTTLS: %w", err), wire.Close())
+		}
+		tlsConn := tls.Client(wire, s.tlsOptions())
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return errors.Join(fmt.Errorf("STARTTLS handshake: %w", err), wire.Close())
+		}
+		upgraded.set(tlsConn)
+	}
+	if s.tokenSource != nil {
+		token, err := s.tokenSource(ctx)
+		if err != nil {
+			return errors.Join(fmt.Errorf("get OAuth2 access token: %w", err), wire.Close())
+		}
+		mechanism, response, err := auth.NewXOAUTH2(s.username, token).Start()
+		if err != nil {
+			return errors.Join(fmt.Errorf("build OAuth2 auth: %w", err), wire.Close())
+		}
+		if err := pop3AuthenticateXOAUTH2(conn, mechanism, base64.StdEncoding.EncodeToString(response)); err != nil {
+			return errors.Join(errors.New("POP3 OAuth2 authentication failed"), wire.Close())
+		}
+	} else if err := conn.Auth(s.username, s.password); err != nil {
 		return errors.Join(fmt.Errorf("auth: %w", err), wire.Close())
 	}
 
@@ -146,6 +192,18 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 	s.wire = wire
 	s.connected = true
 	return nil
+}
+
+func (s *POP3Source) tlsOptions() *tls.Config {
+	if s.tlsConfig == nil {
+		return &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
+	}
+	options := s.tlsConfig.Clone()
+	options.ServerName = s.host
+	if options.MinVersion < tls.VersionTLS12 {
+		options.MinVersion = tls.VersionTLS12
+	}
+	return options
 }
 
 func (s *POP3Source) ListFolders(ctx context.Context) ([]string, error) {
@@ -160,10 +218,6 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 	go func() {
 		defer close(msgChan)
 		defer close(errChan)
-		if since != 0 || until != 0 {
-			errChan <- errors.New("POP3 date filters are unsupported; omit --since and --until")
-			return
-		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
@@ -196,17 +250,58 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		return fmt.Errorf("stat: %w", err)
 	}
 
-	progress.Total = count
+	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", s.host, s.port, s.username)))
+	identities, err := readPOP3UIDLs(s.conn)
+	if err != nil {
+		var netErr net.Error
+		var numErr *strconv.NumError
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &netErr) || errors.As(err, &numErr) || !isUIDLUnsupported(err) {
+			return fmt.Errorf("UIDL: %w", err)
+		}
+		progress.Stage = "UIDL unavailable; full fetch"
+		plugins.ReportFetchProgress(ctx, progress)
+		scope = ""
+		identities = make([]pop3.MessageID, count)
+		for i := range identities {
+			identities[i] = pop3.MessageID{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
+		}
+	} else if len(identities) != count {
+		return fmt.Errorf("UIDL returned %d messages, STAT reported %d", len(identities), count)
+	}
+	var known map[string]bool
+	if scope != "" {
+		known, err = plugins.KnownUIDs(ctx, scope, "INBOX")
+		if err != nil {
+			return fmt.Errorf("load incremental state: %w", err)
+		}
+	}
+	seen := make(map[string]bool, len(identities))
+	seenIDs := make(map[int]bool, len(identities))
+	pending := make([]pop3.MessageID, 0, len(identities))
+	for _, item := range identities {
+		if scope != "" {
+			item.UID = strings.TrimSpace(item.UID)
+			if item.ID <= 0 || item.ID > count || item.UID == "" || seen[item.UID] || seenIDs[item.ID] {
+				return fmt.Errorf("invalid or duplicate UIDL result for message %d", item.ID)
+			}
+			seen[item.UID] = true
+			seenIDs[item.ID] = true
+		}
+		if !known[item.UID] {
+			pending = append(pending, item)
+		}
+	}
+	progress.Total = len(pending)
 	progress.Stage = "fetching"
 	plugins.ReportFetchProgress(ctx, progress)
-	if count == 0 {
+	if len(pending) == 0 {
 		progress.Stage = "finished"
 		plugins.ReportFetchProgress(ctx, progress)
 		return nil
 	}
 
 	// Fetch each message
-	for i := 1; i <= count; i++ {
+	for _, item := range pending {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -214,14 +309,31 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		// RETR retrieves the full message
-		buf, err := s.conn.RetrRaw(i)
+		buf, err := s.conn.RetrRaw(item.ID)
 		if err != nil {
-			return fmt.Errorf("retr message %d: %w", i, err)
+			return fmt.Errorf("retr message %d: %w", item.ID, err)
 		}
 
 		raw := buf.Bytes()
 		progress.Fetched++
 		plugins.ReportFetchProgress(ctx, progress)
+
+		parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+		if err != nil {
+			if since != 0 || until != 0 {
+				return fmt.Errorf("parse Date header for UIDL %q: %w", item.UID, err)
+			}
+		}
+		var messageDate time.Time
+		if parsed != nil {
+			messageDate, err = parsed.Header.Date()
+		}
+		if (since != 0 || until != 0) && (err != nil || messageDate.IsZero()) {
+			return fmt.Errorf("POP3 message %q has no valid Date header required for date filtering", item.UID)
+		}
+		if (since != 0 && messageDate.Unix() < since) || (until != 0 && messageDate.Unix() >= until) {
+			continue
+		}
 
 		// Parse headers for Message-ID
 		messageID := dedup.ExtractMessageID(raw)
@@ -235,9 +347,13 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 		// Internal date - POP3 doesn't provide this reliably
 		internalDate := time.Now().Format(time.RFC3339)
+		if !messageDate.IsZero() {
+			internalDate = messageDate.Format(time.RFC3339)
+		}
 
 		pluginsMsg := &plugins.Message{
-			UID:          strconv.Itoa(i),
+			UIDScope:     scope,
+			UID:          item.UID,
 			Folder:       folder,
 			Raw:          raw,
 			MessageID:    messageID,
@@ -273,6 +389,54 @@ func (s *POP3Source) Close() error {
 	s.client = nil
 	s.connected = false
 	return err
+}
+
+func isUIDLUnsupported(err error) bool {
+	message := strings.ToLower(err.Error())
+	if strings.HasPrefix(message, "unknown response:") {
+		return false
+	}
+	return strings.Contains(message, "not support") || strings.Contains(message, "unsupported") || strings.Contains(message, "unknown command") || strings.Contains(message, "not implemented")
+}
+
+func pop3AuthenticateXOAUTH2(conn *pop3.Conn, mechanism, response string) error {
+	if err := conn.Send("AUTH " + mechanism + " " + response); err != nil {
+		return err
+	}
+	if _, err := conn.ReadOne(); err == nil {
+		return nil
+	} else if strings.HasPrefix(err.Error(), "unknown response: +") {
+		if err := conn.Send(""); err != nil {
+			return err
+		}
+		_, err = conn.ReadOne()
+		return err
+	} else {
+		return err
+	}
+}
+
+func readPOP3UIDLs(conn *pop3.Conn) ([]pop3.MessageID, error) {
+	response, err := conn.Cmd("UIDL", true)
+	if err != nil {
+		return nil, err
+	}
+	var identities []pop3.MessageID
+	for _, line := range bytes.Split(response.Bytes(), []byte("\r\n")) {
+		fields := bytes.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("malformed UIDL row with %d fields", len(fields))
+		}
+		id, err := strconv.Atoi(string(fields[0]))
+		if err != nil {
+			return nil, fmt.Errorf("parse UIDL message number: %w", err)
+		}
+		identities = append(identities, pop3.MessageID{ID: id, UID: string(fields[1])})
+	}
+	return identities, nil
 }
 
 // extractMessageIDFromRaw tries to extract Message-ID from raw message more thoroughly.

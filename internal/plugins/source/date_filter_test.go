@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func datedIMAPSource(t *testing.T, dates []string) (*IMAPSource, <-chan string) 
 			case "CAPABILITY":
 				_, _ = fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1\r\n%s OK capabilities\r\n", tag)
 			case "EXAMINE":
-				_, _ = fmt.Fprintf(conn, "* %d EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n%s OK [READ-ONLY] selected\r\n", len(dates), tag)
+				_, _ = fmt.Fprintf(conn, "* %d EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT %d] next\r\n* OK [HIGHESTMODSEQ 99] modified\r\n%s OK [READ-ONLY] selected\r\n", len(dates), len(dates)+1, tag)
 			case "UID":
 				if parts[2] == "SEARCH" {
 					searches <- line
@@ -59,6 +60,37 @@ func datedIMAPSource(t *testing.T, dates []string) (*IMAPSource, <-chan string) 
 	src := &IMAPSource{host: host, port: port, username: "test-user", password: "synthetic-value", connTimeout: time.Second, readTimeout: time.Second, maxConns: 100}
 	t.Cleanup(func() { _ = src.Close() })
 	return src, searches
+}
+
+func TestIMAPReportsSelectedFolderState(t *testing.T) {
+	src, _ := datedIMAPSource(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var observation plugins.FolderStateObservation
+	ctx = plugins.WithFolderStateObserver(ctx, func(value plugins.FolderStateObservation) error {
+		observation = value
+		return nil
+	})
+	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	for messages != nil || failures != nil {
+		select {
+		case _, ok := <-messages:
+			if !ok {
+				messages = nil
+			}
+		case err, ok := <-failures:
+			if !ok {
+				failures = nil
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if observation != (plugins.FolderStateObservation{Folder: "INBOX", UIDValidity: "1", UIDNext: "1", ModSeq: "99"}) {
+		t.Fatalf("folder observation = %+v", observation)
+	}
 }
 
 func fetchDatedMessages(t *testing.T, src *IMAPSource, since, until int64) ([]*plugins.Message, []error) {
@@ -108,6 +140,7 @@ func TestIMAPExactTimestampBounds(t *testing.T) {
 			for _, msg := range messages {
 				ids = append(ids, msg.UID)
 			}
+			sort.Strings(ids)
 			if got := strings.Join(ids, ","); got != tc.want {
 				t.Fatalf("fetched UIDs %q, want %q", got, tc.want)
 			}

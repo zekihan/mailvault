@@ -70,3 +70,33 @@ type dialFunc func(network, address string) (net.Conn, error)
 func (dial dialFunc) Dial(network, address string) (net.Conn, error) {
 	return dial(network, address)
 }
+
+// switchConn keeps a protocol client's buffered reader and writer attached
+// while upgrading its underlying transport to TLS after STARTTLS/STLS.
+type switchConn struct {
+	net.Conn
+	mu      sync.RWMutex
+	current net.Conn
+}
+
+func (c *switchConn) set(conn net.Conn) {
+	c.mu.Lock()
+	c.current = conn
+	c.mu.Unlock()
+}
+
+func (c *switchConn) active() net.Conn {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.current != nil {
+		return c.current
+	}
+	return c.Conn
+}
+
+func (c *switchConn) Read(p []byte) (int, error)         { return c.active().Read(p) }
+func (c *switchConn) Write(p []byte) (int, error)        { return c.active().Write(p) }
+func (c *switchConn) SetDeadline(t time.Time) error      { return c.active().SetDeadline(t) }
+func (c *switchConn) SetReadDeadline(t time.Time) error  { return c.active().SetReadDeadline(t) }
+func (c *switchConn) SetWriteDeadline(t time.Time) error { return c.active().SetWriteDeadline(t) }
+func (c *switchConn) Close() error                       { return c.Conn.Close() }
