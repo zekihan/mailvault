@@ -221,19 +221,21 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		if err := s.connectLocked(ctx); err != nil {
+		err := retryFetch(ctx, msgChan, func(ctx context.Context, output chan<- *plugins.Message) error {
+			if err := s.connectLocked(ctx); err != nil {
+				return err
+			}
+			finish := s.wire.beginIO(ctx)
+			defer finish()
+			if err := s.fetchFolder(ctx, "INBOX", output, since, until); err != nil {
+				s.connected = false
+				_ = s.wire.Close()
+				return fmt.Errorf("fetch folder: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
 			errChan <- err
-			return
-		}
-		finish := s.wire.beginIO(ctx)
-		defer finish()
-
-		// POP3 only supports INBOX
-		if err := s.fetchFolder(ctx, "INBOX", msgChan, since, until); err != nil {
-			s.connected = false
-			_ = s.wire.Close()
-			errChan <- fmt.Errorf("fetch folder: %w", err)
-			return
 		}
 	}()
 

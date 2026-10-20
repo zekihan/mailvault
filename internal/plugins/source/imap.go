@@ -215,24 +215,25 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		if err := s.connectLocked(ctx); err != nil {
+		err := retryFetch(ctx, msgChan, func(ctx context.Context, output chan<- *plugins.Message) error {
+			if err := s.connectLocked(ctx); err != nil {
+				return err
+			}
+			sessions := []*imapSession{{client: s.client, wire: s.wire}}
+			for _, folder := range folders {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := s.fetchFolder(ctx, folder, output, since, until, sessions); err != nil {
+					_ = s.client.Close()
+					s.connected = false
+					return fmt.Errorf("fetch folder %q: %w", folder, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
 			errChan <- err
-			return
-		}
-		sessions := []*imapSession{{client: s.client, wire: s.wire}}
-
-		for _, folder := range folders {
-			select {
-			case <-ctx.Done():
-				errChan <- ctx.Err()
-				return
-			default:
-			}
-
-			if err := s.fetchFolder(ctx, folder, msgChan, since, until, sessions); err != nil {
-				errChan <- fmt.Errorf("fetch folder %q: %w", folder, err)
-				return
-			}
 		}
 	}()
 
@@ -276,8 +277,13 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 	}
 
+	if err := s.refreshMetadata(ctx, sessions[0], scope, folder, known); err != nil {
+		return fmt.Errorf("refresh metadata: %w", err)
+	}
+
 	// Build search criteria
 	criteria := timestampSearchCriteria(since, until)
+	excludeDelivered(&criteria, known)
 
 	// Search for messages
 	finish = sessions[0].wire.beginIO(ctx)

@@ -156,7 +156,13 @@ func TestSourceReadTimeoutAndCancellation(t *testing.T) {
 				t.Run(kind+"/"+phase+"/cancel="+strconv.FormatBool(cancelOperation), func(t *testing.T) {
 					reached := make(chan struct{}, 1)
 					host, port := protocolServer(t, func(conn net.Conn, stop <-chan struct{}) {
-						stall := func() { reached <- struct{}{}; <-stop }
+						stall := func() {
+							select {
+							case reached <- struct{}{}:
+							default:
+							}
+							<-stop
+						}
 						if phase == "greeting" {
 							stall()
 							return
