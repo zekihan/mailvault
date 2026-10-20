@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,22 @@ import (
 )
 
 type memoryStore map[string]string
+
+type synchronizedBuffer struct {
+	mu    sync.Mutex
+	value strings.Builder
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.value.Write(p)
+}
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.value.String()
+}
 
 func (s memoryStore) Get(_ context.Context, key string) (string, error) { return s[key], nil }
 func (s memoryStore) Set(_ context.Context, key, value string) error    { s[key] = value; return nil }
@@ -272,5 +289,152 @@ func TestRefreshPreservesRefreshTokenWhenRotationOmitted(t *testing.T) {
 	}
 	if saved.RefreshToken != "synthetic-refresh" || saved.AccessToken != "synthetic-access" {
 		t.Fatalf("refresh token was lost: %+v", saved)
+	}
+}
+
+func TestGoogleLoopbackLoginUsesStateAndPKCE(t *testing.T) {
+	var gotVerifier string
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse token form: %v", err)
+			return
+		}
+		if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "google-client" || r.Form.Get("code") != "fixture-code" || r.Form.Get("redirect_uri") == "" {
+			t.Errorf("unexpected token form: %v", r.Form)
+		}
+		gotVerifier = r.Form.Get("code_verifier")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fixture-access", "refresh_token": "fixture-refresh", "expires_in": 3600})
+	}))
+	defer tokenServer.Close()
+	store := memoryStore{}
+	var output synchronizedBuffer
+	cfg := Config{Provider: "google", ClientID: "google-client", AuthorizationURL: "https://accounts.example.invalid/auth", TokenURL: tokenServer.URL, HTTPClient: tokenServer.Client()}
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- LoopbackLogin(ctx, cfg, "account", store, &output) }()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	lines := strings.Split(output.String(), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("missing authorization URL: %q", output.String())
+	}
+	authURL, err := url.Parse(lines[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := authURL.Query()
+	if q.Get("code_challenge_method") != "S256" || q.Get("state") == "" {
+		t.Fatalf("authorization request missing state/PKCE: %v", q)
+	}
+	redirect, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackURL := *redirect
+	callbackURL.Path = ""
+	callbackQuery := callbackURL.Query()
+	callbackQuery.Set("state", q.Get("state"))
+	callbackQuery.Set("code", "fixture-code")
+	callbackURL.RawQuery = callbackQuery.Encode()
+	response, err := http.Get(callbackURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	challengeSum := sha256.Sum256([]byte(gotVerifier))
+	if gotVerifier == "" || q.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(challengeSum[:]) {
+		t.Fatal("token exchange verifier did not match PKCE challenge")
+	}
+	if strings.Contains(output.String(), "fixture-access") || strings.Contains(output.String(), "fixture-refresh") {
+		t.Fatal("OAuth output leaked tokens")
+	}
+	var saved tokenState
+	if err := json.Unmarshal([]byte(store["account"]), &saved); err != nil || saved.RefreshToken != "fixture-refresh" {
+		t.Fatalf("saved token state = %+v, %v", saved, err)
+	}
+}
+
+func TestGoogleLoopbackRejectsStateAndHonorsCancellation(t *testing.T) {
+	var output synchronizedBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- LoopbackLogin(ctx, Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(output.String(), "Open this URL") {
+		select {
+		case err := <-done:
+			t.Fatalf("loopback flow did not start: %v", err)
+		default:
+			t.Fatal("loopback flow did not start")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("LoopbackLogin() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("loopback login ignored cancellation")
+	}
+}
+
+func TestGoogleLoopbackRejectsMismatchedState(t *testing.T) {
+	var output synchronizedBuffer
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		done <- LoopbackLogin(ctx, Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	lines := strings.Split(output.String(), "\n")
+	if len(lines) < 2 {
+		t.Fatal("authorization URL was not written")
+	}
+	parsed, err := url.Parse(lines[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect, err := url.Parse(parsed.Query().Get("redirect_uri"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback := *redirect
+	callback.Path = ""
+	query := callback.Query()
+	query.Set("state", "wrong-state")
+	query.Set("code", "fixture-code")
+	callback.RawQuery = query.Encode()
+	response, err := http.Get(callback.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mismatched state status = %d", response.StatusCode)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("LoopbackLogin() after cancel = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("loopback login did not honor cancellation after state mismatch")
 	}
 }

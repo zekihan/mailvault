@@ -47,7 +47,13 @@ func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
 				return SourceConfig{}, fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", sourceName)
 			}
 			if source.OAuth2.ClientSecret != "" {
-				return SourceConfig{}, fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", sourceName)
+				return SourceConfig{}, fmt.Errorf("source %q: oauth2.client_secret is not supported for public OAuth clients", sourceName)
+			}
+			if source.OAuth2.Provider != "" && source.OAuth2.Provider != "microsoft" && source.OAuth2.Provider != "google" {
+				return SourceConfig{}, fmt.Errorf("source %q: oauth2.provider must be microsoft or google", sourceName)
+			}
+			if source.OAuth2.TokenFile != "" && source.OAuth2.TokenKey != "" {
+				return SourceConfig{}, fmt.Errorf("source %q: configure either oauth2.token_file or oauth2.token_key", sourceName)
 			}
 			return source, nil
 		}
@@ -91,6 +97,13 @@ func load(path string, resolveAll bool, authSource string) (*Config, error) {
 	configDir := ""
 	if used := v.ConfigFileUsed(); used != "" {
 		configDir = filepath.Dir(used)
+	}
+	if configDir != "" {
+		for i := range cfg.Sources {
+			if cfg.Sources[i].OAuth2 != nil && cfg.Sources[i].OAuth2.TokenFile != "" && !filepath.IsAbs(cfg.Sources[i].OAuth2.TokenFile) {
+				cfg.Sources[i].OAuth2.TokenFile = filepath.Join(configDir, cfg.Sources[i].OAuth2.TokenFile)
+			}
+		}
 	}
 
 	// Expand credential references in config
@@ -152,7 +165,13 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", s.Name)
 			}
 			if s.OAuth2.ClientSecret != "" {
-				return fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", s.Name)
+				return fmt.Errorf("source %q: oauth2.client_secret is not supported for public OAuth clients", s.Name)
+			}
+			if s.OAuth2.Provider != "" && s.OAuth2.Provider != "microsoft" && s.OAuth2.Provider != "google" {
+				return fmt.Errorf("source %q: oauth2.provider must be microsoft or google", s.Name)
+			}
+			if s.OAuth2.TokenFile != "" && s.OAuth2.TokenKey != "" {
+				return fmt.Errorf("source %q: configure either oauth2.token_file or oauth2.token_key", s.Name)
 			}
 		}
 		if s.MaxConnections <= 0 {
@@ -370,6 +389,9 @@ func applyIndexedEnvironment(cfg *Config, v *viper.Viper) error {
 		}
 		if oauth != nil {
 			op := p + "oauth2."
+			if set, value := bindEnvironment(v, op+"provider"); set {
+				oauth.Provider = value
+			}
 			if set, value := bindEnvironment(v, op+"client_id"); set {
 				oauth.ClientID = value
 			}
@@ -381,6 +403,12 @@ func applyIndexedEnvironment(cfg *Config, v *viper.Viper) error {
 			}
 			if set, value := bindEnvironment(v, op+"token_key"); set {
 				oauth.TokenKey = value
+			}
+			if set, value := bindEnvironment(v, op+"token_file"); set {
+				oauth.TokenFile = value
+			}
+			if set, value := bindEnvironment(v, op+"authorization_url"); set {
+				oauth.AuthorizationURL = value
 			}
 			if set, value := bindEnvironment(v, op+"device_code_url"); set {
 				oauth.DeviceCodeURL = value

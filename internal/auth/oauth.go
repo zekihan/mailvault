@@ -2,10 +2,14 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -14,18 +18,23 @@ import (
 )
 
 const (
-	DefaultTenant = "consumers"
-	DefaultScope  = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All offline_access"
+	DefaultTenant  = "consumers"
+	DefaultScope   = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All offline_access"
+	GoogleScope    = "https://mail.google.com/"
+	GoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
+	GoogleTokenURL = "https://oauth2.googleapis.com/token"
 )
 
 // Config contains the public-client settings needed by Microsoft's device flow.
 type Config struct {
-	ClientID      string
-	Tenant        string
-	Scopes        []string
-	DeviceCodeURL string
-	TokenURL      string
-	HTTPClient    *http.Client
+	Provider         string
+	ClientID         string
+	Tenant           string
+	Scopes           []string
+	DeviceCodeURL    string
+	AuthorizationURL string
+	TokenURL         string
+	HTTPClient       *http.Client
 }
 
 // Store keeps OAuth state as one opaque value per account.
@@ -44,6 +53,9 @@ type tokenState struct {
 // printing either token. Output contains only the device verification details.
 func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, output io.Writer) error {
 	cfg = cfg.normalized()
+	if cfg.Provider != "microsoft" {
+		return errors.New("device login is supported only for Microsoft OAuth")
+	}
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -104,6 +116,136 @@ func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, o
 	}
 }
 
+// LoopbackLogin authorizes a Google desktop OAuth client with PKCE and stores
+// the resulting token set without printing secrets.
+func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store, output io.Writer) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+	}
+	cfg = cfg.normalized()
+	if cfg.Provider != "google" {
+		return errors.New("loopback login is supported only for Google OAuth")
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if account == "" || store == nil || output == nil {
+		return errors.New("account, token store, and output are required")
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("start OAuth loopback listener: %w", err)
+	}
+	defer func() { _ = listener.Close() }()
+	redirectURI := "http://" + listener.Addr().String()
+	state, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("create OAuth state: %w", err)
+	}
+	verifier, err := randomURLToken(32)
+	if err != nil {
+		return fmt.Errorf("create PKCE verifier: %w", err)
+	}
+	digest := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	authURL, _ := url.Parse(cfg.AuthorizationURL)
+	query := authURL.Query()
+	query.Set("client_id", cfg.ClientID)
+	query.Set("redirect_uri", redirectURI)
+	query.Set("response_type", "code")
+	query.Set("scope", strings.Join(cfg.Scopes, " "))
+	query.Set("state", state)
+	query.Set("code_challenge", challenge)
+	query.Set("code_challenge_method", "S256")
+	query.Set("access_type", "offline")
+	query.Set("prompt", "consent")
+	authURL.RawQuery = query.Encode()
+	if _, err := fmt.Fprintf(output, "Open this URL to authorize Mailvault:\n%s\n", authURL.String()); err != nil {
+		return fmt.Errorf("write OAuth instructions: %w", err)
+	}
+	type callback struct {
+		code string
+		err  error
+	}
+	callbackCh := make(chan callback, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Query().Get("state") != state {
+			http.Error(w, "invalid OAuth state", http.StatusBadRequest)
+			return
+		}
+		if oauthErr := r.URL.Query().Get("error"); oauthErr != "" {
+			http.Error(w, "authorization was not completed", http.StatusBadRequest)
+			select {
+			case callbackCh <- callback{err: &protocolError{Code: safeCode(oauthErr, http.StatusBadRequest)}}:
+			default:
+			}
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" || containsControl(code) {
+			http.Error(w, "missing authorization code", http.StatusBadRequest)
+			select {
+			case callbackCh <- callback{err: errors.New("OAuth callback did not include an authorization code")}:
+			default:
+			}
+			return
+		}
+		_, _ = io.WriteString(w, "Mailvault authorization complete. You may close this window.\n")
+		select {
+		case callbackCh <- callback{code: code}:
+		default:
+		}
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	defer func() { _ = server.Close() }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-serveErr:
+		return fmt.Errorf("serve OAuth callback: %w", err)
+	case result := <-callbackCh:
+		if result.err != nil {
+			return result.err
+		}
+		state, err := requestToken(ctx, cfg, url.Values{"grant_type": {"authorization_code"}, "client_id": {cfg.ClientID}, "code": {result.code}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
+		if err != nil {
+			return err
+		}
+		if state.RefreshToken == "" {
+			return errors.New("authorization response did not include a refresh token; retry consent with offline access")
+		}
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			return fmt.Errorf("encode OAuth state: %w", err)
+		}
+		if err := store.Set(ctx, account, string(encoded)); err != nil {
+			return fmt.Errorf("save OAuth state: %w", err)
+		}
+		return nil
+	}
+}
+
+func randomURLToken(size int) (string, error) {
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // NewTokenProvider returns a concurrency-safe provider that refreshes tokens
 // before expiry and atomically saves rotated refresh tokens through Store.Set.
 func NewTokenProvider(cfg Config, account string, store Store) (*Provider, error) {
@@ -139,7 +281,7 @@ func (p *Provider) AccessToken(ctx context.Context) (string, error) {
 	}
 	encoded, err := p.store.Get(ctx, p.account)
 	if err != nil {
-		return "", fmt.Errorf("read OAuth state from keyring: %w", err)
+		return "", fmt.Errorf("read OAuth state: %w", err)
 	}
 	var state tokenState
 	if err := json.Unmarshal([]byte(encoded), &state); err != nil || state.RefreshToken == "" {
@@ -165,24 +307,40 @@ func (p *Provider) AccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("encode OAuth state: %w", err)
 	}
 	if err := p.store.Set(ctx, p.account, string(encodedState)); err != nil {
-		return "", fmt.Errorf("save refreshed OAuth state to keyring: %w", err)
+		return "", fmt.Errorf("save refreshed OAuth state: %w", err)
 	}
 	return refreshed.AccessToken, nil
 }
 
 func (c Config) normalized() Config {
-	if c.Tenant == "" {
-		c.Tenant = DefaultTenant
+	if c.Provider == "" {
+		c.Provider = "microsoft"
 	}
-	if len(c.Scopes) == 0 {
-		c.Scopes = strings.Fields(DefaultScope)
-	}
-	base := "https://login.microsoftonline.com/" + url.PathEscape(c.Tenant) + "/oauth2/v2.0/"
-	if c.DeviceCodeURL == "" {
-		c.DeviceCodeURL = base + "devicecode"
-	}
-	if c.TokenURL == "" {
-		c.TokenURL = base + "token"
+	switch c.Provider {
+	case "google":
+		if len(c.Scopes) == 0 {
+			c.Scopes = []string{GoogleScope}
+		}
+		if c.AuthorizationURL == "" {
+			c.AuthorizationURL = GoogleAuthURL
+		}
+		if c.TokenURL == "" {
+			c.TokenURL = GoogleTokenURL
+		}
+	default:
+		if c.Tenant == "" {
+			c.Tenant = DefaultTenant
+		}
+		if len(c.Scopes) == 0 {
+			c.Scopes = strings.Fields(DefaultScope)
+		}
+		base := "https://login.microsoftonline.com/" + url.PathEscape(c.Tenant) + "/oauth2/v2.0/"
+		if c.DeviceCodeURL == "" {
+			c.DeviceCodeURL = base + "devicecode"
+		}
+		if c.TokenURL == "" {
+			c.TokenURL = base + "token"
+		}
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	if c.HTTPClient != nil {
@@ -197,7 +355,16 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.ClientID) == "" {
 		return errors.New("OAuth2 client_id is required")
 	}
-	for _, endpoint := range []string{c.DeviceCodeURL, c.TokenURL} {
+	endpoints := []string{c.TokenURL}
+	switch c.Provider {
+	case "google":
+		endpoints = append(endpoints, c.AuthorizationURL)
+	case "microsoft":
+		endpoints = append(endpoints, c.DeviceCodeURL)
+	default:
+		return errors.New("OAuth2 provider must be microsoft or google")
+	}
+	for _, endpoint := range endpoints {
 		u, err := url.Parse(endpoint)
 		if err != nil || (!httpsURL(u.Scheme) && !httpTestURL(u.Scheme, u.Hostname())) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return errors.New("OAuth2 endpoints must use HTTPS (HTTP is allowed only for localhost tests)")
