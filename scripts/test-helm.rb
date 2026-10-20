@@ -22,6 +22,10 @@ check(base.none? { |d| %w[Deployment Service Pod NetworkPolicy].include?(d['kind
 check(cron(base)['suspend'] == true, 'schedule must default to suspended')
 check(cron(base)['concurrencyPolicy'] == 'Forbid', 'scheduled jobs must not overlap')
 check(base.select { |d| d['kind'] == 'PersistentVolumeClaim' }.all? { |d| d['metadata']['annotations']['helm.sh/resource-policy'] == 'keep' }, 'PVCs must be retained')
+base_image = cron(base)['jobTemplate']['spec']['template']['spec']['containers'][0]['image']
+check(base_image == 'ghcr.io/zekihan/mailvault:dev', 'image must default to chart appVersion')
+override = render('--set', 'image.tag=custom')
+check(cron(override)['jobTemplate']['spec']['template']['spec']['containers'][0]['image'] == 'ghcr.io/zekihan/mailvault:custom', 'explicit image tag must take precedence')
 setup = render('--set', 'proton.enabled=true')
 check(setup.find { |d| d['kind'] == 'Deployment' }['spec']['replicas'] == 0, 'setup must stop Bridge')
 check(setup.any? { |d| d['kind'] == 'Pod' }, 'setup pod missing')

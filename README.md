@@ -259,7 +259,7 @@ state, Maildir backups, and verified STARTTLS, see
 
 ## Container publishing
 
-The `Container Release` GitHub Actions workflow publishes Mailvault for
+The `Release` GitHub Actions workflow publishes Mailvault for
 `linux/amd64` and `linux/arm64` to `ghcr.io/zekihan/mailvault` and
 `docker.io/<DOCKER_USERNAME>/mailvault` after the checks workflow passes.
 Bridge uses a separate GHCR image published from the `zekihan/dockerfiles` repository.
@@ -286,3 +286,6 @@ The workflow follows Docker's [multiple-registry publishing guide](https://docs.
 The [Helm chart](charts/mailvault/README.md) provides a suspended backup CronJob,
 retained state and backup volumes, and an optional continuously running Proton
 Bridge with verified TLS and manual initialization instructions.
+
+Version-tagged releases also publish the Helm chart to
+`oci://ghcr.io/zekihan/charts/mailvault` after container publication succeeds.

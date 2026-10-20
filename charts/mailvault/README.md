@@ -9,7 +9,8 @@ to suspended and cannot be enabled without `initialized: true`.
 The patched Bridge image `3.27.1-r1` must be published from `zekihan/dockerfiles`
 before deploying Proton. Do not substitute the original 3.27.1 image: it only
 listens on loopback. Select a published Mailvault image tag/digest in values;
-`latest` is a convenience default, not an immutable release.
+The Mailvault image tag defaults to the chart appVersion; source checkouts use
+`dev`, so override it when installing locally.
 
 ## Storage and configuration
 
@@ -166,3 +167,23 @@ same CLI steps. Disable setup, verify a manual backup, then resume scheduling.
 No certificate is trusted by fetching it from the network, and TLS verification
 is never disabled. Protect both the Kubernetes Secrets and the Bridge PVC:
 the unattended GPG key inside that volume permits decrypting its credentials.
+
+## Published OCI chart
+
+The release workflow packages and pushes the chart after checks and container
+publication succeed for a `v*` release tag. The chart version, appVersion, and
+default Mailvault image tag match that release (for example, `v1.2.3` becomes
+`1.2.3`). Manual branch runs publish containers only; they do not overwrite a
+released chart. Authentication uses the workflow's GITHUB_TOKEN with packages
+write permission. Make the GHCR chart package public if anonymous pulls are wanted.
+
+Once a release is published:
+
+```sh
+helm upgrade --install backup oci://ghcr.io/zekihan/charts/mailvault \
+  --version 1.2.3 --namespace mailvault --create-namespace \
+  -f /path/to/private-values.yaml
+```
+
+Replace `1.2.3` with an actual published release. Initial scheduling remains
+suspended; follow the setup instructions above before enabling it.

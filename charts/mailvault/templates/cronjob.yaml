@@ -26,7 +26,7 @@ spec:
           imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
           containers:
             - name: mailvault
-              image: {{ include "mailvault.image" .Values.image | quote }}
+              image: {{ include "mailvault.image" (merge (dict "defaultTag" .Chart.AppVersion) .Values.image) | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               args: ["--config", "/config/config.yaml", "--state-dir", "/state", "sync"]
               securityContext:

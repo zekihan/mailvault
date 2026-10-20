@@ -1,6 +1,7 @@
 image:
   repository: ghcr.io/zekihan/mailvault
-  tag: latest
+  # Defaults to the chart appVersion; override when installing from source.
+  tag: ""
   digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
