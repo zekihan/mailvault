@@ -27,7 +27,7 @@ type verificationReport struct {
 
 func newVerifyCommand() *cobra.Command {
 	return &cobra.Command{Use: "verify [target]", Short: "Verify stored backup messages against their recorded SHA-256 hashes", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+		cfg, err := config.LoadSelected(cfgFile, "", args[0])
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}

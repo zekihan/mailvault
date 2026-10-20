@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,5 +77,21 @@ func TestVerifyReportsCorruptMaildirWithoutChangingState(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("read-only verification changed the state database")
+	}
+}
+
+func TestVerifyDoesNotResolveMailboxCredentials(t *testing.T) {
+	configureCLI(t)
+	path := t.TempDir()
+	contents := fmt.Sprintf("sources:\n  - name: unavailable\n    type: imap\n    host: example.invalid\n    username: fixture\n    password_ref: env:MAILVAULT_TEST_ABSENT_PASSWORD\ntargets:\n  - name: local\n    type: maildir\n    config:\n      path: %q\npairs:\n  - source: unavailable\n    targets: [local]\n", path)
+	t.Setenv("MAILVAULT_TEST_ABSENT_PASSWORD", "")
+	if err := os.WriteFile(cfgFile, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newVerifyCommand()
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	if err := cmd.RunE(cmd, []string{"local"}); err != nil {
+		t.Fatalf("offline verify required source credentials: %v", err)
 	}
 }

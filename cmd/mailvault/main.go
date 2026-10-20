@@ -162,7 +162,12 @@ func loadStateStore() (*state.Store, error) {
 func runSync(cmd *cobra.Command, args []string) (err error) {
 	ctx := commandContext(cmd)
 
-	cfg, err := loadConfig()
+	var cfg *config.Config
+	if repairMode {
+		cfg, err = config.LoadSelected(cfgFile, repairSource, repairTarget)
+	} else {
+		cfg, err = loadConfig()
+	}
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
