@@ -13,14 +13,19 @@ import (
 	"time"
 )
 
-func imapPoolFixture(t *testing.T, count int, blockFetch bool) (string, int, <-chan struct{}, <-chan struct{}, func() int, func(map[string]int)) {
+func imapPoolFixture(t *testing.T, count int, blockFetch bool, rejectSecondFetch ...bool) (string, int, <-chan struct{}, <-chan struct{}, func() int, func(map[string]int)) {
 	t.Helper()
 	accepted := make(chan struct{}, 8)
 	fetchStarted := make(chan struct{}, 8)
 	var mu sync.Mutex
 	active, maxActive := 0, 0
+	connectionCount := 0
 	got := make(map[string]int)
 	host, port := protocolServer(t, func(conn net.Conn, stop <-chan struct{}) {
+		mu.Lock()
+		connectionCount++
+		connectionID := connectionCount
+		mu.Unlock()
 		accepted <- struct{}{}
 		_, _ = fmt.Fprint(conn, "* OK fixture ready\r\n")
 		scanner := bufio.NewScanner(conn)
@@ -60,6 +65,14 @@ func imapPoolFixture(t *testing.T, count int, blockFetch bool) (string, int, <-c
 					select {
 					case fetchStarted <- struct{}{}:
 					default:
+					}
+					if len(rejectSecondFetch) > 0 && rejectSecondFetch[0] {
+						if connectionID == 1 {
+							<-stop
+							return
+						}
+						_, _ = fmt.Fprintf(conn, "%s NO server policy rejection\r\n", tag)
+						return
 					}
 					if blockFetch {
 						<-stop
@@ -204,4 +217,36 @@ func TestIMAPConnectionPoolCancellationInterruptsBlockedFetch(t *testing.T) {
 		}
 	}
 	_ = src.Close()
+}
+
+func TestIMAPConnectionPoolDoesNotRetryTaggedFetchRejection(t *testing.T) {
+	host, port, accepted, _, _, _ := imapPoolFixture(t, 26, false, true)
+	src := &IMAPSource{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, maxConns: 2, connTimeout: time.Second, readTimeout: time.Second}
+	defer src.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	var failure error
+	for messages != nil || failures != nil {
+		select {
+		case _, ok := <-messages:
+			if !ok {
+				messages = nil
+			}
+		case err, ok := <-failures:
+			if !ok {
+				failures = nil
+			} else if err != nil {
+				failure = err
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if failure == nil || !strings.Contains(failure.Error(), "server policy rejection") {
+		t.Fatalf("fetch error = %v, want tagged NO rejection", failure)
+	}
+	if n := len(accepted); n != 2 {
+		t.Fatalf("opened %d IMAP sessions, want no reconnect after tagged NO; error: %v", n, failure)
+	}
 }

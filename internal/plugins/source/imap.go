@@ -226,7 +226,6 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 					return err
 				}
 				if err := s.fetchFolder(ctx, folder, output, since, until, sessions); err != nil {
-					err = joinTransportError(err, s.wire)
 					_ = s.client.Close()
 					s.connected = false
 					return fmt.Errorf("fetch folder %q: %w", folder, err)
@@ -252,7 +251,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	selected, err := selectCmd.Wait()
 	finish()
 	if err != nil {
-		return fmt.Errorf("select %q: %w", folder, err)
+		return fmt.Errorf("select %q: %w", folder, joinTransportError(err, sessions[0].wire))
 	}
 	selectedUIDValidity := selected.UIDValidity
 	observation := plugins.FolderStateObservation{Folder: folder}
@@ -293,7 +292,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	searchData, err := search.Wait()
 	finish()
 	if err != nil {
-		return fmt.Errorf("search: %w", err)
+		return fmt.Errorf("search: %w", joinTransportError(err, sessions[0].wire))
 	}
 
 	uids := searchData.AllUIDs()
@@ -440,8 +439,11 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 		Flags:        true,
 	})
 
+	closeFetch := true
 	defer func() {
-		err = errors.Join(err, fetch.Close())
+		if closeFetch {
+			err = errors.Join(err, fetch.Close())
+		}
 	}()
 
 	for {
@@ -459,6 +461,10 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 		// Collect message data into buffer
 		buf, err := collectFetchMessage(msg)
 		if err != nil {
+			// A truncated literal releases the IMAP decoder before this goroutine
+			// can read again. Closing the command would race that decoder; the
+			// caller closes this session after the failed batch.
+			closeFetch = false
 			return fmt.Errorf("collect message: %w", err)
 		}
 		fetched()
@@ -528,13 +534,13 @@ func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMe
 			var body []byte
 			if item.Literal != nil {
 				want := item.Literal.Size()
-				var err error
-				body, err = io.ReadAll(item.Literal)
+				if want < 0 || uint64(want) > uint64(^uint(0)>>1) {
+					return nil, fmt.Errorf("invalid body literal size %d", want)
+				}
+				body = make([]byte, int(want))
+				_, err := io.ReadFull(item.Literal, body)
 				if err != nil {
 					return nil, err
-				}
-				if int64(len(body)) != want {
-					return nil, io.ErrUnexpectedEOF
 				}
 			}
 			buf.BodySection = append(buf.BodySection, imapclient.FetchBodySectionBuffer{Section: item.Section, Bytes: body})
@@ -556,13 +562,13 @@ func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMe
 			var body []byte
 			if item.Literal != nil {
 				want := item.Literal.Size()
-				var err error
-				body, err = io.ReadAll(item.Literal)
+				if want < 0 || uint64(want) > uint64(^uint(0)>>1) {
+					return nil, fmt.Errorf("invalid binary literal size %d", want)
+				}
+				body = make([]byte, int(want))
+				_, err := io.ReadFull(item.Literal, body)
 				if err != nil {
 					return nil, err
-				}
-				if int64(len(body)) != want {
-					return nil, io.ErrUnexpectedEOF
 				}
 			}
 			buf.BinarySection = append(buf.BinarySection, imapclient.FetchBinarySectionBuffer{Section: item.Section, Bytes: body})

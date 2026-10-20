@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/emersion/go-imap/v2"
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
@@ -16,6 +17,10 @@ func transientSourceError(err error) bool {
 }
 
 func joinTransportError(err error, wire *deadlineConn) error {
+	var statusErr *imap.Error
+	if errors.As(err, &statusErr) && (statusErr.Type == imap.StatusResponseTypeNo || statusErr.Type == imap.StatusResponseTypeBad) {
+		return err
+	}
 	if transportErr := wire.transportError(); transportErr != nil {
 		return errors.Join(err, transportErr)
 	}

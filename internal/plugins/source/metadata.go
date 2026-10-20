@@ -47,7 +47,7 @@ func (s *IMAPSource) refreshMetadata(ctx context.Context, session *imapSession, 
 		failure = errors.Join(failure, fetch.Close())
 		finish()
 		if failure != nil {
-			return failure
+			return joinTransportError(failure, session.wire)
 		}
 	}
 	return nil
