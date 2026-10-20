@@ -73,37 +73,50 @@ spec:
       targetPort: imap
 {{- if .Values.proton.setup }}
 ---
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: {{ $name }}-bridge-setup
 spec:
-  automountServiceAccountToken: false
-  imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
-  restartPolicy: Never
-  containers:
-    - name: setup
-      image: {{ include "mailvault.image" .Values.proton.image | quote }}
-      imagePullPolicy: {{ .Values.proton.image.pullPolicy }}
-      command: ["sleep", "infinity"]
-      resources: {{ .Values.proton.resources | toJson }}
-      volumeMounts:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: bridge-setup
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: bridge-setup
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+      restartPolicy: Always
+      containers:
+        - name: setup
+          image: {{ include "mailvault.image" .Values.proton.image | quote }}
+          imagePullPolicy: {{ .Values.proton.image.pullPolicy }}
+          command: ["sleep", "infinity"]
+          resources: {{ .Values.proton.resources | toJson }}
+          volumeMounts:
+            - name: state
+              mountPath: /root
+            - name: export
+              mountPath: /bridge-certs
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
         - name: state
-          mountPath: /root
+          persistentVolumeClaim:
+            claimName: {{ include "mailvault.claim" (dict "settings" .Values.proton.persistence "name" (printf "%s-bridge" $name)) }}
         - name: export
-          mountPath: /bridge-certs
+          emptyDir: {}
         - name: tls
-          mountPath: /tls
-          readOnly: true
-  volumes:
-    - name: state
-      persistentVolumeClaim:
-        claimName: {{ include "mailvault.claim" (dict "settings" .Values.proton.persistence "name" (printf "%s-bridge" $name)) }}
-    - name: export
-      emptyDir: {}
-    - name: tls
-      secret:
-        secretName: {{ .Values.proton.tlsSecret }}
+          secret:
+            secretName: {{ .Values.proton.tlsSecret }}
 {{- end }}
 {{- if .Values.proton.networkPolicy }}
 ---

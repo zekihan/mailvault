@@ -8,3 +8,4 @@
 /mail/
 /.env.proton
 /secrets/
+/proton-tls/

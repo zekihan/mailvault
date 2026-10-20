@@ -4,3 +4,6 @@
 {{- if and .Values.proton.enabled .Values.proton.setup (not .Values.suspend) -}}
 {{- fail "Proton setup requires suspend=true" -}}
 {{- end -}}
+{{- if and .Values.setup.enabled (not .Values.suspend) -}}
+{{- fail "Mailvault setup requires suspend=true" -}}
+{{- end -}}

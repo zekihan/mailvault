@@ -6,6 +6,10 @@ Proton Bridge runs continuously as a single Deployment with Recreate updates.
 There are no proxies, host ports, or privileged containers. Scheduling defaults
 to suspended and cannot be enabled without `initialized: true`.
 
+Run the local-file examples from this repository checkout. TLS files generated
+below live under ignored `secrets/`; the legacy
+`proton-tls/` path is also ignored. Never force-add these files to Git.
+
 The patched Bridge image `3.27.1-r1` must be published from `zekihan/dockerfiles`
 before deploying Proton. Do not substitute the original 3.27.1 image: it only
 listens on loopback. Select a published Mailvault image tag/digest in values;
@@ -48,6 +52,51 @@ This creates the suspended CronJob `backup-mailvault`. Provision credentials,
 then follow the manual backup and scheduling steps below. No Bridge resources,
 certificate mounts, or Proton settings are created when Proton is disabled.
 
+## OAuth initialization (Mailvault)
+
+For each OAuth source, configure `oauth2.token_file: /state/SOURCE-oauth.json`
+with a distinct path, and omit `oauth2.token_key`. Keep the provider, client ID,
+scopes, and mailbox username in config.yaml as in your working local OAuth
+configuration. The file store creates private token files and refreshes them on
+this writable PVC; do not put tokens on the read-only config Secret.
+
+Suspend scheduling first:
+
+```sh
+helm upgrade backup ./charts/mailvault -n mailvault --reuse-values \
+  --set suspend=true
+kubectl -n mailvault get jobs
+```
+
+Wait for existing Mailvault Jobs to finish before the next command. Suspension
+does not terminate a running Job. Then enable setup:
+
+```sh
+helm upgrade backup ./charts/mailvault -n mailvault --reuse-values \
+  --set setup.enabled=true
+kubectl -n mailvault rollout status deployment/backup-mailvault-setup --timeout=300s
+kubectl -n mailvault exec -it deployment/backup-mailvault-setup -- \
+  mailvault --config /config/config.yaml --state-dir /state auth login --source hotmail
+```
+
+Replace `hotmail` with the source name. Complete device authorization in your
+browser using the same mailbox identity as the configured username. Providers
+requiring a browser callback need the corresponding callback routing; these
+commands cover device-code login. Repeat for each source, then disable setup:
+
+```sh
+helm upgrade backup ./charts/mailvault -n mailvault --reuse-values \
+  --set setup.enabled=false
+kubectl -n mailvault wait --for=delete pod \
+  -l app.kubernetes.io/instance=backup,app.kubernetes.io/purpose=setup --timeout=300s
+```
+
+Only then run the manual backup below. Do not run Jobs alongside setup: both
+mount the same state/backup claims, and token refresh can race with login.
+The chart rejects unsuspending while Mailvault setup is enabled. The setup
+Deployment has the same configuration, volumes, image, and CA trust as the Job,
+and is allowed through the Proton ingress policy when Proton is enabled.
+
 ## Initial Proton setup
 
 These examples use release `backup`, namespace `mailvault`, and Service DNS
@@ -59,8 +108,10 @@ Generate a private CA and a Service certificate on your workstation (OpenSSL
 CA private key offline; it is not uploaded to Kubernetes.
 
 ```sh
-mkdir -m 700 proton-tls
-cd proton-tls
+mkdir -p secrets
+chmod 700 secrets
+mkdir -m 700 secrets/proton-tls
+cd secrets/proton-tls
 umask 077
 openssl req -x509 -newkey rsa:3072 -nodes -days 3650 \
   -keyout ca.key -out ca.crt -subj '/CN=Mailvault Bridge CA' \
@@ -78,11 +129,11 @@ openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -days 365 -out tls.crt -extfile server.ext
 kubectl -n mailvault create secret generic mailvault-proton-tls \
   --from-file=tls.crt --from-file=tls.key --from-file=ca.crt
-cd ..
+cd ../..
 helm upgrade --install backup ./charts/mailvault -n mailvault \
   --set image.tag=YOUR_PUBLISHED_TAG --set proton.enabled=true
-kubectl -n mailvault wait --for=condition=Ready pod/backup-mailvault-bridge-setup --timeout=300s
-kubectl -n mailvault exec -it backup-mailvault-bridge-setup -- bash /setup/bridge.sh init
+kubectl -n mailvault rollout status deployment/backup-mailvault-bridge-setup --timeout=300s
+kubectl -n mailvault exec -it deployment/backup-mailvault-bridge-setup -- bash /setup/bridge.sh init
 ```
 
 Inside Bridge:

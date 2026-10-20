@@ -10,6 +10,9 @@ configSecret: mailvault-config
 schedule: '0 3 * * *'
 timeZone: Etc/UTC
 suspend: true
+# Interactive Mailvault setup for OAuth login; disable before running backup Jobs.
+setup:
+  enabled: false
 # Explicit acknowledgement after completing setup and a successful manual backup.
 initialized: false
 activeDeadlineSeconds: 14400
@@ -31,7 +34,7 @@ persistence:
     accessModes: [ReadWriteOnce]
 proton:
   enabled: false
-  # Setup mode scales Bridge to zero and creates an interactive setup Pod.
+  # Setup mode scales Bridge to zero and creates an interactive setup Deployment.
   setup: true
   image:
     repository: ghcr.io/zekihan/protonmailbridge
