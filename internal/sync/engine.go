@@ -524,6 +524,9 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 			result.Errors = append(result.Errors, fmt.Errorf("write message: %w", err))
 			return
 		}
+		if e.repair && locator != "" {
+			e.rememberRepairBackup(tgt, msg, contentHash, locator)
+		}
 		if supersededLocator != "" && locator != "" {
 			if err := e.stateStore.MarkBackupObjectSuperseded(ctx, tgt.Name(), supersededLocator, locator); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("mark repaired original: %w", err))
@@ -613,6 +616,17 @@ func (e *SyncEngine) findBackupByHash(ctx context.Context, tgt plugins.Target, m
 	locator, found := index[identity]
 	e.repairCacheMu.Unlock()
 	return locator, found, nil
+}
+
+func (e *SyncEngine) rememberRepairBackup(tgt plugins.Target, msg *plugins.Message, hash, locator string) {
+	identity := targetDeliveryIdentity(tgt, msg, "hash:"+hash)
+	e.repairCacheMu.Lock()
+	defer e.repairCacheMu.Unlock()
+	// Only update a fully loaded index. Creating an index here would make the
+	// next lookup treat this one-entry cache as a complete target scan.
+	if index, loaded := e.repairCache[tgt.Name()]; loaded {
+		index[identity] = locator
+	}
 }
 
 // writeWithRetry writes a message with retry logic and returns its stable locator.
