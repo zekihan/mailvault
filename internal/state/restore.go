@@ -171,15 +171,38 @@ func insertRestoreIdentity(ctx context.Context, tx *sql.Tx, receipt RestoreRecei
 }
 
 func (s *Store) migrateLegacyRestoreReceipts(ctx context.Context, destinationSource, destinationFolder, backupTarget, uidValidity string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO restore_receipt_identities
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO restore_receipt_migrations
+		(destination_source,destination_folder,backup_target,uid_validity)
+		SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM restore_jobs
+		WHERE destination_source=? AND destination_folder=? AND backup_target=? AND status='active' AND uid_validity=?)`,
+		destinationSource, destinationFolder, backupTarget, uidValidity,
+		destinationSource, destinationFolder, backupTarget, uidValidity)
+	if err != nil {
+		return err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted != 1 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO restore_receipt_identities
 		(destination_source,destination_folder,backup_target,uid_validity,raw_sha256)
 		SELECT r.destination_source,r.destination_folder,r.backup_target,j.uid_validity,r.raw_sha256
 		FROM restore_receipts r JOIN restore_jobs j
 		ON j.destination_source=r.destination_source AND j.destination_folder=r.destination_folder AND j.backup_target=r.backup_target
 		WHERE r.destination_source=? AND r.destination_folder=? AND r.backup_target=?
 		AND j.status='active' AND j.uid_validity=? AND length(r.raw_sha256)=64 AND r.raw_sha256 NOT GLOB '*[^0-9a-f]*'`,
-		destinationSource, destinationFolder, backupTarget, uidValidity)
-	return err
+		destinationSource, destinationFolder, backupTarget, uidValidity); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) BeginRestoreReceipt(ctx context.Context, receipt RestoreReceipt) error {
@@ -333,6 +356,14 @@ func (s *Store) ensureRestoreReceipts(ctx context.Context) error {
 		raw_sha256 TEXT NOT NULL,
 		restored_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY(destination_source,destination_folder,backup_target,uid_validity,raw_sha256)
+	);
+	CREATE TABLE IF NOT EXISTS restore_receipt_migrations (
+		destination_source TEXT NOT NULL,
+		destination_folder TEXT NOT NULL,
+		backup_target TEXT NOT NULL,
+		uid_validity TEXT NOT NULL,
+		migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(destination_source,destination_folder,backup_target,uid_validity)
 	);
 	CREATE TABLE IF NOT EXISTS restore_jobs (
 		destination_source TEXT NOT NULL,
