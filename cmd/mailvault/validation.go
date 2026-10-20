@@ -32,7 +32,7 @@ type validationReport struct {
 	mappings           []config.PairConfig
 }
 
-func validateConfiguration() (report validationReport, err error) {
+func validateConfiguration(contexts ...context.Context) (report validationReport, err error) {
 	report.Sources = []validationResource{}
 	report.Targets = []validationResource{}
 	report.Errors = []string{}
@@ -67,6 +67,9 @@ func validateConfiguration() (report validationReport, err error) {
 	report.ConnectivityTested = true
 	registry := builtin.Registry()
 	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
 	var failures []error
 	record := func(resource *validationResource, kind string, failure error) {
 		if failure == nil {

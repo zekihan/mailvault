@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,12 +46,12 @@ Configuration is read from a YAML file specifying sources, targets, and source-t
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return rootCmd.ExecuteContext(ctx)
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./config.yaml, ~/.config/mailvault/config.yaml, /etc/mailvault/config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output JSON instead of human-readable format")
 	rootCmd.PersistentFlags().StringVar(&stateDir, "state-dir", "", "directory for state database (default: ~/.local/share/mailvault)")
@@ -102,8 +104,11 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 }
 
-func initConfig() {
-	// Config loading is handled in each command
+func commandContext(cmd *cobra.Command) context.Context {
+	if cmd != nil && cmd.Context() != nil {
+		return cmd.Context()
+	}
+	return context.Background()
 }
 
 func loadConfig() (*config.Config, error) {
@@ -132,7 +137,7 @@ func loadStateStore() (*state.Store, error) {
 }
 
 func runSync(cmd *cobra.Command, args []string) (err error) {
-	ctx := context.Background()
+	ctx := commandContext(cmd)
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -230,7 +235,7 @@ func printStats(stats *sync.SyncStats) error {
 }
 
 func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
-	report, validationErr := validateConfiguration()
+	report, validationErr := validateConfiguration(commandContext(cmd))
 	return errors.Join(validationErr, printValidationReport(report))
 }
 

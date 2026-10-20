@@ -297,6 +297,7 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
+dispatch:
 	for _, pair := range e.config.Pairs {
 		src := e.sources[pair.Source]
 		if src == nil {
@@ -309,8 +310,12 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 				return nil, fmt.Errorf("target %q not found for pair", targetName)
 			}
 
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				break dispatch
+			}
 			wg.Add(1)
-			semaphore <- struct{}{}
 
 			go func(src plugins.Source, tgt plugins.Target, pair config.PairConfig) {
 				defer wg.Done()
@@ -331,7 +336,7 @@ func (e *SyncEngine) Run(ctx context.Context) (_ *SyncStats, err error) {
 
 	wg.Wait()
 
-	return stats, nil
+	return stats, ctx.Err()
 }
 
 // syncPair syncs a single source to a single target.
