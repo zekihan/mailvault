@@ -48,6 +48,38 @@ func (s *Store) BackupMessages(ctx context.Context, target string) ([]plugins.Ba
 	return items, rows.Err()
 }
 
+const backupMessagesByHashQuery = `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE target_name=? AND raw_sha256=? ORDER BY source_name,scope,folder,uid`
+
+// BackupMessagesByHash returns backup manifest entries for a target and raw
+// message hash in the same deterministic order as BackupMessages.
+func (s *Store) BackupMessagesByHash(ctx context.Context, target, rawSHA256 string) ([]plugins.BackupMessage, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, backupMessagesByHashQuery, target, rawSHA256)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []plugins.BackupMessage
+	for rows.Next() {
+		var item plugins.BackupMessage
+		var flags string
+		if err := rows.Scan(&item.Source, &item.Target, &item.Scope, &item.Folder, &item.UID, &item.Locator, &item.RawSHA256, &flags, &item.InternalDate); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(flags), &item.Flags); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) FindBackupMessage(ctx context.Context, source, target, scope, folder, uid string) (plugins.BackupMessage, bool, error) {
 	var exists bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {

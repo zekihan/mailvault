@@ -576,7 +576,7 @@ func (e *SyncEngine) recordRepairedDelivery(ctx context.Context, src plugins.Sou
 
 func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message, rawHash string) error {
 	stateTarget := plugins.TargetStateKey(tgt)
-	entries, err := e.stateStore.BackupMessages(ctx, stateTarget)
+	entries, err := e.stateStore.BackupMessagesByHash(ctx, stateTarget, rawHash)
 	if err != nil {
 		return fmt.Errorf("find existing backup locations: %w", err)
 	}
@@ -584,7 +584,7 @@ func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, 
 	var entry plugins.BackupMessage
 	found := false
 	for _, candidate := range entries {
-		if candidate.RawSHA256 == rawHash && targetDeliveryIdentity(tgt, &plugins.Message{Folder: candidate.Folder}, "hash:"+rawHash) == identity {
+		if targetDeliveryIdentity(tgt, &plugins.Message{Folder: candidate.Folder}, "hash:"+rawHash) == identity {
 			entry = candidate
 			found = true
 			break

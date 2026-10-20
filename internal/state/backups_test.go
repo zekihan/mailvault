@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,85 @@ func TestBackupMessageManifestPreservesSourceIdentityAndMetadata(t *testing.T) {
 	}
 	if got.Locator != want.Locator || got.RawSHA256 != want.RawSHA256 || got.InternalDate != want.InternalDate || len(got.Flags) != 1 || got.Flags[0] != want.Flags[0] {
 		t.Fatalf("manifest = %+v", got)
+	}
+}
+
+func TestBackupMessagesByHashFiltersOrdersAndUsesIndex(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, item := range []plugins.BackupMessage{
+		{Source: "z", Target: "archive", Scope: "b", Folder: "INBOX", UID: "2", Locator: "last", RawSHA256: "wanted"},
+		{Source: "a", Target: "archive", Scope: "b", Folder: "Sent", UID: "1", Locator: "first", RawSHA256: "wanted"},
+		{Source: "a", Target: "archive", Scope: "a", Folder: "Sent", UID: "9", Locator: "second", RawSHA256: "wanted"},
+		{Source: "0", Target: "archive", Scope: "a", Folder: "INBOX", UID: "1", Locator: "unrelated", RawSHA256: "other"},
+		{Source: "a", Target: "another-target", Scope: "a", Folder: "INBOX", UID: "1", Locator: "other-target", RawSHA256: "wanted"},
+	} {
+		if err := store.RecordBackupMessage(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.BackupMessagesByHash(ctx, "archive", "wanted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"second", "first", "last"}
+	if len(got) != len(want) {
+		t.Fatalf("matching rows = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Locator != want[i] {
+			t.Fatalf("row %d locator = %q, want %q", i, got[i].Locator, want[i])
+		}
+	}
+
+	rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+backupMessagesByHashQuery, "archive", "wanted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "SEARCH backup_messages USING INDEX idx_backup_messages_target_hash_order (target_name=? AND raw_sha256=?)") || strings.Contains(joined, "USE TEMP B-TREE") {
+		t.Fatalf("query plan does not use ordered composite index: %s", joined)
+	}
+}
+
+func TestBackupHashIndexIsAddedToExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP INDEX idx_backup_messages_target_hash_order`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var exists bool
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_backup_messages_target_hash_order')`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("composite index exists=%t err=%v", exists, err)
 	}
 }
 

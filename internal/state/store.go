@@ -121,6 +121,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_name);
 	CREATE INDEX IF NOT EXISTS idx_backup_messages_target ON backup_messages(target_name);
+	CREATE INDEX IF NOT EXISTS idx_backup_messages_target_hash_order ON backup_messages(target_name, raw_sha256, source_name, scope, folder, uid);
 	CREATE INDEX IF NOT EXISTS idx_messages_source_folder ON messages(source_name, folder);
 	CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
 	CREATE INDEX IF NOT EXISTS idx_messages_content_hash ON messages(content_hash);
