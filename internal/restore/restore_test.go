@@ -33,6 +33,7 @@ type fixtureAppender struct {
 	err           error
 	appendErr     error
 	allowExisting []bool
+	uidValidity   string
 	cancel        context.CancelFunc
 }
 
@@ -50,7 +51,14 @@ func (a *fixtureAppender) EnsureMailbox(_ context.Context, mailbox string, allow
 	return !allowExisting, nil
 }
 
-func (a *fixtureAppender) AppendMessage(_ context.Context, mailbox string, message *plugins.Message) error {
+func (a *fixtureAppender) MailboxUIDValidity(context.Context, string) (string, error) {
+	if a.uidValidity == "" {
+		return "7", nil
+	}
+	return a.uidValidity, nil
+}
+
+func (a *fixtureAppender) AppendMessage(_ context.Context, mailbox string, message *plugins.Message, _ string) error {
 	a.mailbox = mailbox
 	a.message = message
 	a.appended++
@@ -66,7 +74,17 @@ type fixtureReceipts struct {
 }
 
 func (r fixtureReceipts) HasRestoreReceipt(_ context.Context, receipt state.RestoreReceipt) (bool, error) {
-	return r.values[receipt], nil
+	for existing := range r.values {
+		if sameRestoreIdentity(existing, receipt) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func sameRestoreIdentity(a, b state.RestoreReceipt) bool {
+	return a.DestinationSource == b.DestinationSource && a.DestinationFolder == b.DestinationFolder &&
+		a.BackupTarget == b.BackupTarget && a.DestinationUIDValidity == b.DestinationUIDValidity && a.RawSHA256 == b.RawSHA256
 }
 
 func (r fixtureReceipts) HasPendingRestore(_ context.Context, source, folder, target string) (bool, error) {
@@ -97,19 +115,19 @@ func fixtureJobKey(source, folder, target string) string {
 	return source + "\x00" + folder + "\x00" + target
 }
 
-func (r fixtureReceipts) BeginRestoreJob(_ context.Context, source, folder, target string) (bool, error) {
+func (r fixtureReceipts) BeginRestoreJob(_ context.Context, source, folder, target string) (bool, string, error) {
 	key := fixtureJobKey(source, folder, target)
 	if r.preparing[key] {
-		return false, state.ErrRestoreJobUncertain
+		return false, "", state.ErrRestoreJobUncertain
 	}
 	if r.jobs[key] {
-		return true, nil
+		return true, "7", nil
 	}
 	r.preparing[key] = true
-	return false, nil
+	return false, "", nil
 }
 
-func (r fixtureReceipts) ActivateRestoreJob(_ context.Context, source, folder, target string) error {
+func (r fixtureReceipts) ActivateRestoreJob(_ context.Context, source, folder, target, _ string) error {
 	key := fixtureJobKey(source, folder, target)
 	delete(r.preparing, key)
 	r.jobs[key] = true
@@ -122,6 +140,11 @@ func (r fixtureReceipts) AbandonRestoreJob(_ context.Context, source, folder, ta
 }
 
 func (r fixtureReceipts) MarkRestoreReceipt(_ context.Context, receipt state.RestoreReceipt) error {
+	for existing := range r.values {
+		if sameRestoreIdentity(existing, receipt) {
+			delete(r.values, existing)
+		}
+	}
 	r.values[receipt] = true
 	delete(r.pending, receipt)
 	if r.cancel != nil {
@@ -187,7 +210,7 @@ func TestRunValidatesEveryMessageBeforeCreatingMailbox(t *testing.T) {
 func TestRunReceiptSkipsCompletedMessage(t *testing.T) {
 	digest := sha256.Sum256([]byte("content"))
 	entry := plugins.BackupMessage{Locator: "object", RawSHA256: hex.EncodeToString(digest[:])}
-	receipt := state.RestoreReceipt{DestinationSource: "account", DestinationFolder: "restore", BackupTarget: "archive", Locator: "object", RawSHA256: entry.RawSHA256}
+	receipt := state.RestoreReceipt{DestinationSource: "account", DestinationFolder: "restore", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "object", RawSHA256: entry.RawSHA256}
 	appender := &fixtureAppender{}
 	receipts := newFixtureReceipts()
 	receipts.values[receipt] = true
@@ -195,6 +218,61 @@ func TestRunReceiptSkipsCompletedMessage(t *testing.T) {
 	result, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: []byte("content")}}, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err != nil || result.Skipped != 1 || appender.appended != 0 {
 		t.Fatalf("receipt did not skip append: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunRejectsRecreatedMailboxBeforeSkippingReceipts(t *testing.T) {
+	raw := []byte("content")
+	digest := sha256.Sum256(raw)
+	entry := plugins.BackupMessage{Locator: "object", RawSHA256: hex.EncodeToString(digest[:])}
+	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
+	receipts := newFixtureReceipts()
+	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
+	if _, err := Run(context.Background(), reader, &fixtureAppender{}, receipts, options); err != nil {
+		t.Fatal(err)
+	}
+	recreated := &fixtureAppender{uidValidity: "8"}
+	result, err := Run(context.Background(), reader, recreated, receipts, options)
+	if err == nil || result.Skipped != 0 || recreated.appended != 0 {
+		t.Fatalf("recreated mailbox reused receipts: result=%+v appended=%d err=%v", result, recreated.appended, err)
+	}
+}
+
+func TestRunDeduplicatesContentAcrossAliasesAndRepairs(t *testing.T) {
+	raw := []byte("identical message")
+	digest := sha256.Sum256(raw)
+	hash := hex.EncodeToString(digest[:])
+	entries := []plugins.BackupMessage{
+		{Locator: "physical/old", RawSHA256: hash, Source: "account", Scope: "scope", Folder: "INBOX", UID: "10"},
+		{Locator: "physical/old", RawSHA256: hash, Source: "renamed account", Scope: "scope-2", Folder: "Archive", UID: "20"},
+	}
+	reader := fixtureReader{entries: entries, message: &plugins.Message{Raw: raw}}
+	receipts := newFixtureReceipts()
+	appender := &fixtureAppender{}
+	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
+	result, err := Run(context.Background(), reader, appender, receipts, options)
+	if err != nil || result.Restored != 1 || result.Skipped != 1 || appender.appended != 1 {
+		t.Fatalf("alias restore: result=%+v appended=%d err=%v", result, appender.appended, err)
+	}
+	reader.entries = []plugins.BackupMessage{{Locator: "physical/repaired", RawSHA256: hash, Source: "renamed account", Scope: "new scope", Folder: "New folder", UID: "99"}}
+	resumed := &fixtureAppender{}
+	result, err = Run(context.Background(), reader, resumed, receipts, options)
+	if err != nil || result.Restored != 0 || result.Skipped != 1 || resumed.appended != 0 {
+		t.Fatalf("repair rerun: result=%+v appended=%d err=%v", result, resumed.appended, err)
+	}
+}
+
+func TestDryRunPlansIdenticalContentOnce(t *testing.T) {
+	raw := []byte("identical message")
+	digest := sha256.Sum256(raw)
+	hash := hex.EncodeToString(digest[:])
+	reader := fixtureReader{
+		entries: []plugins.BackupMessage{{Locator: "one", RawSHA256: hash}, {Locator: "two", RawSHA256: hash}},
+		message: &plugins.Message{Raw: raw},
+	}
+	result, err := Run(context.Background(), reader, nil, nil, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: true})
+	if err != nil || result.Messages != 2 || result.Planned != 1 {
+		t.Fatalf("dry run: result=%+v err=%v", result, err)
 	}
 }
 
@@ -231,7 +309,7 @@ func TestRunResumesAfterCompletedMessage(t *testing.T) {
 
 	resumed := &fixtureAppender{}
 	result, err := Run(context.Background(), reader, resumed, receipts, options)
-	if err != nil || result.Restored != 1 || result.Skipped != 1 || resumed.appended != 1 || len(resumed.allowExisting) != 1 || !resumed.allowExisting[0] {
+	if err != nil || result.Restored != 0 || result.Skipped != 2 || resumed.appended != 0 || len(resumed.allowExisting) != 1 || !resumed.allowExisting[0] {
 		t.Fatalf("resume result=%+v appender=%+v err=%v", result, resumed, err)
 	}
 }

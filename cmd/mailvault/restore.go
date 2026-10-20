@@ -70,11 +70,12 @@ func newRestoreCommand() *cobra.Command {
 			if destination.Type != "imap" {
 				return fmt.Errorf("destination source %q must use IMAP", destinationSource)
 			}
-			backup, err := registry.CreateTarget(targetConfig.Type, targetConfig.Config)
+			backup, err := registry.CreateTarget(targetConfig.Type, restoreTargetPluginConfig(*targetConfig))
 			if err != nil {
 				return fmt.Errorf("create backup reader: %w", err)
 			}
 			defer func() { runErr = errors.Join(runErr, backup.Close()) }()
+			backupStateKey := plugins.TargetStateKey(backup)
 			if initializer, ok := backup.(interface{ InitializeForRead(context.Context) error }); ok {
 				if err := initializer.InitializeForRead(cmd.Context()); err != nil {
 					return fmt.Errorf("initialize backup reader: %w", err)
@@ -122,19 +123,19 @@ func newRestoreCommand() *cobra.Command {
 			var manifest []plugins.BackupMessage
 			var superseded map[string]bool
 			if manifestStore != nil {
-				manifest, err = manifestStore.BackupMessages(cmd.Context(), backupTarget)
+				manifest, err = manifestStore.BackupMessages(cmd.Context(), backupStateKey)
 				if err != nil {
 					return fmt.Errorf("read backup manifest: %w", err)
 				}
-				superseded, err = manifestStore.SupersededBackupObjects(cmd.Context(), backupTarget)
+				superseded, err = manifestStore.SupersededBackupObjects(cmd.Context(), backupStateKey)
 				if err != nil {
 					return fmt.Errorf("read superseded backup objects: %w", err)
 				}
 			}
-			reader = restoreTargetReader{TargetBackupReader: reader, target: backupTarget, manifest: manifest, superseded: superseded}
+			reader = restoreTargetReader{TargetBackupReader: reader, target: backupStateKey, manifest: manifest, superseded: superseded}
 
 			options := restore.Options{
-				BackupTarget: restoreTargetIdentity(*targetConfig), DestinationSource: restoreSourceIdentity(*destination),
+				BackupTarget: backupStateKey, DestinationSource: restoreSourceIdentity(*destination),
 				DestinationFolder: destinationFolder, DryRun: preview, AllowUnverified: allowUnverified,
 			}
 			var appender restore.MailboxAppender
@@ -296,6 +297,11 @@ func newRestoreResolveCommand() *cobra.Command {
 			if targetConfig == nil {
 				return fmt.Errorf("backup target %q is not configured", backupTarget)
 			}
+			backup, err := builtin.Registry().CreateTarget(targetConfig.Type, restoreTargetPluginConfig(*targetConfig))
+			if err != nil {
+				return fmt.Errorf("create backup target: %w", err)
+			}
+			defer func() { runErr = errors.Join(runErr, backup.Close()) }()
 			var sourceConfig *config.SourceConfig
 			for i := range cfg.Sources {
 				if cfg.Sources[i].Name == destinationSource {
@@ -330,7 +336,7 @@ func newRestoreResolveCommand() *cobra.Command {
 				return fmt.Errorf("lock restore receipts: %w", err)
 			}
 			defer func() { runErr = errors.Join(runErr, release()) }()
-			backupID := restoreTargetIdentity(*targetConfig)
+			backupID := plugins.TargetStateKey(backup)
 			sourceID := restoreSourceIdentity(*sourceConfig)
 			if action == "resume-setup" || action == "retry-setup" {
 				if err := store.ResolveRestoreJobSetup(cmd.Context(), sourceID, destinationFolder, backupID, action == "resume-setup"); err != nil {
@@ -359,12 +365,11 @@ func restoreSourceIdentity(source config.SourceConfig) string {
 	return source.Name + ":" + hex.EncodeToString(digest[:])
 }
 
-func restoreTargetIdentity(target config.TargetConfig) string {
-	fields := []string{target.Name, target.Type}
-	for _, key := range []string{"path", "bucket", "region", "endpoint", "prefix"} {
-		value, _ := target.Config[key].(string)
-		fields = append(fields, value)
+func restoreTargetPluginConfig(target config.TargetConfig) map[string]interface{} {
+	values := make(map[string]interface{}, len(target.Config)+1)
+	for key, value := range target.Config {
+		values[key] = value
 	}
-	digest := sha256.Sum256([]byte(strings.Join(fields, "\x00")))
-	return target.Name + ":" + hex.EncodeToString(digest[:])
+	values["name"] = target.Name
+	return values
 }

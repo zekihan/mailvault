@@ -19,7 +19,8 @@ type BackupReader interface {
 
 type MailboxAppender interface {
 	EnsureMailbox(context.Context, string, bool) (bool, error)
-	AppendMessage(context.Context, string, *plugins.Message) error
+	MailboxUIDValidity(context.Context, string) (string, error)
+	AppendMessage(context.Context, string, *plugins.Message, string) error
 }
 
 type ReceiptStore interface {
@@ -28,8 +29,8 @@ type ReceiptStore interface {
 	PendingRestoreLocators(context.Context, string, string, string) ([]string, error)
 	BeginRestoreReceipt(context.Context, state.RestoreReceipt) error
 	MarkRestoreReceipt(context.Context, state.RestoreReceipt) error
-	BeginRestoreJob(context.Context, string, string, string) (bool, error)
-	ActivateRestoreJob(context.Context, string, string, string) error
+	BeginRestoreJob(context.Context, string, string, string) (bool, string, error)
+	ActivateRestoreJob(context.Context, string, string, string, string) error
 	AbandonRestoreJob(context.Context, string, string, string) error
 }
 
@@ -66,6 +67,7 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 	entries = append([]plugins.BackupMessage(nil), entries...)
 	result := Result{Messages: len(entries)}
 	if options.DryRun {
+		seen := make(map[string]bool)
 		for i, entry := range entries {
 			if err := ctx.Err(); err != nil {
 				return result, err
@@ -75,9 +77,12 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 				return result, err
 			}
 			entries[i] = normalized
-			result.Planned++
-			if unverified {
-				result.Unverified++
+			if !seen[normalized.RawSHA256] {
+				result.Planned++
+				if unverified {
+					result.Unverified++
+				}
+				seen[normalized.RawSHA256] = true
 			}
 		}
 		return result, nil
@@ -109,7 +114,7 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 			result.Unverified++
 		}
 	}
-	resuming, err := receipts.BeginRestoreJob(ctx, options.DestinationSource, options.DestinationFolder, options.BackupTarget)
+	resuming, expectedUIDValidity, err := receipts.BeginRestoreJob(ctx, options.DestinationSource, options.DestinationFolder, options.BackupTarget)
 	if err != nil {
 		return result, fmt.Errorf("begin restore job: %w", err)
 	}
@@ -120,8 +125,18 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 		}
 		return result, fmt.Errorf("prepare destination mailbox: %w", err)
 	}
-	if created {
-		if err := receipts.ActivateRestoreJob(context.WithoutCancel(ctx), options.DestinationSource, options.DestinationFolder, options.BackupTarget); err != nil {
+	uidValidity, err := appender.MailboxUIDValidity(ctx, options.DestinationFolder)
+	if err != nil {
+		return result, fmt.Errorf("read destination mailbox UIDVALIDITY: %w", err)
+	}
+	if uidValidity == "" || uidValidity == "0" {
+		return result, errors.New("destination mailbox returned an empty or zero UIDVALIDITY")
+	}
+	if expectedUIDValidity != "" && uidValidity != expectedUIDValidity {
+		return result, fmt.Errorf("destination mailbox UIDVALIDITY changed from %s to %s; choose a new destination folder", expectedUIDValidity, uidValidity)
+	}
+	if created || expectedUIDValidity == "" {
+		if err := receipts.ActivateRestoreJob(context.WithoutCancel(ctx), options.DestinationSource, options.DestinationFolder, options.BackupTarget, uidValidity); err != nil {
 			return result, fmt.Errorf("activate restore job: %w", err)
 		}
 	}
@@ -130,15 +145,16 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 			return result, err
 		}
 		receipt := state.RestoreReceipt{
-			DestinationSource: options.DestinationSource,
-			DestinationFolder: options.DestinationFolder,
-			BackupTarget:      options.BackupTarget,
-			Locator:           entry.Locator,
-			RawSHA256:         entry.RawSHA256,
-			Source:            entry.Source,
-			Scope:             entry.Scope,
-			Folder:            entry.Folder,
-			UID:               entry.UID,
+			DestinationSource:      options.DestinationSource,
+			DestinationFolder:      options.DestinationFolder,
+			BackupTarget:           options.BackupTarget,
+			DestinationUIDValidity: uidValidity,
+			Locator:                entry.Locator,
+			RawSHA256:              entry.RawSHA256,
+			Source:                 entry.Source,
+			Scope:                  entry.Scope,
+			Folder:                 entry.Folder,
+			UID:                    entry.UID,
 		}
 		exists, err := receipts.HasRestoreReceipt(ctx, receipt)
 		if err != nil {
@@ -167,10 +183,17 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 		if msg.InternalDate == "" {
 			msg.InternalDate = entry.InternalDate
 		}
+		currentUIDValidity, err := appender.MailboxUIDValidity(ctx, options.DestinationFolder)
+		if err != nil {
+			return result, fmt.Errorf("recheck destination mailbox UIDVALIDITY: %w", err)
+		}
+		if currentUIDValidity != uidValidity {
+			return result, fmt.Errorf("destination mailbox UIDVALIDITY changed from %s to %s before APPEND", uidValidity, currentUIDValidity)
+		}
 		if err := receipts.BeginRestoreReceipt(ctx, receipt); err != nil {
 			return result, fmt.Errorf("record pending restore: %w", err)
 		}
-		if err := appender.AppendMessage(ctx, options.DestinationFolder, msg); err != nil {
+		if err := appender.AppendMessage(ctx, options.DestinationFolder, msg, uidValidity); err != nil {
 			return result, err
 		}
 		if err := receipts.MarkRestoreReceipt(ctx, receipt); err != nil {

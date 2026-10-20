@@ -19,12 +19,16 @@ type recordingMailbox struct {
 	appended []*plugins.Message
 }
 
-func (r *recordingMailbox) EnsureMailbox(context.Context, string, bool) (bool, error) {
+func (r *recordingMailbox) EnsureMailbox(_ context.Context, _ string, allowExisting bool) (bool, error) {
 	r.created = true
-	return true, nil
+	return !allowExisting, nil
 }
 
-func (r *recordingMailbox) AppendMessage(_ context.Context, _ string, msg *plugins.Message) error {
+func (r *recordingMailbox) MailboxUIDValidity(context.Context, string) (string, error) {
+	return "7", nil
+}
+
+func (r *recordingMailbox) AppendMessage(_ context.Context, _ string, msg *plugins.Message, _ string) error {
 	r.appended = append(r.appended, msg)
 	return nil
 }
@@ -37,6 +41,8 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 		t.Fatal(err)
 	}
 	defer backup.Close()
+	backup.(interface{ SetName(string) }).SetName("archive")
+	backupStateKey := plugins.TargetStateKey(backup)
 	if err := backup.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +69,7 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 		t.Fatalf("physical messages = %d, err = %v", len(physical), err)
 	}
 	digest := sha256.Sum256(raw)
-	entry := plugins.BackupMessage{Source: "account", Target: "archive", Scope: "scope", Folder: "INBOX", UID: "42", Locator: currentLocator, RawSHA256: hex.EncodeToString(digest[:]), Flags: []string{"\\Seen", "$Label1"}, InternalDate: "2026-10-20T12:00:00Z"}
+	entry := plugins.BackupMessage{Source: "account", Target: backupStateKey, Scope: "scope", Folder: "INBOX", UID: "42", Locator: currentLocator, RawSHA256: hex.EncodeToString(digest[:]), Flags: []string{"\\Seen", "$Label1"}, InternalDate: "2026-10-20T12:00:00Z"}
 	store, err := state.NewStore(t.TempDir() + "/state.db")
 	if err != nil {
 		t.Fatal(err)
@@ -74,23 +80,23 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 	if err := store.RecordBackupMessage(ctx, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkBackupObjectSuperseded(ctx, "archive", oldLocator, currentLocator); err != nil {
+	if err := store.MarkBackupObjectSuperseded(ctx, backupStateKey, oldLocator, currentLocator); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordBackupMessage(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
-	manifest, err := store.BackupMessages(ctx, "archive")
+	manifest, err := store.BackupMessages(ctx, backupStateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	superseded, err := store.SupersededBackupObjects(ctx, "archive")
+	superseded, err := store.SupersededBackupObjects(ctx, backupStateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	merged := restoreTargetReader{TargetBackupReader: reader, target: "archive", manifest: manifest, superseded: superseded}
+	merged := restoreTargetReader{TargetBackupReader: reader, target: backupStateKey, manifest: manifest, superseded: superseded}
 	appender := &recordingMailbox{}
-	result, err := restore.Run(ctx, merged, appender, store, restore.Options{BackupTarget: "archive", DestinationSource: "destination", DestinationFolder: "Restored"})
+	result, err := restore.Run(ctx, merged, appender, store, restore.Options{BackupTarget: backupStateKey, DestinationSource: "destination", DestinationFolder: "Restored"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +106,33 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 	message := appender.appended[0]
 	if message.UID != entry.UID || message.UIDScope != entry.Scope || message.Folder != entry.Folder || message.InternalDate != entry.InternalDate || len(message.Flags) != 2 || message.Flags[1] != "$Label1" {
 		t.Fatalf("restored metadata = %#v", message)
+	}
+	repairedLocator, err := writer.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired := entry
+	repaired.Source = "renamed account"
+	repaired.Scope = "renamed scope"
+	repaired.Folder = "Archive"
+	repaired.UID = "99"
+	repaired.Locator = repairedLocator
+	if err := store.RecordBackupMessage(ctx, repaired); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err = store.BackupMessages(ctx, backupStateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	superseded, err = store.SupersededBackupObjects(ctx, backupStateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged = restoreTargetReader{TargetBackupReader: reader, target: backupStateKey, manifest: manifest, superseded: superseded}
+	resumed := &recordingMailbox{}
+	result, err = restore.Run(ctx, merged, resumed, store, restore.Options{BackupTarget: backupStateKey, DestinationSource: "destination", DestinationFolder: "Restored"})
+	if err != nil || result.Restored != 0 || result.Skipped != 2 || len(resumed.appended) != 0 {
+		t.Fatalf("repair rerun: result=%#v appended=%d err=%v", result, len(resumed.appended), err)
 	}
 }
 
@@ -111,6 +144,8 @@ func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer backup.Close()
+	backup.(interface{ SetName(string) }).SetName("archive")
+	backupStateKey := plugins.TargetStateKey(backup)
 	if err := backup.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +163,7 @@ func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
 		t.Fatalf("physical messages = %d, err = %v", len(physical), err)
 	}
 	digest := sha256.Sum256(raw)
-	entry := plugins.BackupMessage{Source: "account", Target: "archive", Scope: "scope", Folder: "INBOX", UID: "77", Locator: locator, RawSHA256: hex.EncodeToString(digest[:])}
+	entry := plugins.BackupMessage{Source: "account", Target: backupStateKey, Scope: "scope", Folder: "INBOX", UID: "77", Locator: locator, RawSHA256: hex.EncodeToString(digest[:])}
 	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -137,13 +172,13 @@ func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
 	if err := store.RecordBackupMessage(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
-	manifest, err := store.BackupMessages(ctx, "archive")
+	manifest, err := store.BackupMessages(ctx, backupStateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	merged := restoreTargetReader{TargetBackupReader: reader, target: "archive", manifest: manifest}
+	merged := restoreTargetReader{TargetBackupReader: reader, target: backupStateKey, manifest: manifest}
 	appender := &recordingMailbox{}
-	result, err := restore.Run(ctx, merged, appender, store, restore.Options{BackupTarget: "archive", DestinationSource: "destination", DestinationFolder: "Restored"})
+	result, err := restore.Run(ctx, merged, appender, store, restore.Options{BackupTarget: backupStateKey, DestinationSource: "destination", DestinationFolder: "Restored"})
 	if err != nil {
 		t.Fatal(err)
 	}
