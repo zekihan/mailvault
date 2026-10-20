@@ -22,12 +22,15 @@ type SyncEngine struct {
 	targets       map[string]plugins.Target
 	dryRun        bool
 	forceFetchAll bool
+	repair        bool
 	maxRetries    int
 	retryDelay    time.Duration
 	concurrency   int
 	since         int64
 	until         int64
 	deliveryLocks sync.Map
+	repairCacheMu sync.Mutex
+	repairCache   map[string]map[string]string
 	runGate       chan struct{}
 	progress      func(string, string)
 }
@@ -153,6 +156,9 @@ func (e *SyncEngine) reportProgress(key, status string) {
 func WithForceFetchAll(force bool) SyncOption {
 	return func(e *SyncEngine) { e.forceFetchAll = force }
 }
+
+// WithRepair rechecks stored manifest entries and writes missing or damaged copies.
+func WithRepair(repair bool) SyncOption { return func(e *SyncEngine) { e.repair = repair } }
 
 // WithDryRun enables dry-run mode.
 func WithDryRun(dryRun bool) SyncOption {
@@ -361,7 +367,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			})
 		})
 	}
-	if !e.forceFetchAll {
+	if !e.forceFetchAll && !e.repair {
 		ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
 			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, scope), folder)
 		})
@@ -421,7 +427,13 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	// Ignore legacy mid: receipts rather than suppress an unverified variant.
 	contentHash := dedup.ComputeContentHash(msg.Raw)
 	identity := targetDeliveryIdentity(tgt, msg, dedup.DedupKey{ContentHash: contentHash}.Key())
-	if delivery.seen[identity] {
+	if delivery.seen[identity] && !e.repair {
+		if !e.dryRun {
+			if err := e.recordBackupAlias(ctx, src, tgt, msg, contentHash); err != nil {
+				result.Errors = append(result.Errors, err)
+				return
+			}
+		}
 		result.MessagesSkipped++
 		return
 	}
@@ -430,20 +442,89 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 		result.Errors = append(result.Errors, fmt.Errorf("delivery check: %w", err))
 		return
 	}
-	if exists {
+	if exists && !e.repair {
+		if !e.dryRun {
+			if err := e.recordBackupAlias(ctx, src, tgt, msg, contentHash); err != nil {
+				result.Errors = append(result.Errors, err)
+				return
+			}
+		}
 		delivery.seen[identity] = true
 		result.MessagesSkipped++
 		return
 	}
+	supersededLocator := ""
+	if e.repair {
+		entry, found, findErr := e.stateStore.FindBackupMessage(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, backupMessageUID(msg, contentHash))
+		if findErr != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("find backup manifest entry: %w", findErr))
+			return
+		}
+		if found {
+			reader, ok := tgt.(plugins.TargetBackupReader)
+			if !ok {
+				result.Errors = append(result.Errors, fmt.Errorf("target %q does not support verification", tgt.Name()))
+				return
+			}
+			stored, readErr := reader.ReadBackupMessage(ctx, entry.Locator)
+			if readErr != nil && !errors.Is(readErr, plugins.ErrBackupMessageMissing) && !errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
+				result.Errors = append(result.Errors, fmt.Errorf("read stored backup %q: %w", entry.Locator, readErr))
+				return
+			}
+			if readErr == nil && dedup.ComputeContentHash(stored.Raw) == entry.RawSHA256 && entry.RawSHA256 == contentHash {
+				delivery.seen[identity] = true
+				result.MessagesSkipped++
+				return
+			}
+			if readErr == nil || errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
+				supersededLocator = entry.Locator
+			}
+		}
+		if locator, ok, scanErr := e.findBackupByHash(ctx, tgt, msg, contentHash); scanErr != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("scan target for existing message: %w", scanErr))
+			return
+		} else if ok {
+			if !e.dryRun {
+				if supersededLocator != "" && locator != supersededLocator {
+					if err := e.stateStore.MarkBackupObjectSuperseded(ctx, tgt.Name(), supersededLocator, locator); err != nil {
+						result.Errors = append(result.Errors, fmt.Errorf("mark repaired original: %w", err))
+						return
+					}
+				}
+				if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
+					result.Errors = append(result.Errors, fmt.Errorf("persist recovered backup manifest: %w", err))
+					return
+				}
+			}
+			delivery.seen[identity] = true
+			result.MessagesSkipped++
+			return
+		}
+	}
+	var locator string
 	if !e.dryRun {
-		if err := e.writeWithRetry(ctx, tgt, msg); err != nil {
+		var err error
+		locator, err = e.writeWithRetry(ctx, tgt, msg, e.repair)
+		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("write message: %w", err))
 			return
+		}
+		if supersededLocator != "" && locator != "" {
+			if err := e.stateStore.MarkBackupObjectSuperseded(ctx, tgt.Name(), supersededLocator, locator); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("mark repaired original: %w", err))
+				return
+			}
 		}
 	}
 	delivery.seen[identity] = true
 	result.MessagesWritten++
 	if !e.dryRun {
+		if locator != "" {
+			if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("persist backup manifest: %w", err))
+				return
+			}
+		}
 		err := errors.Join(
 			e.stateStore.MarkDelivered(ctx, tgt.Name(), identity, src.Name(), msg.Folder, msg.UID),
 			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
@@ -454,25 +535,105 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	}
 }
 
-// writeWithRetry writes a message with retry logic.
-func (e *SyncEngine) writeWithRetry(ctx context.Context, tgt plugins.Target, msg *plugins.Message) error {
+func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message, rawHash string) error {
+	entries, err := e.stateStore.BackupMessages(ctx, tgt.Name())
+	if err != nil {
+		return fmt.Errorf("find existing backup locations: %w", err)
+	}
+	identity := targetDeliveryIdentity(tgt, msg, "hash:"+rawHash)
+	var entry plugins.BackupMessage
+	found := false
+	for _, candidate := range entries {
+		if candidate.RawSHA256 == rawHash && targetDeliveryIdentity(tgt, &plugins.Message{Folder: candidate.Folder}, "hash:"+rawHash) == identity {
+			entry = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	return e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, rawHash), Locator: entry.Locator, RawSHA256: rawHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate})
+}
+
+func backupMessageUID(msg *plugins.Message, rawHash string) string {
+	if msg.UID != "" {
+		return msg.UID
+	}
+	return "content:" + rawHash
+}
+
+func (e *SyncEngine) findBackupByHash(ctx context.Context, tgt plugins.Target, msg *plugins.Message, hash string) (string, bool, error) {
+	reader, ok := tgt.(plugins.TargetBackupReader)
+	if !ok {
+		return "", false, fmt.Errorf("target %q does not support verification", tgt.Name())
+	}
+	e.repairCacheMu.Lock()
+	if e.repairCache == nil {
+		e.repairCache = make(map[string]map[string]string)
+	}
+	index, loaded := e.repairCache[tgt.Name()]
+	if !loaded {
+		entries, err := reader.ListBackupMessages(ctx)
+		if err != nil {
+			e.repairCacheMu.Unlock()
+			return "", false, err
+		}
+		index = make(map[string]string)
+		for _, entry := range entries {
+			stored, err := reader.ReadBackupMessage(ctx, entry.Locator)
+			if err != nil {
+				if errors.Is(err, plugins.ErrBackupMessageMissing) || errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+					continue
+				}
+				e.repairCacheMu.Unlock()
+				return "", false, fmt.Errorf("read %q: %w", entry.Locator, err)
+			}
+			storedHash := dedup.ComputeContentHash(stored.Raw)
+			index[targetDeliveryIdentity(tgt, stored, "hash:"+storedHash)] = entry.Locator
+		}
+		e.repairCache[tgt.Name()] = index
+	}
+	identity := targetDeliveryIdentity(tgt, msg, "hash:"+hash)
+	locator, found := index[identity]
+	e.repairCacheMu.Unlock()
+	return locator, found, nil
+}
+
+// writeWithRetry writes a message with retry logic and returns its stable locator.
+func (e *SyncEngine) writeWithRetry(ctx context.Context, tgt plugins.Target, msg *plugins.Message, repair bool) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt <= e.maxRetries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return "", ctx.Err()
 			case <-time.After(e.retryDelay * time.Duration(attempt)):
 			}
 		}
 
-		err := tgt.WriteMessage(ctx, msg)
+		var locator string
+		var err error
+		if repair {
+			if writer, ok := tgt.(plugins.RepairBackupWriter); ok {
+				locator, err = writer.WriteRepairMessage(ctx, msg)
+			} else {
+				err = tgt.WriteMessage(ctx, msg)
+			}
+		} else {
+			err = tgt.WriteMessage(ctx, msg)
+			if err == nil {
+				if provider, ok := tgt.(plugins.BackupLocatorProvider); ok {
+					locator = provider.LastBackupLocator()
+				}
+			}
+		}
 		if err == nil {
-			return nil
+			return locator, nil
 		}
 		lastErr = err
 	}
-	return fmt.Errorf("after %d retries: %w", e.maxRetries, lastErr)
+	return "", fmt.Errorf("after %d retries: %w", e.maxRetries, lastErr)
 }
 
 // getFoldersForSource returns the folders to sync for a source.

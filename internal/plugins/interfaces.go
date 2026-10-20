@@ -2,7 +2,13 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"io"
+)
+
+var (
+	ErrBackupMessageMissing = errors.New("backup message is missing")
+	ErrBackupMessageCorrupt = errors.New("backup message is corrupt")
 )
 
 // Message represents a single email message.
@@ -75,6 +81,42 @@ type Target interface {
 	// Close finalizes and closes the target.
 	Close() error
 }
+
+// BackupMessage identifies a stored message and the source delivery that owns it.
+// Locator is opaque to callers and interpreted by the target that produced it.
+type BackupMessage struct {
+	Source       string   `json:"source"`
+	Target       string   `json:"target"`
+	Scope        string   `json:"scope"`
+	Folder       string   `json:"folder"`
+	UID          string   `json:"uid"`
+	Locator      string   `json:"locator"`
+	RawSHA256    string   `json:"raw_sha256"`
+	Flags        []string `json:"flags,omitempty"`
+	InternalDate string   `json:"internal_date,omitempty"`
+}
+
+// TargetBackupReader exposes stable locations for verification and restore.
+type TargetBackupReader interface {
+	ListBackupMessages(context.Context) ([]BackupMessage, error)
+	ReadBackupMessage(context.Context, string) (*Message, error)
+}
+
+// TargetBackupReaderInitializer prepares only read capabilities, without creating destination state.
+type TargetBackupReaderInitializer interface{ InitializeForRead(context.Context) error }
+
+// BackupWriter returns the stable target locator after writing a message.
+type BackupWriter interface {
+	WriteBackupMessage(context.Context, *Message) (string, error)
+}
+
+// RepairBackupWriter stores a corrected copy while retaining the damaged copy.
+type RepairBackupWriter interface {
+	WriteRepairMessage(context.Context, *Message) (string, error)
+}
+
+// BackupLocatorProvider exposes the location from the most recent successful WriteMessage call.
+type BackupLocatorProvider interface{ LastBackupLocator() string }
 
 // SourceFactory creates Source instances from configuration.
 type SourceFactory func(config map[string]interface{}) (Source, error)

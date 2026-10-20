@@ -98,6 +98,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		PRIMARY KEY(target_name, identity)
 	);
 
+	CREATE TABLE IF NOT EXISTS backup_messages (
+		source_name TEXT NOT NULL, target_name TEXT NOT NULL, scope TEXT NOT NULL,
+		folder TEXT NOT NULL, uid TEXT NOT NULL, locator TEXT NOT NULL,
+		raw_sha256 TEXT NOT NULL, flags_json TEXT NOT NULL DEFAULT '[]', internal_date TEXT NOT NULL DEFAULT '',
+		recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(source_name,target_name,scope,folder,uid)
+	);
+
+	CREATE TABLE IF NOT EXISTS superseded_backup_objects (
+		target_name TEXT NOT NULL, locator TEXT NOT NULL, replacement_locator TEXT NOT NULL,
+		recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(target_name,locator)
+	);
+
 	CREATE TABLE IF NOT EXISTS oauth_tokens (
 		source_name TEXT PRIMARY KEY REFERENCES sources(name) ON DELETE CASCADE,
 		access_token TEXT,
@@ -107,6 +120,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_name);
+	CREATE INDEX IF NOT EXISTS idx_backup_messages_target ON backup_messages(target_name);
 	CREATE INDEX IF NOT EXISTS idx_messages_source_folder ON messages(source_name, folder);
 	CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
 	CREATE INDEX IF NOT EXISTS idx_messages_content_hash ON messages(content_hash);

@@ -1,0 +1,66 @@
+package target
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/zekihan/mailvault/internal/dedup"
+	"github.com/zekihan/mailvault/internal/plugins"
+)
+
+func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	target, err := NewMaildirTarget(map[string]interface{}{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maildir := target.(*MaildirTarget)
+	if err := maildir.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("Subject: fixture\r\n\r\nbody\r\n")
+	locator, err := maildir.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(root, filepath.FromSlash(locator))
+	newDir := filepath.Join(root, "cur")
+	newPath := filepath.Join(newDir, filepath.Base(old)+":2,S")
+	if err := os.Rename(old, newPath); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := maildir.ReadBackupMessage(ctx, locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(raw) {
+		t.Fatal("renamed Maildir message did not verify")
+	}
+}
+
+func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
+	ctx := context.Background()
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mbox := target.(*MboxTarget)
+	if err := mbox.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("Subject: fixture\r\n\r\nbody From line\r\n>From escaped\r\n>>From double escaped without final newline")
+	locator, err := mbox.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := mbox.ReadBackupMessage(ctx, locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(raw) {
+		t.Fatalf("mbox roundtrip changed raw bytes: %q", stored.Raw)
+	}
+}

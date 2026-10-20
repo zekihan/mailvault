@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -30,6 +31,7 @@ type S3Target struct {
 	operationTimeout time.Duration
 	client           *s3.Client
 	uploader         *transfermanager.Client
+	lastLocator      string
 	mu               sync.Mutex
 }
 
@@ -117,34 +119,16 @@ func (t *S3Target) Type() string {
 }
 
 func (t *S3Target) Initialize(ctx context.Context) error {
+	if err := t.InitializeForRead(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := t.operationContext(ctx)
 	defer cancel()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Load AWS config
-	cfgOpts := []func(*awsv2config.LoadOptions) error{
-		awsv2config.WithRegion(t.region),
-	}
-	if t.credentials != nil {
-		cfgOpts = append(cfgOpts, awsv2config.WithCredentialsProvider(t.credentials))
-	}
-
-	cfg, err := awsv2config.LoadDefaultConfig(ctx, cfgOpts...)
-	if err != nil {
-		return fmt.Errorf("load aws config: %w", err)
-	}
-
-	// Create S3 client
-	t.client = s3.NewFromConfig(cfg, func(opts *s3.Options) {
-		if t.endpoint != "" {
-			opts.BaseEndpoint = aws.String(t.endpoint)
-		}
-	})
-	t.uploader = transfermanager.New(t.client)
-
 	// Verify bucket exists
-	_, err = t.client.HeadBucket(ctx, &s3.HeadBucketInput{
+	_, err := t.client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(t.bucket),
 	})
 	if err != nil {
@@ -154,21 +138,54 @@ func (t *S3Target) Initialize(ctx context.Context) error {
 	return nil
 }
 
-func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+func (t *S3Target) InitializeForRead(ctx context.Context) error {
 	ctx, cancel := t.operationContext(ctx)
 	defer cancel()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.client != nil {
+		return nil
+	}
+	cfgOpts := []func(*awsv2config.LoadOptions) error{awsv2config.WithRegion(t.region)}
+	if t.credentials != nil {
+		cfgOpts = append(cfgOpts, awsv2config.WithCredentialsProvider(t.credentials))
+	}
+	cfg, err := awsv2config.LoadDefaultConfig(ctx, cfgOpts...)
+	if err != nil {
+		return fmt.Errorf("load aws config: %w", err)
+	}
+	t.client = s3.NewFromConfig(cfg, func(opts *s3.Options) {
+		if t.endpoint != "" {
+			opts.BaseEndpoint = aws.String(t.endpoint)
+		}
+	})
+	t.uploader = transfermanager.New(t.client)
+	return nil
+}
+
+func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+	_, err := t.WriteBackupMessage(ctx, msg)
+	return err
+}
+
+func (t *S3Target) LastBackupLocator() string { t.mu.Lock(); defer t.mu.Unlock(); return t.lastLocator }
+
+func (t *S3Target) WriteBackupMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	ctx, cancel := t.operationContext(ctx)
+	defer cancel()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastLocator = ""
 
 	if t.uploader == nil {
-		return errors.New("S3 target not initialized")
+		return "", errors.New("S3 target not initialized")
 	}
 
 	// Generate a stable key from the raw content, folder, and UID.
 	hash := sha256.Sum256(msg.Raw)
 	key := s3ObjectKey(t.prefix, hash, msg.Folder, msg.UID)
 	if len(key) > maxS3ObjectKeyBytes {
-		return errors.New("S3 object key exceeds 1024 bytes")
+		return "", errors.New("S3 object key exceeds 1024 bytes")
 	}
 
 	// Upload message
@@ -182,10 +199,40 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 	if err != nil {
 		// Multipart failure cleanup can flatten the SDK's cancellation cause.
 		// Preserve our operation deadline/cancellation alongside that error.
-		return fmt.Errorf("upload to S3: %w", errors.Join(err, ctx.Err()))
+		return "", fmt.Errorf("upload to S3: %w", errors.Join(err, ctx.Err()))
 	}
 
-	return nil
+	t.lastLocator = key
+	return key, nil
+}
+
+func (t *S3Target) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("create repair key: %w", err)
+	}
+	hash := sha256.Sum256(msg.Raw)
+	key := fmt.Sprintf("%s%s-repair-%x.eml", t.prefix, hex.EncodeToString(hash[:]), nonce[:])
+	if len(key) > maxS3ObjectKeyBytes {
+		return "", errors.New("S3 repair object key exceeds 1024 bytes")
+	}
+	ctx, cancel := t.operationContext(ctx)
+	defer cancel()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastLocator = ""
+	if t.uploader == nil {
+		return "", errors.New("S3 target not initialized")
+	}
+	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
+		Bucket: aws.String(t.bucket), Key: aws.String(key), Body: strings.NewReader(string(msg.Raw)),
+		ContentType: aws.String("message/rfc822"), Metadata: s3ObjectMetadata(msg, hash),
+	})
+	if err != nil {
+		return "", fmt.Errorf("upload repaired message to S3: %w", errors.Join(err, ctx.Err()))
+	}
+	t.lastLocator = key
+	return key, nil
 }
 
 func (t *S3Target) Close() error {

@@ -32,6 +32,9 @@ var (
 	maxRetries    int
 	retryDelay    string
 	stateDir      string
+	repairMode    bool
+	repairSource  string
+	repairTarget  string
 )
 
 var rootCmd = &cobra.Command{
@@ -53,6 +56,23 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(newStateCleanupCommand())
+	rootCmd.AddCommand(newVerifyCommand())
+	repairCmd := &cobra.Command{Use: "repair", Short: "Repair a source-to-target backup after verification", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		apply, _ := cmd.Flags().GetBool("apply")
+		if !apply {
+			return errors.New("repair writes backup data; pass --apply to continue")
+		}
+		if repairSource == "" || repairTarget == "" {
+			return errors.New("--source and --target are required")
+		}
+		repairMode = true
+		defer func() { repairMode = false }()
+		return runSync(cmd, nil)
+	}}
+	repairCmd.Flags().StringVar(&repairSource, "source", "", "configured source to repair from")
+	repairCmd.Flags().StringVar(&repairTarget, "target", "", "configured target to repair")
+	repairCmd.Flags().Bool("apply", false, "write repaired copies after checking the target")
+	rootCmd.AddCommand(repairCmd)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./config.yaml, ~/.config/mailvault/config.yaml, /etc/mailvault/config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output JSON instead of human-readable format")
 	rootCmd.PersistentFlags().StringVar(&stateDir, "state-dir", "", "directory for state database (default: ~/.local/share/mailvault)")
@@ -148,6 +168,22 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 	if err := config.Validate(cfg); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
+	if repairMode {
+		found := false
+		for _, pair := range cfg.Pairs {
+			if pair.Source == repairSource {
+				for _, target := range pair.Targets {
+					if target == repairTarget {
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			return fmt.Errorf("configured source-target pair %q -> %q not found", repairSource, repairTarget)
+		}
+		cfg.Pairs = []config.PairConfig{{Source: repairSource, Targets: []string{repairTarget}}}
+	}
 
 	stateStore, err := loadStateStore()
 	if err != nil {
@@ -179,6 +215,7 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
 		sync.WithDryRun(dryRun),
 		sync.WithForceFetchAll(forceFetchAll),
+		sync.WithRepair(repairMode),
 		sync.WithProgress(progress),
 		sync.WithConcurrency(concurrency),
 		sync.WithMaxRetries(maxRetries),

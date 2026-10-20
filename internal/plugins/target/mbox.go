@@ -17,12 +17,13 @@ import (
 
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
-	name   string
-	path   string
-	create bool
-	file   *os.File
-	broken error
-	mu     sync.Mutex
+	name        string
+	path        string
+	create      bool
+	file        *os.File
+	broken      error
+	lastLocator string
+	mu          sync.Mutex
 }
 
 func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
@@ -83,18 +84,34 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	return nil
 }
 
-func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (err error) {
+func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+	_, err := t.WriteBackupMessage(ctx, msg)
+	return err
+}
+
+func (t *MboxTarget) LastBackupLocator() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.lastLocator
+}
+
+func (t *MboxTarget) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	return t.WriteBackupMessage(ctx, msg)
+}
+
+func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Message) (locator string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastLocator = ""
 
 	if t.file == nil {
-		return errors.New("mbox not initialized")
+		return "", errors.New("mbox not initialized")
 	}
 	if t.broken != nil {
-		return t.broken
+		return "", t.broken
 	}
 	if err := lockMbox(ctx, t.file); err != nil {
-		return fmt.Errorf("lock mbox: %w", err)
+		return "", fmt.Errorf("lock mbox: %w", err)
 	}
 	defer func() {
 		if unlockErr := unlockMbox(t.file); unlockErr != nil {
@@ -103,14 +120,14 @@ func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (er
 		}
 	}()
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
 	info, err := t.file.Stat()
 	if err != nil {
-		return fmt.Errorf("stat mbox: %w", err)
+		return "", fmt.Errorf("stat mbox: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("mbox must be a regular file")
+		return "", errors.New("mbox must be a regular file")
 	}
 
 	// Escape body lines using mboxrd: prefix one '>' to each line whose
@@ -134,10 +151,11 @@ func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (er
 		if rollbackErr != nil {
 			t.broken = fmt.Errorf("mbox rollback failed; refusing further appends: %w", rollbackErr)
 		}
-		return errors.Join(fmt.Errorf("append mbox: %w", writeErr), t.broken)
+		return "", errors.Join(fmt.Errorf("append mbox: %w", writeErr), t.broken)
 	}
 
-	return nil
+	t.lastLocator = fmt.Sprintf("%d:%d:%d:%d", info.Size(), len(record), len(raw), len(msg.Raw))
+	return t.lastLocator, nil
 }
 
 func escapeMboxrd(raw []byte) []byte {

@@ -27,6 +27,7 @@ type MaildirTarget struct {
 	removeTemp      func(string) error
 	link            func(string, string) error
 	syncDir         func(string) error
+	lastLocator     string
 }
 
 func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) {
@@ -110,11 +111,27 @@ func (t *MaildirTarget) Initialize(ctx context.Context) error {
 	return nil
 }
 
-func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) (err error) {
+func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+	_, err := t.WriteBackupMessage(ctx, msg)
+	return err
+}
+
+func (t *MaildirTarget) LastBackupLocator() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.lastLocator
+}
+
+func (t *MaildirTarget) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	return t.WriteBackupMessage(ctx, msg)
+}
+
+func (t *MaildirTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Message) (locator string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastLocator = ""
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
 	removeTemp, link := t.removeTemp, t.link
 	if removeTemp == nil {
@@ -125,11 +142,11 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	}
 	messagePath, err := t.messagePath(msg.Folder)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if messagePath != t.path {
 		if err := t.ensureMaildir(messagePath); err != nil {
-			return fmt.Errorf("create folder maildir: %w", err)
+			return "", fmt.Errorf("create folder maildir: %w", err)
 		}
 	}
 	flagSuffix := t.maildirFlags(msg.Flags)
@@ -142,7 +159,7 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 	// the clock does not advance. Keep mail private with its default 0600 mode.
 	file, err := os.CreateTemp(filepath.Join(messagePath, "tmp"), "mailvault-*")
 	if err != nil {
-		return fmt.Errorf("create tmp message: %w", err)
+		return "", fmt.Errorf("create tmp message: %w", err)
 	}
 	tmpPath := file.Name()
 	defer func() {
@@ -158,21 +175,26 @@ func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) 
 		writeErr = file.Sync()
 	}
 	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return fmt.Errorf("write tmp message: %w", err)
+		return "", fmt.Errorf("write tmp message: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
 	// A hard link atomically publishes the complete message without replacing
 	// an existing new/ entry; Rename would silently overwrite on collision.
 	newPath := filepath.Join(newDir, filepath.Base(tmpPath)+flagSuffix)
 	if err := link(tmpPath, newPath); err != nil {
-		return fmt.Errorf("publish maildir message: %w", err)
+		return "", fmt.Errorf("publish maildir message: %w", err)
 	}
 	if syncErr := t.syncDirectory(newDir); syncErr != nil {
-		return errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(newPath, newDir))
+		return "", errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(newPath, newDir))
 	}
-	return nil
+	locator, err = filepath.Rel(t.path, newPath)
+	if err != nil {
+		return "", err
+	}
+	t.lastLocator = filepath.ToSlash(locator)
+	return locator, nil
 }
 
 // DeliveryIdentity scopes content deduplication to a source folder when folder
