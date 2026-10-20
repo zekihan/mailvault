@@ -135,6 +135,10 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 	if err != nil {
 		return report, fmt.Errorf("read repair history: %w", err)
 	}
+	canonicalSuperseded := make(map[string]bool, len(superseded))
+	for locator := range superseded {
+		canonicalSuperseded[canonicalBackupLocator(reader, locator)] = true
+	}
 	expectedByLocator, originalByLocator := make(map[string]map[string]bool), make(map[string]string)
 	known := make(map[string]bool)
 	for _, item := range manifest {
@@ -205,7 +209,7 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 	}
 	for _, entry := range entries {
 		locator := canonicalBackupLocator(reader, entry.Locator)
-		isSuperseded := superseded[entry.Locator] || superseded[locator]
+		isSuperseded := canonicalSuperseded[locator]
 		if !known[locator] && !isSuperseded && physicalErrors[locator] == nil {
 			report.Unverifiable++
 		}

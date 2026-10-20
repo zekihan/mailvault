@@ -263,8 +263,11 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 
 func (t *MboxTarget) CanonicalBackupLocator(locator string) string {
 	parts := strings.Split(locator, ":")
-	if len(parts) >= 2 {
-		return parts[0] + ":" + parts[1]
+	if len(parts) == 4 {
+		if offset, err := strconv.ParseInt(parts[0], 10, 64); err == nil && offset >= 0 {
+			// Tail repair can change the retained record length, but not its start.
+			return strconv.FormatInt(offset, 10)
+		}
 	}
 	return locator
 }

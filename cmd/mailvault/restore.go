@@ -213,8 +213,15 @@ func (r restoreTargetReader) ListBackupMessages(ctx context.Context) ([]plugins.
 		}
 	}
 	if len(r.superseded) > 0 {
+		retired := make(map[string]bool, len(r.superseded))
+		for locator := range r.superseded {
+			retired[r.canonicalLocator(locator)] = true
+		}
+		for _, active := range r.manifest {
+			delete(retired, r.canonicalLocator(active.Locator))
+		}
 		for i := range physical {
-			if r.isSuperseded(physical[i].Locator) {
+			if retired[r.canonicalLocator(physical[i].Locator)] {
 				physical[i].Locator = ""
 			}
 		}
@@ -227,16 +234,6 @@ func (r restoreTargetReader) ListBackupMessages(ctx context.Context) ([]plugins.
 		physical = filtered
 	}
 	return restore.MergeBackupMessagesCanonical(physical, r.manifest, r.canonicalLocator)
-}
-
-func (r restoreTargetReader) isSuperseded(locator string) bool {
-	key := r.canonicalLocator(locator)
-	for old := range r.superseded {
-		if key == r.canonicalLocator(old) {
-			return true
-		}
-	}
-	return false
 }
 
 func (r restoreTargetReader) canonicalLocator(value string) string {
