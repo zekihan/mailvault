@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -61,19 +62,20 @@ func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, o
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	deadline := time.Now().Add(time.Duration(device.ExpiresIn) * time.Second)
+	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(device.ExpiresIn)*time.Second)
+	defer cancel()
 	for {
-		if time.Until(deadline) <= 0 {
-			return errors.New("device authorization expired")
-		}
 		timer := time.NewTimer(interval)
 		select {
-		case <-ctx.Done():
+		case <-pollCtx.Done():
 			timer.Stop()
-			return ctx.Err()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errors.New("device authorization expired")
 		case <-timer.C:
 		}
-		state, err := requestToken(ctx, cfg, url.Values{
+		state, err := requestToken(pollCtx, cfg, url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"client_id":   {cfg.ClientID},
 			"device_code": {device.DeviceCode},
@@ -124,8 +126,14 @@ type Provider struct {
 }
 
 func (p *Provider) AccessToken(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	encoded, err := p.store.Get(ctx, p.account)
 	if err != nil {
 		return "", fmt.Errorf("read OAuth state from keyring: %w", err)
@@ -173,9 +181,12 @@ func (c Config) normalized() Config {
 	if c.TokenURL == "" {
 		c.TokenURL = base + "token"
 	}
-	if c.HTTPClient == nil {
-		c.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
+	if c.HTTPClient != nil {
+		*client = *c.HTTPClient
 	}
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	c.HTTPClient = client
 	return c
 }
 
@@ -185,7 +196,7 @@ func (c Config) validate() error {
 	}
 	for _, endpoint := range []string{c.DeviceCodeURL, c.TokenURL} {
 		u, err := url.Parse(endpoint)
-		if err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"))) || u.Host == "" {
+		if err != nil || (!httpsURL(u.Scheme) && !httpTestURL(u.Scheme, u.Hostname())) || u.Host == "" || u.User != nil {
 			return errors.New("OAuth2 endpoints must use HTTPS (HTTP is allowed only for localhost tests)")
 		}
 	}
@@ -223,7 +234,7 @@ func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, err
 	if err != nil {
 		return deviceCodeResponse{}, fmt.Errorf("request device authorization: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result deviceCodeResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return deviceCodeResponse{}, errors.New("invalid device authorization response")
@@ -233,6 +244,10 @@ func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, err
 	}
 	if result.DeviceCode == "" || result.UserCode == "" || result.VerificationURI == "" || result.ExpiresIn <= 0 {
 		return deviceCodeResponse{}, errors.New("incomplete device authorization response")
+	}
+	verificationURI, err := url.Parse(result.VerificationURI)
+	if err != nil || verificationURI.Scheme != "https" || verificationURI.Host == "" || verificationURI.User != nil || strings.ContainsAny(result.UserCode+result.VerificationURI, "\x00\r\n") || !deviceCodePattern.MatchString(result.UserCode) {
+		return deviceCodeResponse{}, errors.New("invalid device authorization instructions")
 	}
 	return result, nil
 }
@@ -250,7 +265,7 @@ func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState,
 	if err != nil {
 		return tokenState{}, fmt.Errorf("request OAuth token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result tokenResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return tokenState{}, errors.New("invalid OAuth token response")
@@ -265,8 +280,18 @@ func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState,
 }
 
 func safeCode(code string, status int) string {
-	if code == "" || strings.ContainsAny(code, " \r\n") {
+	switch code {
+	case "authorization_pending", "slow_down", "authorization_declined", "bad_verification_code", "expired_token", "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client", "invalid_scope", "interaction_required":
+		return code
+	default:
 		return fmt.Sprintf("HTTP %d", status)
 	}
-	return code
+}
+
+var deviceCodePattern = regexp.MustCompile(`^[A-Za-z0-9-]{4,32}$`)
+
+func httpsURL(scheme string) bool { return scheme == "https" }
+
+func httpTestURL(scheme, hostname string) bool {
+	return scheme == "http" && (hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1")
 }
