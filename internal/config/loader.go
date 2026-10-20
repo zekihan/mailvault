@@ -14,18 +14,23 @@ import (
 
 // Load reads configuration from file and environment.
 func Load(path string) (*Config, error) {
-	return load(path, false, "")
+	return load(path, false, "", "", false)
 }
 
 // LoadForValidation resolves all declared resources for explicit connectivity
 // checks. Read fresh configuration rather than resolving active secrets twice.
 func LoadForValidation(path string) (*Config, error) {
-	return load(path, true, "")
+	return load(path, true, "", "", false)
+}
+
+// LoadSelected resolves credentials only for the named source and target.
+func LoadSelected(path, sourceName, targetName string) (*Config, error) {
+	return load(path, false, sourceName, targetName, false)
 }
 
 // LoadOAuthSource reads one source without resolving unrelated credentials.
 func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
-	cfg, err := load(path, false, sourceName)
+	cfg, err := load(path, false, sourceName, "", true)
 	if err != nil {
 		return SourceConfig{}, err
 	}
@@ -61,7 +66,7 @@ func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
 	return SourceConfig{}, fmt.Errorf("source %q not found", sourceName)
 }
 
-func load(path string, resolveAll bool, authSource string) (*Config, error) {
+func load(path string, resolveAll bool, authSource, authTarget string, skipSourceCredential bool) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("yaml")
 
@@ -107,13 +112,45 @@ func load(path string, resolveAll bool, authSource string) (*Config, error) {
 	}
 
 	// Expand credential references in config
-	if authSource == "" {
+	if authSource == "" && authTarget == "" {
 		if err := expandSelectedCredentialRefsAt(&cfg, resolveAll, configDir); err != nil {
 			return nil, fmt.Errorf("expand credentials: %w", err)
 		}
+	} else if skipSourceCredential {
+		if err := expandNamedCredentialRefsAt(&cfg, "", authTarget, configDir); err != nil {
+			return nil, fmt.Errorf("expand selected credentials: %w", err)
+		}
+	} else if err := expandNamedCredentialRefsAt(&cfg, authSource, authTarget, configDir); err != nil {
+		return nil, fmt.Errorf("expand selected credentials: %w", err)
 	}
 
 	return &cfg, nil
+}
+
+func expandNamedCredentialRefsAt(cfg *Config, sourceName, targetName, configDir string) error {
+	for i := range cfg.Sources {
+		if sourceName == "" || cfg.Sources[i].Name != sourceName {
+			continue
+		}
+		value, err := resolveSourceCredentialRefAt(cfg.Sources[i].PasswordRef, configDir)
+		if err != nil {
+			return fmt.Errorf("source %q password_ref: %w", cfg.Sources[i].Name, err)
+		}
+		cfg.Sources[i].PasswordRef = value
+	}
+	for i := range cfg.Targets {
+		if targetName == "" || cfg.Targets[i].Name != targetName {
+			continue
+		}
+		if ref, ok := cfg.Targets[i].Config["credentials_ref"].(string); ok {
+			value, err := resolveCredentialRefAt(ref, configDir)
+			if err != nil {
+				return fmt.Errorf("target %q credentials_ref: %w", cfg.Targets[i].Name, err)
+			}
+			cfg.Targets[i].Config["credentials_ref"] = value
+		}
+	}
+	return nil
 }
 
 // Validate checks the configuration for correctness.

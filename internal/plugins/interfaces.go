@@ -11,6 +11,27 @@ var (
 	ErrBackupMessageCorrupt = errors.New("backup message is corrupt")
 )
 
+// ErrMailboxExists indicates that a requested new destination mailbox exists already.
+var ErrMailboxExists = errMailboxExists{}
+
+// ErrMailboxUnchanged indicates that mailbox setup failed before CREATE was sent.
+var ErrMailboxUnchanged = errMailboxUnchanged{}
+
+// ErrMailboxMissing indicates that a resumable restore mailbox no longer exists.
+var ErrMailboxMissing = errMailboxMissing{}
+
+type errMailboxExists struct{}
+
+func (errMailboxExists) Error() string { return "destination mailbox already exists" }
+
+type errMailboxUnchanged struct{}
+
+func (errMailboxUnchanged) Error() string { return "destination mailbox was not created" }
+
+type errMailboxMissing struct{}
+
+func (errMailboxMissing) Error() string { return "resumable destination mailbox is missing" }
+
 // Message represents a single email message.
 type Message struct {
 	// UIDScope identifies the account and, for IMAP, its UIDVALIDITY generation.

@@ -40,6 +40,18 @@ func TestLoadDoesNotResolveUnusedCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadSelectedDoesNotResolveUnselectedCredentials(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-secret")
+	path := credentialConfigFile(t, "file:"+missing, "file:"+missing)
+	cfg, err := LoadSelected(path, "", "local")
+	if err != nil {
+		t.Fatalf("selected target load resolved unrelated source or target credentials: %v", err)
+	}
+	if cfg.Sources[1].PasswordRef != "file:"+missing || cfg.Targets[1].Config["credentials_ref"] != "file:"+missing {
+		t.Fatal("unselected credential references changed")
+	}
+}
+
 func TestLoadRejectsMissingActiveCredentials(t *testing.T) {
 	t.Setenv("MAILVAULT_ACTIVE_FIXTURE", "")
 	path := credentialConfigFile(t, "env:MAILVAULT_ACTIVE_FIXTURE", "env:MAILVAULT_ACTIVE_FIXTURE")
