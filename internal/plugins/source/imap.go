@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"time"
 
@@ -200,6 +201,9 @@ func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
 
 	var folders []string
 	for _, mb := range data {
+		if slices.Contains(mb.Attrs, imap.MailboxAttrNoSelect) {
+			continue
+		}
 		folders = append(folders, mb.Mailbox)
 	}
 

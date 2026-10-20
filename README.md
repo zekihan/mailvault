@@ -289,3 +289,22 @@ Bridge with verified TLS and manual initialization instructions.
 
 Version-tagged releases also publish the Helm chart to
 `oci://ghcr.io/zekihan/charts/mailvault` after container publication succeeds.
+
+### List server folder names
+
+List selectable folders using the source's configured credentials (including automatic OAuth token refresh):
+
+```sh
+go run ./cmd/mailvault --config ./config.yaml list-folders --source hotmail
+```
+
+The output is a `folders:` YAML block with decoded Unicode names and escaped literal characters, ready to copy into that source's configuration. Non-selectable IMAP parent folders are excluded. The command does not download messages or open backup targets. Use `--json` for a JSON array of names.
+
+For an existing Kubernetes setup deployment:
+
+```sh
+kubectl -n mailvault exec deployment/mailvault-mailvault-setup -- \
+  mailvault --config /config/config.yaml list-folders --source hotmail
+```
+
+The container image must include this command; previously released images do not gain it automatically.
