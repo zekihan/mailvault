@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,6 +24,25 @@ type trackingStore struct{ gets int }
 
 func (s *trackingStore) Get(context.Context, string) (string, error) { s.gets++; return "", nil }
 func (*trackingStore) Set(context.Context, string, string) error     { return nil }
+
+type blockingStore struct {
+	entered chan struct{}
+	release chan struct{}
+	state   string
+	once    sync.Once
+}
+
+func (s *blockingStore) Get(ctx context.Context, _ string) (string, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return s.state, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (*blockingStore) Set(context.Context, string, string) error { return nil }
 
 func TestXOAUTH2WirePayload(t *testing.T) {
 	_, response, err := NewXOAUTH2("user@example.com", "synthetic-token").Start()
@@ -142,6 +162,44 @@ func TestCanceledTokenLookupDoesNotAccessKeyring(t *testing.T) {
 	}
 	if store.gets != 0 {
 		t.Fatalf("canceled lookup accessed keyring %d times", store.gets)
+	}
+}
+
+func TestCanceledTokenLookupDoesNotWaitForProviderGate(t *testing.T) {
+	state, err := json.Marshal(tokenState{AccessToken: "cached-access", RefreshToken: "cached-refresh", Expiry: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &blockingStore{entered: make(chan struct{}), release: make(chan struct{}), state: string(state)}
+	provider, err := NewTokenProvider(Config{ClientID: "synthetic-client"}, "account", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		token, err := provider.AccessToken(context.Background())
+		if err == nil && token != "cached-access" {
+			err = fmt.Errorf("unexpected access token %q", token)
+		}
+		firstDone <- err
+	}()
+	<-store.entered
+	ctx, cancel := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() { _, err := provider.AccessToken(ctx); secondDone <- err }()
+	cancel()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("second AccessToken() = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(store.release)
+		t.Fatal("canceled token lookup waited for provider gate")
+	}
+	close(store.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

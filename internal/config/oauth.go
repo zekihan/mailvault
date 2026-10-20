@@ -14,6 +14,9 @@ func NewOAuthTokenProvider(source SourceConfig) (func(context.Context) (string, 
 	if source.OAuth2 == nil {
 		return nil, nil
 	}
+	if !source.UseTLS && !source.StartTLS {
+		return nil, fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", source.Name)
+	}
 	options := source.OAuth2
 	if options.ClientSecret != "" {
 		return nil, fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", source.Name)

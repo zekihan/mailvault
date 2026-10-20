@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -115,22 +114,26 @@ func NewTokenProvider(cfg Config, account string, store Store) (*Provider, error
 	if account == "" || store == nil {
 		return nil, errors.New("account and token store are required")
 	}
-	return &Provider{cfg: cfg, account: account, store: store}, nil
+	return &Provider{cfg: cfg, account: account, store: store, gate: make(chan struct{}, 1)}, nil
 }
 
 type Provider struct {
 	cfg     Config
 	account string
 	store   Store
-	mu      sync.Mutex
+	gate    chan struct{}
 }
 
 func (p *Provider) AccessToken(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	select {
+	case p.gate <- struct{}{}:
+		defer func() { <-p.gate }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

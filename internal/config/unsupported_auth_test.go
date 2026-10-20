@@ -8,7 +8,7 @@ import (
 func TestValidateAcceptsOAuthAndRejectsAmbiguousAuthentication(t *testing.T) {
 	for _, kind := range []string{"imap", "pop3"} {
 		t.Run(kind, func(t *testing.T) {
-			cfg := &Config{Sources: []SourceConfig{{Name: "account", Type: kind, Host: "example.invalid", Port: 993, Username: "test-user", MaxConnections: 1, OAuth2: &OAuth2Config{ClientID: "test-client"}}}, Targets: []TargetConfig{{Name: "local", Type: "maildir"}}, Pairs: []PairConfig{{Source: "account", Targets: []string{"local"}}}}
+			cfg := &Config{Sources: []SourceConfig{{Name: "account", Type: kind, Host: "example.invalid", Port: 993, Username: "test-user", UseTLS: true, MaxConnections: 1, OAuth2: &OAuth2Config{ClientID: "test-client"}}}, Targets: []TargetConfig{{Name: "local", Type: "maildir"}}, Pairs: []PairConfig{{Source: "account", Targets: []string{"local"}}}}
 			if err := Validate(cfg); err != nil {
 				t.Fatalf("OAuth-only config rejected: %v", err)
 			}

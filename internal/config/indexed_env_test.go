@@ -53,6 +53,37 @@ func TestLoadOAuthSourceSkipsUnrelatedCredentialsAndRejectsClientSecret(t *testi
 	}
 }
 
+func TestLoadOAuthSourceRejectsInvalidSelectedSource(t *testing.T) {
+	valid := "sources:\n  - name: selected\n    type: imap\n    host: outlook.office365.com\n    port: 993\n    username: user@example.invalid\n    oauth2:\n      client_id: public-client\n"
+	for _, test := range []struct {
+		name, replace, want string
+	}{
+		{"missing host", "    host: outlook.office365.com\n", "host is required"},
+		{"missing username", "    username: user@example.invalid\n", "username is required"},
+		{"mixed authentication", "    username: user@example.invalid\n", "either password_ref or oauth2"},
+		{"no TLS", "    oauth2:\n", "OAuth2 requires TLS"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := valid
+			switch test.name {
+			case "no TLS":
+				data = strings.Replace(data, test.replace, "    use_tls: false\n"+test.replace, 1)
+			case "mixed authentication":
+				data = strings.Replace(data, test.replace, test.replace+"    password_ref: env:UNUSED\n", 1)
+			default:
+				data = strings.Replace(data, test.replace, "", 1)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadOAuthSource(path, "selected"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid selected source accepted or wrong error: %v", err)
+			}
+		})
+	}
+}
+
 func TestIndexedEnvironmentPreservesExplicitFalseAndZero(t *testing.T) {
 	path := writeEnvironmentConfig(t)
 	t.Setenv("MAILVAULT_SOURCES_0_USE_TLS", "false")
@@ -97,9 +128,16 @@ func TestKeyringReferenceUsesInjectedLookup(t *testing.T) {
 }
 
 func TestNewOAuthTokenProviderRejectsClientSecret(t *testing.T) {
-	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", OAuth2: &OAuth2Config{ClientID: "public-client", ClientSecret: "unused-secret"}})
+	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", UseTLS: true, OAuth2: &OAuth2Config{ClientID: "public-client", ClientSecret: "unused-secret"}})
 	if err == nil || !strings.Contains(err.Error(), "client_secret is not supported") {
 		t.Fatalf("provider silently accepted an OAuth client secret: %v", err)
+	}
+}
+
+func TestNewOAuthTokenProviderRequiresTLS(t *testing.T) {
+	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", OAuth2: &OAuth2Config{ClientID: "public-client"}})
+	if err == nil || !strings.Contains(err.Error(), "OAuth2 requires TLS") {
+		t.Fatalf("provider accepted an unencrypted OAuth source: %v", err)
 	}
 }
 

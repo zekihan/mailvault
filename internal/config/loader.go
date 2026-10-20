@@ -34,6 +34,18 @@ func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
 			if source.OAuth2 == nil {
 				return SourceConfig{}, fmt.Errorf("source %q has no oauth2 configuration", sourceName)
 			}
+			if source.PasswordRef != "" {
+				return SourceConfig{}, fmt.Errorf("source %q: configure either password_ref or oauth2, not both", sourceName)
+			}
+			if strings.TrimSpace(source.Host) == "" {
+				return SourceConfig{}, fmt.Errorf("source %q: host is required", sourceName)
+			}
+			if strings.TrimSpace(source.Username) == "" {
+				return SourceConfig{}, fmt.Errorf("source %q: username is required", sourceName)
+			}
+			if !source.UseTLS && !source.StartTLS {
+				return SourceConfig{}, fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", sourceName)
+			}
 			if source.OAuth2.ClientSecret != "" {
 				return SourceConfig{}, fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", sourceName)
 			}
@@ -135,6 +147,9 @@ func Validate(cfg *Config) error {
 			}
 			if strings.TrimSpace(s.OAuth2.ClientID) == "" {
 				return fmt.Errorf("source %q: oauth2.client_id is required", s.Name)
+			}
+			if !s.UseTLS && !s.StartTLS {
+				return fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", s.Name)
 			}
 			if s.OAuth2.ClientSecret != "" {
 				return fmt.Errorf("source %q: oauth2.client_secret is not supported for public device authorization clients", s.Name)
