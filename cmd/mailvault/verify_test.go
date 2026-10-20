@@ -135,7 +135,7 @@ func TestVerifyDoesNotDoubleCountManifestedLegacyReceiptAfterCleanup(t *testing.
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite3", filepath.Join(stateDir, "state.db"))
+	db, err := sql.Open("sqlite", filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

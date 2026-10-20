@@ -37,7 +37,7 @@ func TestStateCleanupPreviewsAndRetainsReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Age the metadata using SQLite so the test does not depend on the clock.
-	db, err := sql.Open("sqlite3", filepath.Join(stateDir, "state.db"))
+	db, err := sql.Open("sqlite", filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

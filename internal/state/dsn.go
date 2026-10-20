@@ -17,10 +17,10 @@ func stateFilename(path string, allowMemory bool) (string, error) {
 // SQLite interprets query parameters even in plain filename DSNs. Encode the
 // absolute filename separately so literal ?, # and % cannot change its target.
 func stateDSN(path string, readOnly bool) (string, error) {
-	params := url.Values{"_fk": {"1"}, "_busy_timeout": {"5000"}}
+	params := url.Values{"_pragma": {"foreign_keys(1)", "busy_timeout(5000)"}}
 	if readOnly {
 		params.Set("mode", "ro")
-		params.Set("_query_only", "1")
+		params.Add("_pragma", "query_only(1)")
 	}
 	if path == ":memory:" && !readOnly {
 		return ":memory:?" + params.Encode(), nil

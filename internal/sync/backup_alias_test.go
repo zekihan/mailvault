@@ -41,7 +41,7 @@ func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
 				}
 			}
 			// A malformed unrelated row used to make loading the whole manifest fail.
-			db, err := sql.Open("sqlite3", storePath)
+			db, err := sql.Open("sqlite", storePath)
 			if err != nil {
 				t.Fatal(err)
 			}

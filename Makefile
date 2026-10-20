@@ -5,7 +5,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 .PHONY: build fmt lint test test/race
 build:
 	mkdir -p dist
-	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/mailvault ./cmd/mailvault
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/mailvault ./cmd/mailvault
 fmt:
 	gofmt -w .
 lint:

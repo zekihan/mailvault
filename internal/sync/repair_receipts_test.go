@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/zekihan/mailvault/internal/config"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/plugins/target"
 	"github.com/zekihan/mailvault/internal/state"
+	_ "modernc.org/sqlite"
 )
 
 func TestRepairAdoptionPersistsReceipts(t *testing.T) {
@@ -254,7 +254,7 @@ func assertMaildirObjectCount(t *testing.T, ctx context.Context, root string, wa
 
 func deleteRepairReceipts(t *testing.T, path string) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func deleteRepairReceipts(t *testing.T, path string) {
 
 func addDeliveryFailureTrigger(t *testing.T, path string) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}

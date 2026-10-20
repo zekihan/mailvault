@@ -28,7 +28,8 @@ jobs:
           test -z "$(gofmt -l .)"
           go mod tidy
           git diff --exit-code -- go.mod
-      - run: make test test/race build
+      - run: CGO_ENABLED=0 make test build
+      - run: make test/race
   helm:
     runs-on: ubuntu-latest
     steps:
