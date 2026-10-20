@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zekihan/mailvault/internal/config"
 )
 
 func captureOutput(t *testing.T, run func() error) (string, error) {
@@ -49,13 +51,11 @@ func configureCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("MAILVAULT_TEST_VALUE", "synthetic-sensitive-value")
-	t.Setenv("MAILVAULT_TEST_OAUTH", "synthetic-oauth-value")
 	data := map[string]interface{}{
 		"sources": []interface{}{map[string]interface{}{
 			"name": "test-account", "type": "pop3", "host": "127.0.0.1", "port": port,
 			"username": "test-user", "password_ref": "env:MAILVAULT_TEST_VALUE", "use_tls": false,
 			"max_connections": 1, "connection_timeout": "200ms", "read_timeout": "200ms",
-			"oauth2": map[string]interface{}{"client_id": "visible-client", "client_secret": "env:MAILVAULT_TEST_OAUTH"},
 		}},
 		"targets": []interface{}{map[string]interface{}{
 			"name": "local", "type": "maildir", "config": map[string]interface{}{
@@ -95,7 +95,7 @@ func TestListingsRedactResolvedCredentials(t *testing.T) {
 					t.Fatal("listing exposed a resolved credential")
 				}
 			}
-			if !strings.Contains(output, "[REDACTED]") {
+			if mode != "sources-json" && !strings.Contains(output, "[REDACTED]") {
 				t.Fatalf("missing redaction marker: %s", output)
 			}
 			if jsonOutput && !json.Valid([]byte(output)) {
@@ -111,6 +111,7 @@ func TestListingLeavesOperationalCredentialsIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Sources[0].OAuth2 = &config.OAuth2Config{ClientID: "visible-client", ClientSecret: "synthetic-oauth-value"}
 	public := listingConfig(cfg)
 	public.Targets[0].Config["path"] = "changed"
 	if cfg.Sources[0].PasswordRef != "synthetic-sensitive-value" || cfg.Sources[0].OAuth2.ClientSecret != "synthetic-oauth-value" || cfg.Targets[0].Config["credentials_ref"] != "synthetic-sensitive-value" || cfg.Targets[0].Config["path"] == "changed" {

@@ -15,13 +15,13 @@ func applySourceDefaults(cfg *Config, values *viper.Viper) {
 	for i := range cfg.Sources {
 		src := &cfg.Sources[i]
 		prefix := fmt.Sprintf("sources.%d.", i)
-		if !values.InConfig(prefix + "use_tls") {
+		if !values.InConfig(prefix+"use_tls") && !values.IsSet(prefix+"use_tls") {
 			src.UseTLS = !src.StartTLS
 		}
-		if !values.InConfig(prefix + "connection_timeout") {
+		if !values.InConfig(prefix+"connection_timeout") && !values.IsSet(prefix+"connection_timeout") {
 			src.ConnectionTimeout = 30 * time.Second
 		}
-		if !values.InConfig(prefix + "read_timeout") {
+		if !values.InConfig(prefix+"read_timeout") && !values.IsSet(prefix+"read_timeout") {
 			src.ReadTimeout = 60 * time.Second
 		}
 	}

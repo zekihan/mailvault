@@ -19,8 +19,12 @@ sources:
     host: outlook.office365.com
     port: 993
     username: user@outlook.com
-    password_ref: "env:OUTLOOK_PASSWORD"
     use_tls: true
+    oauth2:
+      # Register a public client in Microsoft Entra and put its client ID here.
+      client_id: "YOUR_MICROSOFT_PUBLIC_CLIENT_ID"
+      tenant: consumers
+      # Tokens are kept in the OS keyring under a host/account-derived key.
     folders:
       - INBOX
       - Sent Items

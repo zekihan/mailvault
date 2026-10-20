@@ -10,8 +10,8 @@ var errSourceCredentialLineBreak = errors.New("source password must be a single 
 // Source password files permit one ordinary text-file terminator. Do not trim
 // spaces or normalize env/literal values; reject protocol-breaking line breaks.
 // Generic credential file reads remain byte-preserving for multiline S3 JSON.
-func resolveSourceCredentialRef(reference string) (string, error) {
-	value, err := resolveCredentialRef(reference)
+func resolveSourceCredentialRefAt(reference, configDir string) (string, error) {
+	value, err := resolveCredentialRefAt(reference, configDir)
 	if err != nil {
 		return "", err
 	}

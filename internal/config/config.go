@@ -32,10 +32,13 @@ type SourceConfig struct {
 
 // OAuth2Config holds OAuth2 configuration for sources that support it.
 type OAuth2Config struct {
-	ClientID     string   `mapstructure:"client_id" yaml:"client_id"`
-	ClientSecret string   `mapstructure:"client_secret" yaml:"client_secret"`
-	TokenURL     string   `mapstructure:"token_url" yaml:"token_url"`
-	Scopes       []string `mapstructure:"scopes" yaml:"scopes"`
+	ClientID      string   `mapstructure:"client_id" yaml:"client_id"`
+	ClientSecret  string   `mapstructure:"client_secret" yaml:"client_secret"`
+	Tenant        string   `mapstructure:"tenant" yaml:"tenant"`
+	TokenKey      string   `mapstructure:"token_key" yaml:"token_key"`
+	DeviceCodeURL string   `mapstructure:"device_code_url" yaml:"device_code_url"`
+	TokenURL      string   `mapstructure:"token_url" yaml:"token_url"`
+	Scopes        []string `mapstructure:"scopes" yaml:"scopes"`
 }
 
 // TargetConfig defines a mail target (local filesystem, S3, etc.).
