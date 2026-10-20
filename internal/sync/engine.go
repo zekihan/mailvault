@@ -380,7 +380,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 
 	if !e.forceFetchAll {
 		ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
-			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), scope, folder)
+			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, scope), folder)
 		})
 	}
 
@@ -410,7 +410,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 			errorsBefore := len(result.Errors)
 			e.syncMessage(ctx, src, tgt, msg, &result)
 			if !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
-				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), msg.UIDScope, msg.Folder, msg.UID); err != nil {
+				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID); err != nil {
 					result.Errors = append(result.Errors, fmt.Errorf("persist IMAP receipt: %w", err))
 				}
 			}
@@ -437,7 +437,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	// Message-ID is sender-controlled and does not prove content equality.
 	// Ignore legacy mid: receipts rather than suppress an unverified variant.
 	contentHash := dedup.ComputeContentHash(msg.Raw)
-	identity := dedup.DedupKey{ContentHash: contentHash}.Key()
+	identity := targetDeliveryIdentity(tgt, msg, dedup.DedupKey{ContentHash: contentHash}.Key())
 	if delivery.seen[identity] {
 		result.MessagesSkipped++
 		return
