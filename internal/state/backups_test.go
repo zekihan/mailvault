@@ -64,3 +64,22 @@ func TestLegacyBackupCandidatesRetainUnknownAndExcludeManifestedDeliveries(t *te
 		t.Fatalf("legacy candidates = %+v; want only the unmatched delivery with no hash", candidates)
 	}
 }
+
+func TestLegacyCandidatesRecognizeContentKeyedPOPManifest(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.MarkDelivered(ctx, "target", "hash:original-hash", "pop", "INBOX", "sequence:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "pop", Target: "target", Folder: "INBOX", UID: "content:original-hash", RawSHA256: "original-hash", Locator: "new/message"}); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.LegacyBackupCandidates(ctx, "target")
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("content manifest treated as legacy: %+v %v", candidates, err)
+	}
+}

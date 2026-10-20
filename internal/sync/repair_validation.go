@@ -40,5 +40,24 @@ func (e *SyncEngine) validateRepairedBackups(ctx context.Context, src plugins.So
 			failures = append(failures, fmt.Errorf("repair unresolved for %q (source folder %q, UID %s): checksum mismatch; source may no longer contain the message", entry.Locator, entry.Folder, entry.UID))
 		}
 	}
+	legacy, err := e.stateStore.LegacyBackupCandidates(ctx, tgt.Name())
+	if err != nil {
+		return append(failures, err)
+	}
+	for _, entry := range legacy {
+		if entry.Source != src.Name() {
+			continue
+		}
+		if entry.RawSHA256 == "" {
+			failures = append(failures, fmt.Errorf("repair unresolved for legacy source folder %q UID %s: no historical checksum or current source copy", entry.Folder, entry.UID))
+			continue
+		}
+		_, found, err := e.findBackupByHash(ctx, tgt, &plugins.Message{Folder: entry.Folder}, entry.RawSHA256)
+		if err != nil {
+			failures = append(failures, err)
+		} else if !found {
+			failures = append(failures, fmt.Errorf("repair unresolved for legacy source folder %q UID %s: no matching backup or current source copy", entry.Folder, entry.UID))
+		}
+	}
 	return failures
 }

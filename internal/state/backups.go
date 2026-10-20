@@ -122,7 +122,7 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 		excludeManifest = `AND NOT EXISTS (
 			SELECT 1 FROM backup_messages b
 			WHERE b.source_name=d.source_name AND b.target_name=d.target_name AND b.folder=d.folder
-			AND (b.uid=d.uid OR (d.uid='' AND b.raw_sha256=` + hashExpression + `))
+			AND (b.uid=d.uid OR ((d.uid='' OR b.uid='content:' || b.raw_sha256) AND b.raw_sha256=` + hashExpression + `))
 		)`
 	}
 	query := `SELECT d.source_name,d.target_name,d.folder,d.uid,` + hashExpression + ` FROM deliveries d ` + joinMessages + ` WHERE d.target_name=? ` + excludeManifest

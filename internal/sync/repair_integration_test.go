@@ -104,3 +104,26 @@ func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
 		t.Fatal("stable UID lost")
 	}
 }
+
+func TestRepairReportsUnverifiableLegacyReceipt(t *testing.T) {
+	f := newEngineFixture(t)
+	f.source.messages = nil
+	if err := f.store.MarkDelivered(context.Background(), "first", "mid:legacy", "account", "INBOX", "old"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewSyncEngine(f.cfg, f.store, f.registry, WithRepair(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use a read-capable empty target so the legacy integrity check can run.
+	root := t.TempDir()
+	reader, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.(interface{ SetName(string) }).SetName("first")
+	failures := engine.validateRepairedBackups(context.Background(), f.source, reader)
+	if len(failures) == 0 {
+		t.Fatal("unverifiable legacy receipt silently accepted")
+	}
+}
