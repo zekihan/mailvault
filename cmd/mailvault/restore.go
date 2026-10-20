@@ -225,28 +225,29 @@ func (r restoreTargetReader) ListBackupMessages(ctx context.Context) ([]plugins.
 		}
 		physical = filtered
 	}
-	return restore.MergeBackupMessages(physical, r.manifest)
+	return restore.MergeBackupMessagesCanonical(physical, r.manifest, r.canonicalLocator)
 }
 
 func (r restoreTargetReader) isSuperseded(locator string) bool {
-	canonical := func(value string) string {
-		if target, ok := r.TargetBackupReader.(interface{ CanonicalBackupLocator(string) string }); ok {
-			return target.CanonicalBackupLocator(value)
-		}
-		if target, ok := r.TargetBackupReader.(interface{ ResolveBackupLocator(string) (string, error) }); ok {
-			if resolved, err := target.ResolveBackupLocator(value); err == nil {
-				return filepath.Clean(resolved)
-			}
-		}
-		return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(filepath.FromSlash(value))), "./")
-	}
-	key := canonical(locator)
+	key := r.canonicalLocator(locator)
 	for old := range r.superseded {
-		if key == canonical(old) {
+		if key == r.canonicalLocator(old) {
 			return true
 		}
 	}
 	return false
+}
+
+func (r restoreTargetReader) canonicalLocator(value string) string {
+	if target, ok := r.TargetBackupReader.(interface{ CanonicalBackupLocator(string) string }); ok {
+		return target.CanonicalBackupLocator(value)
+	}
+	if target, ok := r.TargetBackupReader.(interface{ ResolveBackupLocator(string) (string, error) }); ok {
+		if resolved, err := target.ResolveBackupLocator(value); err == nil {
+			return filepath.Clean(resolved)
+		}
+	}
+	return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(filepath.FromSlash(value))), "./")
 }
 
 func restoreStatePath() (string, error) {

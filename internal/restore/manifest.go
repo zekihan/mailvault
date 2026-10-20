@@ -8,13 +8,21 @@ import (
 )
 
 func MergeBackupMessages(physical, manifest []plugins.BackupMessage) ([]plugins.BackupMessage, error) {
+	return MergeBackupMessagesCanonical(physical, manifest, func(locator string) string { return locator })
+}
+
+func MergeBackupMessagesCanonical(physical, manifest []plugins.BackupMessage, canonical func(string) string) ([]plugins.BackupMessage, error) {
+	if canonical == nil {
+		canonical = func(locator string) string { return locator }
+	}
 	physicalByLocator := make(map[string]plugins.BackupMessage, len(physical))
 	for _, entry := range physical {
 		if entry.Locator == "" {
 			return nil, fmt.Errorf("backup target returned an empty physical locator: %w", plugins.ErrBackupMessageCorrupt)
 		}
-		if _, exists := physicalByLocator[entry.Locator]; !exists {
-			physicalByLocator[entry.Locator] = entry
+		key := canonical(entry.Locator)
+		if _, exists := physicalByLocator[key]; !exists {
+			physicalByLocator[key] = entry
 		}
 	}
 
@@ -23,10 +31,11 @@ func MergeBackupMessages(physical, manifest []plugins.BackupMessage) ([]plugins.
 		if entry.Locator == "" {
 			return nil, fmt.Errorf("backup manifest contains an empty locator: %w", plugins.ErrBackupMessageCorrupt)
 		}
-		if _, exists := physicalByLocator[entry.Locator]; !exists {
+		key := canonical(entry.Locator)
+		if _, exists := physicalByLocator[key]; !exists {
 			return nil, fmt.Errorf("manifest locator %q has no physical backup message: %w", entry.Locator, plugins.ErrBackupMessageMissing)
 		}
-		current, exists := manifestByLocator[entry.Locator]
+		current, exists := manifestByLocator[key]
 		if exists && current.RawSHA256 != "" && entry.RawSHA256 != "" && current.RawSHA256 != entry.RawSHA256 {
 			return nil, fmt.Errorf("manifest aliases disagree on raw hash for locator %q: %w", entry.Locator, plugins.ErrBackupMessageCorrupt)
 		}
@@ -39,22 +48,22 @@ func MergeBackupMessages(physical, manifest []plugins.BackupMessage) ([]plugins.
 			}
 		}
 		if choose {
-			manifestByLocator[entry.Locator] = entry
+			manifestByLocator[key] = entry
 		}
 	}
 
 	locators := make([]string, 0, len(physicalByLocator))
-	for locator := range physicalByLocator {
-		locators = append(locators, locator)
+	for key := range physicalByLocator {
+		locators = append(locators, key)
 	}
 	sort.Strings(locators)
 	merged := make([]plugins.BackupMessage, 0, len(locators))
-	for _, locator := range locators {
-		if entry, ok := manifestByLocator[locator]; ok {
+	for _, key := range locators {
+		if entry, ok := manifestByLocator[key]; ok {
 			merged = append(merged, entry)
 			continue
 		}
-		entry := physicalByLocator[locator]
+		entry := physicalByLocator[key]
 		entry.RawSHA256 = ""
 		merged = append(merged, entry)
 	}

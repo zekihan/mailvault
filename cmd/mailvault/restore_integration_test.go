@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -50,6 +52,11 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentPath := filepath.Join(maildirPath, filepath.FromSlash(currentLocator))
+	renamedPath := filepath.Join(maildirPath, "cur", filepath.Base(currentPath)+":2,S")
+	if err := os.Rename(currentPath, renamedPath); err != nil {
+		t.Fatal(err)
+	}
 	reader := backup.(plugins.TargetBackupReader)
 	physical, err := reader.ListBackupMessages(ctx)
 	if err != nil || len(physical) != 2 {
@@ -93,5 +100,54 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 	message := appender.appended[0]
 	if message.UID != entry.UID || message.UIDScope != entry.Scope || message.Folder != entry.Folder || message.InternalDate != entry.InternalDate || len(message.Flags) != 2 || message.Flags[1] != "$Label1" {
 		t.Fatalf("restored metadata = %#v", message)
+	}
+}
+
+func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "backup.mbox")
+	backup, err := target.NewMboxTarget(map[string]interface{}{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	if err := backup.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("From: test@example.com\r\nMessage-ID: <mbox-restore@example.com>\r\n\r\nbody\r\nFrom should be escaped\n>From already escaped\nlast line without newline")
+	writer := backup.(interface {
+		WriteBackupMessage(context.Context, *plugins.Message) (string, error)
+	})
+	locator, err := writer.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := backup.(plugins.TargetBackupReader)
+	physical, err := reader.ListBackupMessages(ctx)
+	if err != nil || len(physical) != 1 {
+		t.Fatalf("physical messages = %d, err = %v", len(physical), err)
+	}
+	digest := sha256.Sum256(raw)
+	entry := plugins.BackupMessage{Source: "account", Target: "archive", Scope: "scope", Folder: "INBOX", UID: "77", Locator: locator, RawSHA256: hex.EncodeToString(digest[:])}
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.RecordBackupMessage(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.BackupMessages(ctx, "archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := restoreTargetReader{TargetBackupReader: reader, target: "archive", manifest: manifest}
+	appender := &recordingMailbox{}
+	result, err := restore.Run(ctx, merged, appender, store, restore.Options{BackupTarget: "archive", DestinationSource: "destination", DestinationFolder: "Restored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Restored != 1 || len(appender.appended) != 1 || string(appender.appended[0].Raw) != string(raw) {
+		t.Fatalf("restored result=%+v message=%+v", result, appender.appended)
 	}
 }
