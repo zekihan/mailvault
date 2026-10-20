@@ -211,6 +211,9 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 }
 
 func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan chan<- *plugins.Message, since, until int64) error {
+	progress := plugins.FetchProgress{Folder: folder, Total: -1, Stage: "searching"}
+	plugins.ReportFetchProgress(ctx, progress)
+
 	// Select mailbox
 	selectCmd := s.client.Select(folder, &imap.SelectOptions{ReadOnly: true})
 	if _, err := selectCmd.Wait(); err != nil {
@@ -228,8 +231,16 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 
 	uids := searchData.AllUIDs()
+	progress.Total = len(uids)
+	progress.Stage = "fetching"
+	plugins.ReportFetchProgress(ctx, progress)
+	completed := func() {
+		progress.Stage = "finished"
+		plugins.ReportFetchProgress(ctx, progress)
+	}
 
 	if len(uids) == 0 {
+		completed()
 		return nil
 	}
 
@@ -248,15 +259,19 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		batch := uids[i:end]
-		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until); err != nil {
+		if err := s.fetchBatch(ctx, folder, batch, msgChan, since, until, func() {
+			progress.Fetched++
+			plugins.ReportFetchProgress(ctx, progress)
+		}); err != nil {
 			return err
 		}
 	}
 
+	completed()
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64) (err error) {
+func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, fetched func()) (err error) {
 	// Fetch RFC822 for each UID
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
@@ -290,6 +305,7 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, folder string, uids []imap.
 		if err != nil {
 			return fmt.Errorf("collect message: %w", err)
 		}
+		fetched()
 		matches, err := matchesTimestampBounds(buf.InternalDate, since, until)
 		if err != nil {
 			return err

@@ -358,6 +358,15 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 	}
 	defer func() { report("finished") }()
 
+	ctx = plugins.WithFetchProgress(ctx, func(progress plugins.FetchProgress) {
+		total := "?"
+		if progress.Total >= 0 {
+			total = fmt.Sprint(progress.Total)
+		}
+		e.reportProgress(key+" fetch", fmt.Sprintf("folder %q: %d / %s fetched (%s)",
+			progress.Folder, progress.Fetched, total, progress.Stage))
+	})
+
 	// Fetch messages from source
 	msgChan, errChan := src.FetchMessages(ctx, folders, e.since, e.until)
 

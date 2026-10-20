@@ -187,13 +187,21 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 }
 
 func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan chan<- *plugins.Message, since, until int64) error {
+	progress := plugins.FetchProgress{Folder: folder, Total: -1, Stage: "counting"}
+	plugins.ReportFetchProgress(ctx, progress)
+
 	// Get message count
 	count, _, err := s.conn.Stat()
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
 	}
 
+	progress.Total = count
+	progress.Stage = "fetching"
+	plugins.ReportFetchProgress(ctx, progress)
 	if count == 0 {
+		progress.Stage = "finished"
+		plugins.ReportFetchProgress(ctx, progress)
 		return nil
 	}
 
@@ -212,6 +220,8 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		raw := buf.Bytes()
+		progress.Fetched++
+		plugins.ReportFetchProgress(ctx, progress)
 
 		// Parse headers for Message-ID
 		messageID := dedup.ExtractMessageID(raw)
@@ -243,6 +253,8 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 	}
 
+	progress.Stage = "finished"
+	plugins.ReportFetchProgress(ctx, progress)
 	return nil
 }
 
