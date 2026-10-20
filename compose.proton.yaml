@@ -1,0 +1,65 @@
+name: mailvault-proton
+
+x-bridge: &bridge
+  image: mailvault-proton-bridge:3.27.1
+  build:
+    context: ./deploy/proton
+    dockerfile: Dockerfile.bridge
+  entrypoint: ["bash", "/setup/bridge.sh"]
+  volumes:
+    - bridge-state:/root
+    - bridge-certs:/bridge-certs
+    - ./deploy/proton/bridge.sh:/setup/bridge.sh:ro
+
+services:
+  bridge-init:
+    <<: *bridge
+    profiles: [tools]
+    command: [init]
+    stdin_open: true
+    tty: true
+
+  bridge:
+    <<: *bridge
+    command: [serve]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "bash", "-c", "test -s /bridge-certs/cert.pem && exec 3<>/dev/tcp/127.0.0.1/1143"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  mailvault:
+    profiles: [tools]
+    build: .
+    network_mode: service:bridge
+    depends_on:
+      bridge:
+        condition: service_healthy
+    env_file:
+      - path: .env.proton
+        required: false
+    environment:
+      SSL_CERT_FILE: /bridge-certs/cert.pem
+    entrypoint: ["sh", "/setup/mailvault.sh"]
+    command: [sync]
+    volumes:
+      - mailvault-state:/state
+      - mailvault-backups:/backups
+      - bridge-certs:/bridge-certs:ro
+      - ./deploy/proton/mailvault.yaml:/config/mailvault.yaml:ro
+      - ./deploy/proton/mailvault.sh:/setup/mailvault.sh:ro
+    secrets:
+      - bridge-password
+
+secrets:
+  bridge-password:
+    file: ./secrets/proton-bridge-password
+
+volumes:
+  bridge-state:
+  bridge-certs:
+  mailvault-state:
+  mailvault-backups:

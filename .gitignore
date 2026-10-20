@@ -6,3 +6,5 @@
 *.out
 /config.yaml
 /mail/
+/.env.proton
+/secrets/

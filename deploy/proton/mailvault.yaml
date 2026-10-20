@@ -1,0 +1,27 @@
+sources:
+  - name: proton
+    type: imap
+    host: 127.0.0.1
+    port: 1143
+    username: set-via-env-file
+    password_ref: file:/run/secrets/bridge-password
+    use_tls: false
+    start_tls: true
+    folders:
+      - INBOX
+    connection_timeout: 30s
+    read_timeout: 60s
+    max_connections: 1
+
+targets:
+  - name: proton_maildir
+    type: maildir
+    config:
+      path: /backups/proton
+      create_if_missing: true
+      preserve_folders: true
+      preserve_flags: true
+
+pairs:
+  - source: proton
+    targets: [proton_maildir]

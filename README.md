@@ -250,3 +250,9 @@ missing destination directories/files; it does not require a state database.
 ## license
 
 [GNU Affero General Public License v3.0](LICENSE).
+
+## Proton Mail with Docker Compose
+
+For an isolated local Proton test with persistent Bridge credentials, Mailvault
+state, Maildir backups, and verified STARTTLS, see
+[the Proton Compose guide](docs/proton-compose.md).
