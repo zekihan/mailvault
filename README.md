@@ -280,3 +280,9 @@ the commit SHA tag; they do not replace release tags. The image's `version`
 command includes the build version.
 
 The workflow follows Docker's [multiple-registry publishing guide](https://docs.docker.com/build/ci/github-actions/push-multi-registries/).
+
+## Kubernetes
+
+The [Helm chart](charts/mailvault/README.md) provides a suspended backup CronJob,
+retained state and backup volumes, and an optional continuously running Proton
+Bridge with verified TLS and manual initialization instructions.

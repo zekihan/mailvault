@@ -1,0 +1,22 @@
+{{- $name := include "mailvault.name" . -}}
+{{- $claims := dict "state" .Values.persistence.state "backups" .Values.persistence.backups -}}
+{{- if .Values.proton.enabled -}}{{- $_ := set $claims "bridge" .Values.proton.persistence -}}{{- end -}}
+{{- range $key, $settings := $claims }}
+{{- if not $settings.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-{{ $key }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: {{ $settings.accessModes | toJson }}
+  {{- if ne $settings.storageClass nil }}
+  storageClassName: {{ $settings.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $settings.size }}
+{{- end }}
+{{- end }}

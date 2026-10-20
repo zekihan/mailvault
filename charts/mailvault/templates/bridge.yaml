@@ -1,0 +1,130 @@
+{{- if .Values.proton.enabled }}
+{{- $name := include "mailvault.name" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-bridge
+spec:
+  replicas: {{ ternary 0 1 .Values.proton.setup }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: bridge
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: bridge
+          image: {{ include "mailvault.image" .Values.proton.image | quote }}
+          imagePullPolicy: {{ .Values.proton.image.pullPolicy }}
+          env:
+            - name: BRIDGE_LISTEN_ADDRESS
+              value: "0.0.0.0"
+          ports:
+            - name: imap
+              containerPort: 1143
+          readinessProbe:
+            tcpSocket:
+              port: imap
+            periodSeconds: 5
+          resources: {{ .Values.proton.resources | toJson }}
+          volumeMounts:
+            - name: state
+              mountPath: /root
+            - name: certs
+              mountPath: /bridge-certs
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "mailvault.claim" (dict "settings" .Values.proton.persistence "name" (printf "%s-bridge" $name)) }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.proton.tlsSecret }}
+        - name: certs
+          secret:
+            secretName: {{ .Values.proton.tlsSecret }}
+            items:
+              - key: tls.crt
+                path: cert.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-bridge
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: bridge
+  ports:
+    - name: imap
+      port: 1143
+      targetPort: imap
+{{- if .Values.proton.setup }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}-bridge-setup
+spec:
+  automountServiceAccountToken: false
+  imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+  restartPolicy: Never
+  containers:
+    - name: setup
+      image: {{ include "mailvault.image" .Values.proton.image | quote }}
+      imagePullPolicy: {{ .Values.proton.image.pullPolicy }}
+      command: ["sleep", "infinity"]
+      resources: {{ .Values.proton.resources | toJson }}
+      volumeMounts:
+        - name: state
+          mountPath: /root
+        - name: export
+          mountPath: /bridge-certs
+        - name: tls
+          mountPath: /tls
+          readOnly: true
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: {{ include "mailvault.claim" (dict "settings" .Values.proton.persistence "name" (printf "%s-bridge" $name)) }}
+    - name: export
+      emptyDir: {}
+    - name: tls
+      secret:
+        secretName: {{ .Values.proton.tlsSecret }}
+{{- end }}
+{{- if .Values.proton.networkPolicy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-bridge
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: bridge
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: mailvault
+      ports:
+        - protocol: TCP
+          port: 1143
+{{- end }}
+{{- end }}

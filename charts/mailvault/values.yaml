@@ -1,0 +1,51 @@
+image:
+  repository: ghcr.io/zekihan/mailvault
+  tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+# Secret containing config.yaml and any file-referenced credentials under /config.
+configSecret: mailvault-config
+schedule: '0 3 * * *'
+timeZone: Etc/UTC
+suspend: true
+# Explicit acknowledgement after completing setup and a successful manual backup.
+initialized: false
+activeDeadlineSeconds: 14400
+backoffLimit: 0
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+persistence:
+  state:
+    existingClaim: ""
+    size: 1Gi
+    storageClass: null
+    accessModes: [ReadWriteOnce]
+  backups:
+    existingClaim: ""
+    size: 20Gi
+    storageClass: null
+    accessModes: [ReadWriteOnce]
+proton:
+  enabled: false
+  # Setup mode scales Bridge to zero and creates an interactive setup Pod.
+  setup: true
+  image:
+    repository: ghcr.io/zekihan/protonmailbridge
+    tag: 3.27.1-r1
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Secret keys: tls.crt, tls.key, ca.crt. Certificate SAN must match the Service.
+  tlsSecret: mailvault-proton-tls
+  persistence:
+    existingClaim: ""
+    size: 20Gi
+    storageClass: null
+    accessModes: [ReadWriteOnce]
+  networkPolicy: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi

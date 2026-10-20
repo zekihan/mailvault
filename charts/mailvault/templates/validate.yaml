@@ -1,0 +1,6 @@
+{{- if and (not .Values.suspend) (not .Values.initialized) -}}
+{{- fail "Set initialized=true only after a successful manual backup before unsuspending scheduling" -}}
+{{- end -}}
+{{- if and .Values.proton.enabled .Values.proton.setup (not .Values.suspend) -}}
+{{- fail "Proton setup requires suspend=true" -}}
+{{- end -}}

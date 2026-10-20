@@ -29,3 +29,15 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod
       - run: make test test/race build
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - name: Validate Helm chart lifecycle
+        run: |
+          helm lint charts/mailvault
+          helm lint charts/mailvault --set proton.enabled=true,proton.setup=false
+          ruby scripts/test-helm.rb
