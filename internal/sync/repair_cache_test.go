@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/config"
+	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/plugins/target"
 	"github.com/zekihan/mailvault/internal/state"
@@ -76,6 +77,14 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	if data, err := os.ReadFile(replacement); err != nil || string(data) != string(raw) {
 		t.Fatalf("replacement data = %q, %v", data, err)
 	}
+	maildir, err := target.NewMaildirTarget(map[string]interface{}{"name": "local", "path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical, err := maildir.(plugins.TargetBackupReader).ListBackupMessages(ctx)
+	if err != nil || len(physical) != 2 {
+		t.Fatalf("physical Maildir objects = %d, %v; want damaged original and one replacement", len(physical), err)
+	}
 	superseded, err := store.SupersededBackupObjects(ctx, "local")
 	if err != nil || !superseded[originalLocator] {
 		t.Fatalf("superseded original = %#v, %v", superseded, err)
@@ -138,6 +147,44 @@ func TestRepairWriteFailuresDoNotPopulateCache(t *testing.T) {
 	}
 	if backup.writeCalls != 2 {
 		t.Fatalf("repair writes = %d, want 2; failed write created a false cache hit", backup.writeCalls)
+	}
+}
+
+type repairIndexTarget struct {
+	name      string
+	listCalls int
+	entry     plugins.BackupMessage
+	raw       []byte
+}
+
+func (t *repairIndexTarget) Name() string                                       { return t.name }
+func (*repairIndexTarget) Type() string                                         { return "repair-index" }
+func (*repairIndexTarget) Initialize(context.Context) error                     { return nil }
+func (*repairIndexTarget) Close() error                                         { return nil }
+func (*repairIndexTarget) WriteMessage(context.Context, *plugins.Message) error { return nil }
+func (t *repairIndexTarget) ListBackupMessages(context.Context) ([]plugins.BackupMessage, error) {
+	t.listCalls++
+	return []plugins.BackupMessage{t.entry}, nil
+}
+func (t *repairIndexTarget) ReadBackupMessage(_ context.Context, locator string) (*plugins.Message, error) {
+	if locator != t.entry.Locator {
+		return nil, plugins.ErrBackupMessageMissing
+	}
+	return &plugins.Message{Folder: t.entry.Folder, Raw: t.raw}, nil
+}
+
+func TestRememberRepairBackupDoesNotCreatePartialIndex(t *testing.T) {
+	oldRaw := []byte("Subject: existing\r\n\r\nold backup\r\n")
+	target := &repairIndexTarget{name: "target", entry: plugins.BackupMessage{Locator: "old-locator", Folder: "INBOX"}, raw: oldRaw}
+	engine := &SyncEngine{}
+	msg := &plugins.Message{Folder: "INBOX"}
+	engine.rememberRepairBackup(target, msg, "new-hash", "new-locator")
+	if _, loaded := engine.repairCache[target.Name()]; loaded {
+		t.Fatal("remembered one write as a complete target index")
+	}
+	locator, found, err := engine.findBackupByHash(context.Background(), target, msg, dedup.ComputeContentHash(oldRaw))
+	if err != nil || !found || locator != "old-locator" || target.listCalls != 1 {
+		t.Fatalf("scan result = %q, %t, %v; list calls = %d", locator, found, err, target.listCalls)
 	}
 }
 
