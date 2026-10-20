@@ -2,8 +2,11 @@ package target
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -18,23 +21,61 @@ import (
 
 // S3Target implements the Target interface for S3-compatible storage.
 type S3Target struct {
-	name           string
-	bucket         string
-	region         string
-	endpoint       string
-	prefix         string
-	credentialsRef string
-	client         *s3.Client
-	uploader       *transfermanager.Client
-	mu             sync.Mutex
+	name             string
+	bucket           string
+	region           string
+	endpoint         string
+	prefix           string
+	credentials      aws.CredentialsProvider
+	operationTimeout time.Duration
+	client           *s3.Client
+	uploader         *transfermanager.Client
+	mu               sync.Mutex
 }
 
+const maxS3ObjectKeyBytes = 1024
+const boundedS3ObjectNameBytes = sha256.Size*4 + len("-.eml")
+const defaultS3OperationTimeout = 5 * time.Minute
+
 func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
-	bucket, _ := config.ParseString(configMap, config.TargetConfigBucket, "")
-	region, _ := config.ParseString(configMap, config.TargetConfigRegion, "")
-	endpoint, _ := config.ParseString(configMap, config.TargetConfigEndpoint, "")
-	prefix, _ := config.ParseString(configMap, config.TargetConfigPrefix, "")
-	credentialsRef, _ := config.ParseString(configMap, config.TargetConfigCredentialsRef, "")
+	operationTimeout, err := config.ParseDuration(configMap, config.TargetConfigOperationTimeout, defaultS3OperationTimeout)
+	if err != nil || operationTimeout <= 0 {
+		return nil, errors.New("invalid operation_timeout: expected a positive duration")
+	}
+	parseOption := func(key string) (string, error) {
+		value, err := config.ParseString(configMap, key, "")
+		if err != nil {
+			return "", fmt.Errorf("invalid %s: expected string", key)
+		}
+		return value, nil
+	}
+	bucket, err := parseOption(config.TargetConfigBucket)
+	if err != nil {
+		return nil, err
+	}
+	region, err := parseOption(config.TargetConfigRegion)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := parseOption(config.TargetConfigEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	prefix, err := parseOption(config.TargetConfigPrefix)
+	if err != nil {
+		return nil, err
+	}
+	credentialsRef, err := config.ParseString(configMap, config.TargetConfigCredentialsRef, "")
+	if err != nil {
+		return nil, errS3Credentials
+	}
+	if _, explicit := configMap[config.TargetConfigCredentialsRef]; explicit && credentialsRef == "" {
+		return nil, errS3Credentials
+	}
+	provider, err := s3CredentialProvider(credentialsRef)
+	if err != nil {
+		return nil, err
+	}
 
 	if bucket == "" {
 		return nil, errors.New("bucket is required")
@@ -42,22 +83,23 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	if region == "" {
 		return nil, errors.New("region is required")
 	}
-	if credentialsRef == "" {
-		return nil, errors.New("credentials_ref is required")
-	}
 
 	// Ensure prefix ends with /
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
+	if len(prefix) > maxS3ObjectKeyBytes-boundedS3ObjectNameBytes {
+		return nil, errors.New("prefix leaves insufficient space for a bounded S3 object key")
+	}
 
 	return &S3Target{
-		name:           "s3:" + bucket, // Will be overridden by registry
-		bucket:         bucket,
-		region:         region,
-		endpoint:       endpoint,
-		prefix:         prefix,
-		credentialsRef: credentialsRef,
+		name:             "s3:" + bucket, // Will be overridden by registry
+		bucket:           bucket,
+		region:           region,
+		endpoint:         endpoint,
+		prefix:           prefix,
+		credentials:      provider,
+		operationTimeout: operationTimeout,
 	}, nil
 }
 
@@ -75,12 +117,17 @@ func (t *S3Target) Type() string {
 }
 
 func (t *S3Target) Initialize(ctx context.Context) error {
+	ctx, cancel := t.operationContext(ctx)
+	defer cancel()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Load AWS config
 	cfgOpts := []func(*awsv2config.LoadOptions) error{
 		awsv2config.WithRegion(t.region),
+	}
+	if t.credentials != nil {
+		cfgOpts = append(cfgOpts, awsv2config.WithCredentialsProvider(t.credentials))
 	}
 
 	cfg, err := awsv2config.LoadDefaultConfig(ctx, cfgOpts...)
@@ -108,6 +155,8 @@ func (t *S3Target) Initialize(ctx context.Context) error {
 }
 
 func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+	ctx, cancel := t.operationContext(ctx)
+	defer cancel()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -115,12 +164,12 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 		return errors.New("S3 target not initialized")
 	}
 
-	// Generate object key: prefix + timestamp + UID + .eml
-	key := fmt.Sprintf("%s%d-%s.eml",
-		t.prefix,
-		time.Now().Unix(),
-		msg.UID,
-	)
+	// Generate a stable key from the raw content, folder, and UID.
+	hash := sha256.Sum256(msg.Raw)
+	key := s3ObjectKey(t.prefix, hash, msg.Folder, msg.UID)
+	if len(key) > maxS3ObjectKeyBytes {
+		return errors.New("S3 object key exceeds 1024 bytes")
+	}
 
 	// Upload message
 	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
@@ -128,17 +177,12 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 		Key:         aws.String(key),
 		Body:        strings.NewReader(string(msg.Raw)),
 		ContentType: aws.String("message/rfc822"),
-		Metadata: map[string]string{
-			"source-folder": msg.Folder,
-			"source-uid":    msg.UID,
-			"message-id":    msg.MessageID,
-			"content-hash":  msg.ContentHash,
-			"internal-date": msg.InternalDate,
-			"size":          fmt.Sprintf("%d", msg.Size),
-		},
+		Metadata:    s3ObjectMetadata(msg, hash),
 	})
 	if err != nil {
-		return fmt.Errorf("upload to S3: %w", err)
+		// Multipart failure cleanup can flatten the SDK's cancellation cause.
+		// Preserve our operation deadline/cancellation alongside that error.
+		return fmt.Errorf("upload to S3: %w", errors.Join(err, ctx.Err()))
 	}
 
 	return nil
@@ -147,4 +191,27 @@ func (t *S3Target) WriteMessage(ctx context.Context, msg *plugins.Message) error
 func (t *S3Target) Close() error {
 	// Nothing to close for S3 client
 	return nil
+}
+
+// Bound the entire SDK operation, including configuration, retries and body reads.
+// WithTimeout preserves any earlier caller deadline.
+func (t *S3Target) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := t.operationTimeout
+	if timeout <= 0 {
+		timeout = defaultS3OperationTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// Keep ordinary keys unchanged; bound unusual folder/UID components by hashing
+// their combined identity. The content digest remains first for retry stability.
+func s3ObjectKey(prefix string, contentHash [32]byte, folder, uid string) string {
+	folderPart := hex.EncodeToString([]byte(folder))
+	uidPart := url.PathEscape(uid)
+	key := fmt.Sprintf("%s%s-%s-%s.eml", prefix, hex.EncodeToString(contentHash[:]), folderPart, uidPart)
+	if len(key) <= maxS3ObjectKeyBytes {
+		return key
+	}
+	identity := sha256.Sum256([]byte(folder + "\x00" + uid))
+	return fmt.Sprintf("%s%s-%s.eml", prefix, hex.EncodeToString(contentHash[:]), hex.EncodeToString(identity[:]))
 }

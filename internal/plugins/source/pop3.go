@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -28,11 +29,19 @@ type POP3Source struct {
 	readTimeout time.Duration
 	client      *pop3.Client
 	conn        *pop3.Conn
+	wire        *deadlineConn
 	connected   bool
 	mu          sync.Mutex
 }
 
 func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
+	startTLS, err := config.ParseBool(configMap, config.SourceConfigStartTLS, false)
+	if err != nil {
+		return nil, err
+	}
+	if startTLS {
+		return nil, errors.New("POP3 STARTTLS is unsupported; use implicit TLS instead")
+	}
 	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
 	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 995)
 	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
@@ -86,17 +95,35 @@ func (s *POP3Source) Type() string {
 func (s *POP3Source) Connect(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.connectLocked(ctx)
+}
 
+func (s *POP3Source) connectLocked(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.connected {
 		return nil
 	}
 
-	// Create client with options
+	var wire *deadlineConn
+	finish := func() {}
+	defer func() { finish() }()
+	dialer := &net.Dialer{Timeout: s.connTimeout}
 	opt := pop3.Opt{
 		Host:        s.host,
 		Port:        s.port,
 		DialTimeout: s.connTimeout,
 		TLSEnabled:  s.useTLS,
+		Dialer: dialFunc(func(network, address string) (net.Conn, error) {
+			raw, err := dialer.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			wire = &deadlineConn{Conn: raw, timeout: s.readTimeout}
+			finish = wire.beginIO(ctx)
+			return wire, nil
+		}),
 	}
 
 	s.client = pop3.New(opt)
@@ -104,22 +131,19 @@ func (s *POP3Source) Connect(ctx context.Context) error {
 	// Create connection
 	conn, err := s.client.NewConn()
 	if err != nil {
+		if wire != nil {
+			err = errors.Join(err, wire.Close())
+		}
 		return fmt.Errorf("connect: %w", err)
-	}
-
-	// Set read timeout
-	if s.readTimeout > 0 {
-		// Note: knadh/go-pop3 doesn't expose direct connection access for deadlines
-		// The DialTimeout handles connection timeout
-		_ = s.readTimeout // suppress unused warning
 	}
 
 	// Authenticate
 	if err := conn.Auth(s.username, s.password); err != nil {
-		return errors.Join(fmt.Errorf("auth: %w", err), conn.Quit())
+		return errors.Join(fmt.Errorf("auth: %w", err), wire.Close())
 	}
 
 	s.conn = conn
+	s.wire = wire
 	s.connected = true
 	return nil
 }
@@ -136,14 +160,24 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 	go func() {
 		defer close(msgChan)
 		defer close(errChan)
+		if since != 0 || until != 0 {
+			errChan <- errors.New("POP3 date filters are unsupported; omit --since and --until")
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
-		if err := s.Connect(ctx); err != nil {
+		if err := s.connectLocked(ctx); err != nil {
 			errChan <- err
 			return
 		}
+		finish := s.wire.beginIO(ctx)
+		defer finish()
 
 		// POP3 only supports INBOX
 		if err := s.fetchFolder(ctx, "INBOX", msgChan, since, until); err != nil {
+			s.connected = false
+			_ = s.wire.Close()
 			errChan <- fmt.Errorf("fetch folder: %w", err)
 			return
 		}
@@ -219,6 +253,8 @@ func (s *POP3Source) Close() error {
 	var err error
 	if s.conn != nil {
 		// Send QUIT command
+		finish := s.wire.beginIO(context.Background())
+		defer finish()
 		err = s.conn.Quit()
 		s.conn = nil
 	}

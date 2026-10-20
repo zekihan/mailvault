@@ -2,6 +2,8 @@ package target
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +22,11 @@ func TestS3Target_CustomEndpointUpload(t *testing.T) {
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "credentials"))
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 
-	requests := make(chan string, 2)
+	requests := make(chan string, 5)
+	keys := make(chan string, 4)
+	folders := make(chan string, 4)
+	hashes := make(chan string, 4)
+	bodies := make(chan string, 4)
 	raw := "Message-ID: <test@example.com>\r\n\r\ntest message\r\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.Method
@@ -30,6 +36,7 @@ func TestS3Target_CustomEndpointUpload(t *testing.T) {
 				t.Errorf("bucket path = %q", r.URL.Path)
 			}
 		case http.MethodPut:
+			keys <- r.URL.Path
 			if !strings.HasPrefix(r.URL.Path, "/test-bucket/backup/") || !strings.HasSuffix(r.URL.Path, "-42.eml") {
 				t.Errorf("object path = %q", r.URL.Path)
 			}
@@ -37,13 +44,12 @@ func TestS3Target_CustomEndpointUpload(t *testing.T) {
 			if err != nil {
 				t.Errorf("read upload: %v", err)
 			}
-			if string(body) != raw {
-				t.Errorf("uploaded body = %q, want %q", body, raw)
-			}
+			bodies <- string(body)
+			folders <- r.Header.Get("X-Amz-Meta-Source-Folder")
+			hashes <- r.Header.Get("X-Amz-Meta-Content-Hash")
 			for header, want := range map[string]string{
-				"Content-Type":             "message/rfc822",
-				"X-Amz-Meta-Source-Uid":    "42",
-				"X-Amz-Meta-Source-Folder": "INBOX",
+				"Content-Type":          "message/rfc822",
+				"X-Amz-Meta-Source-Uid": "42",
 			} {
 				if got := r.Header.Get(header); got != want {
 					t.Errorf("%s = %q, want %q", header, got, want)
@@ -67,10 +73,21 @@ func TestS3Target_CustomEndpointUpload(t *testing.T) {
 	if err := target.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize() = %v", err)
 	}
-	if err := target.WriteMessage(ctx, &plugins.Message{UID: "42", Folder: "INBOX", Raw: []byte(raw)}); err != nil {
+	msg := &plugins.Message{UID: "42", Folder: "INBOX", Raw: []byte(raw), ContentHash: "stale"}
+	if err := target.WriteMessage(ctx, msg); err != nil {
 		t.Fatalf("WriteMessage() = %v", err)
 	}
-	for _, want := range []string{http.MethodHead, http.MethodPut} {
+	if err := target.WriteMessage(ctx, msg); err != nil {
+		t.Fatalf("retry WriteMessage() = %v", err)
+	}
+	if err := target.WriteMessage(ctx, &plugins.Message{UID: "42", Folder: "Archive", Raw: []byte(raw)}); err != nil {
+		t.Fatal(err)
+	}
+	changed := raw + "changed content\r\n"
+	if err := target.WriteMessage(ctx, &plugins.Message{UID: "42", Folder: "INBOX", Raw: []byte(changed), ContentHash: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{http.MethodHead, http.MethodPut, http.MethodPut, http.MethodPut, http.MethodPut} {
 		select {
 		case got := <-requests:
 			if got != want {
@@ -78,6 +95,25 @@ func TestS3Target_CustomEndpointUpload(t *testing.T) {
 			}
 		default:
 			t.Errorf("missing %s request", want)
+		}
+	}
+	k1, k2, k3, k4 := <-keys, <-keys, <-keys, <-keys
+	if k1 != k2 || k1 == k3 || k1 == k4 {
+		t.Fatalf("keys retry=%q distinct-folder=%q distinct-content=%q", k1, k3, k4)
+	}
+	for i, wantFolder := range []string{"INBOX", "INBOX", "Archive", "INBOX"} {
+		wantBody := raw
+		if i == 3 {
+			wantBody = changed
+		}
+		if got := <-bodies; got != wantBody {
+			t.Errorf("upload %d body = %q, want %q", i, got, wantBody)
+		}
+		if got := <-folders; got != wantFolder {
+			t.Errorf("upload %d folder = %q, want %q", i, got, wantFolder)
+		}
+		if got, want := <-hashes, fmt.Sprintf("%x", sha256.Sum256([]byte(wantBody))); got != want {
+			t.Errorf("upload %d content hash = %q, want %q", i, got, want)
 		}
 	}
 }

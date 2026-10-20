@@ -44,7 +44,7 @@ type Source interface {
 	ListFolders(ctx context.Context) ([]string, error)
 
 	// FetchMessages retrieves messages from the given folders.
-	// If since is non-zero, only messages after that time are fetched.
+	// If since is non-zero, only messages at or after that time are fetched.
 	// If until is non-zero, only messages before that time are fetched.
 	FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *Message, <-chan error)
 
@@ -106,7 +106,12 @@ func (r *Registry) CreateSource(name string, config map[string]interface{}) (Sou
 	if !ok {
 		return nil, ErrUnknownSource(name)
 	}
-	return factory(config)
+	src, err := factory(config)
+	if err != nil {
+		return nil, err
+	}
+	applyConfiguredName(src, config)
+	return src, nil
 }
 
 // CreateTarget creates a target from configuration.
@@ -115,7 +120,19 @@ func (r *Registry) CreateTarget(name string, config map[string]interface{}) (Tar
 	if !ok {
 		return nil, ErrUnknownTarget(name)
 	}
-	return factory(config)
+	tgt, err := factory(config)
+	if err != nil {
+		return nil, err
+	}
+	applyConfiguredName(tgt, config)
+	return tgt, nil
+}
+
+func applyConfiguredName(plugin interface{}, config map[string]interface{}) {
+	name, _ := config["name"].(string)
+	if named, ok := plugin.(interface{ SetName(string) }); ok && name != "" {
+		named.SetName(name)
+	}
 }
 
 // SourceTypes returns registered source type names.

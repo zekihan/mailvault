@@ -4,12 +4,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
 
 // Load reads configuration from file and environment.
 func Load(path string) (*Config, error) {
+	return load(path, false)
+}
+
+// LoadForValidation resolves all declared resources for explicit connectivity
+// checks. Read fresh configuration rather than resolving active secrets twice.
+func LoadForValidation(path string) (*Config, error) {
+	return load(path, true)
+}
+
+func load(path string, resolveAll bool) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("yaml")
 
@@ -36,9 +47,10 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	applySourceDefaults(&cfg, v)
 
 	// Expand credential references in config
-	if err := expandCredentialRefs(&cfg); err != nil {
+	if err := expandSelectedCredentialRefs(&cfg, resolveAll); err != nil {
 		return nil, fmt.Errorf("expand credentials: %w", err)
 	}
 
@@ -74,14 +86,20 @@ func Validate(cfg *Config) error {
 		if s.Host == "" {
 			return fmt.Errorf("source %q: host is required", s.Name)
 		}
-		if s.Port == 0 {
-			return fmt.Errorf("source %q: port is required", s.Name)
+		if s.Port < 1 || s.Port > 65535 {
+			return fmt.Errorf("source %q: port must be between 1 and 65535", s.Name)
 		}
 		if s.Username == "" {
 			return fmt.Errorf("source %q: username is required", s.Name)
 		}
 		if s.PasswordRef == "" && s.OAuth2 == nil {
-			return fmt.Errorf("source %q: password_ref or oauth2 is required", s.Name)
+			return fmt.Errorf("source %q: password_ref is required (OAuth2 authentication is not implemented)", s.Name)
+		}
+		if s.PasswordRef == "" && s.OAuth2 != nil {
+			return fmt.Errorf("source %q: OAuth2 authentication is not implemented; password_ref is required", s.Name)
+		}
+		if s.Type == "pop3" && s.StartTLS {
+			return fmt.Errorf("source %q: POP3 STARTTLS is unsupported; use implicit TLS with use_tls: true and start_tls: false", s.Name)
 		}
 		if s.MaxConnections <= 0 {
 			return fmt.Errorf("source %q: max_connections must be > 0", s.Name)
@@ -125,8 +143,22 @@ func Validate(cfg *Config) error {
 
 // expandCredentialRefs resolves env:, file:, keyring: references in config.
 func expandCredentialRefs(cfg *Config) error {
+	return expandSelectedCredentialRefs(cfg, true)
+}
+
+func expandSelectedCredentialRefs(cfg *Config, resolveAll bool) error {
+	sources, targets := make(map[string]bool), make(map[string]bool)
+	for _, pair := range cfg.Pairs {
+		sources[pair.Source] = true
+		for _, target := range pair.Targets {
+			targets[target] = true
+		}
+	}
 	for i := range cfg.Sources {
-		if expanded, err := resolveCredentialRef(cfg.Sources[i].PasswordRef); err != nil {
+		if !resolveAll && !sources[cfg.Sources[i].Name] {
+			continue
+		}
+		if expanded, err := resolveSourceCredentialRef(cfg.Sources[i].PasswordRef); err != nil {
 			return fmt.Errorf("source %q password_ref: %w", cfg.Sources[i].Name, err)
 		} else {
 			cfg.Sources[i].PasswordRef = expanded
@@ -140,6 +172,9 @@ func expandCredentialRefs(cfg *Config) error {
 		}
 	}
 	for i := range cfg.Targets {
+		if !resolveAll && !targets[cfg.Targets[i].Name] {
+			continue
+		}
 		if credRef, ok := cfg.Targets[i].Config["credentials_ref"].(string); ok {
 			if expanded, err := resolveCredentialRef(credRef); err != nil {
 				return fmt.Errorf("target %q credentials_ref: %w", cfg.Targets[i].Name, err)
@@ -155,26 +190,22 @@ func expandCredentialRefs(cfg *Config) error {
 // Supported formats:
 //
 //	env:VAR_NAME          - read from environment variable
-//	file:/path/to/file    - read first line from file
+//	file:/path/to/file    - read file contents (password normalization is source-specific)
 //	keyring:service:account - read from system keyring
 func resolveCredentialRef(ref string) (string, error) {
 	if ref == "" {
 		return "", nil
 	}
 
-	if len(ref) < 5 {
-		return ref, nil // Not a recognized prefix, return as-is
-	}
-
 	switch {
-	case ref[:4] == "env:":
+	case strings.HasPrefix(ref, "env:"):
 		val := os.Getenv(ref[4:])
 		if val == "" {
 			return "", fmt.Errorf("environment variable %q not set", ref[4:])
 		}
 		return val, nil
 
-	case ref[:5] == "file:":
+	case strings.HasPrefix(ref, "file:"):
 		path := ref[5:]
 		if !filepath.IsAbs(path) {
 			// Relative to config file directory? For now, require absolute.
@@ -186,7 +217,7 @@ func resolveCredentialRef(ref string) (string, error) {
 		}
 		return string(data), nil
 
-	case ref[:8] == "keyring:":
+	case strings.HasPrefix(ref, "keyring:"):
 		// TODO: implement keyring lookup (libsecret/WinCred)
 		return "", fmt.Errorf("keyring: not yet implemented")
 

@@ -16,6 +16,9 @@ import (
 	"github.com/zekihan/mailvault/internal/sync"
 )
 
+// Set by the release build's -X main.version linker flag.
+var version = "dev"
+
 var (
 	cfgFile     string
 	dryRun      bool
@@ -57,8 +60,8 @@ func init() {
 		RunE:  runSync,
 	}
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
-	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages after this date (RFC3339)")
-	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this date (RFC3339)")
+	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
+	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")
 	syncCmd.Flags().IntVar(&concurrency, "concurrency", 5, "maximum concurrent source-target pairs")
 	syncCmd.Flags().IntVar(&maxRetries, "max-retries", 3, "maximum retries for failed writes")
 	syncCmd.Flags().StringVar(&retryDelay, "retry-delay", "1s", "base delay between retries")
@@ -111,10 +114,18 @@ func loadStateStore() (*state.Store, error) {
 		home, _ := os.UserHomeDir()
 		dir = fmt.Sprintf("%s/.local/share/mailvault", home)
 	}
+	dbPath := fmt.Sprintf("%s/state.db", dir)
+	if dryRun {
+		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+			return state.NewStore(":memory:")
+		} else if err != nil {
+			return nil, fmt.Errorf("stat state database: %w", err)
+		}
+		return state.NewReadOnlyStore(dbPath)
+	}
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
-	dbPath := fmt.Sprintf("%s/state.db", dir)
 	return state.NewStore(dbPath)
 }
 
@@ -145,20 +156,13 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("parse retry-delay: %w", err)
 	}
 
-	var sinceTime, untilTime int64
-	if since != "" {
-		t, err := time.Parse(time.RFC3339, since)
-		if err != nil {
-			return fmt.Errorf("parse since: %w", err)
-		}
-		sinceTime = t.Unix()
+	sinceTime, err := parseTimeBound(since)
+	if err != nil {
+		return fmt.Errorf("parse since: %w", err)
 	}
-	if until != "" {
-		t, err := time.Parse(time.RFC3339, until)
-		if err != nil {
-			return fmt.Errorf("parse until: %w", err)
-		}
-		untilTime = t.Unix()
+	untilTime, err := parseTimeBound(until)
+	if err != nil {
+		return fmt.Errorf("parse until: %w", err)
 	}
 
 	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
@@ -178,7 +182,13 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("sync failed: %w", err)
 	}
 
-	return printStats(stats)
+	if err := printStats(stats); err != nil {
+		return err
+	}
+	if stats.TotalErrors > 0 {
+		return fmt.Errorf("sync completed with %d errors", stats.TotalErrors)
+	}
+	return nil
 }
 
 func printStats(stats *sync.SyncStats) error {
@@ -206,101 +216,15 @@ func printStats(stats *sync.SyncStats) error {
 			fmt.Printf("    ERROR: %v\n", err)
 		}
 	}
+	for _, message := range stats.FinalizationErrors {
+		fmt.Printf("  ERROR: %s\n", message)
+	}
 	return nil
 }
 
 func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if err := config.Validate(cfg); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
-
-	fmt.Println("Configuration is valid")
-	fmt.Printf("Sources: %d\n", len(cfg.Sources))
-	for _, src := range cfg.Sources {
-		fmt.Printf("  - %s (%s://%s:%d)\n", src.Name, src.Type, src.Host, src.Port)
-	}
-	fmt.Printf("Targets: %d\n", len(cfg.Targets))
-	for _, tgt := range cfg.Targets {
-		fmt.Printf("  - %s (%s)\n", tgt.Name, tgt.Type)
-	}
-	fmt.Printf("Pairs: %d\n", len(cfg.Pairs))
-	for _, pair := range cfg.Pairs {
-		fmt.Printf("  - %s -> %s\n", pair.Source, strings.Join(pair.Targets, ", "))
-	}
-
-	// Test connectivity if not dry-run
-	if !dryRun {
-		fmt.Println("\nTesting connectivity...")
-		registry := builtin.Registry()
-		stateStore, err := loadStateStore()
-		if err != nil {
-			return fmt.Errorf("load state store: %w", err)
-		}
-		defer func() {
-			err = errors.Join(err, stateStore.Close())
-		}()
-
-		ctx := context.Background()
-
-		// Test sources
-		for _, srcCfg := range cfg.Sources {
-			srcConfig := map[string]interface{}{
-				"host":               srcCfg.Host,
-				"port":               srcCfg.Port,
-				"username":           srcCfg.Username,
-				"password_ref":       srcCfg.PasswordRef,
-				"use_tls":            srcCfg.UseTLS,
-				"start_tls":          srcCfg.StartTLS,
-				"folders":            srcCfg.Folders,
-				"connection_timeout": srcCfg.ConnectionTimeout,
-				"read_timeout":       srcCfg.ReadTimeout,
-				"max_connections":    srcCfg.MaxConnections,
-				"name":               srcCfg.Name,
-			}
-			src, err := registry.CreateSource(srcCfg.Type, srcConfig)
-			if err != nil {
-				fmt.Printf("  Source %s: FAILED - %v\n", srcCfg.Name, err)
-				continue
-			}
-			if err := src.Connect(ctx); err != nil {
-				fmt.Printf("  Source %s: FAILED - %v\n", srcCfg.Name, err)
-			} else {
-				fmt.Printf("  Source %s: OK\n", srcCfg.Name)
-				if err := src.Close(); err != nil {
-					fmt.Printf("  Source %s: close FAILED - %v\n", srcCfg.Name, err)
-				}
-			}
-		}
-
-		// Test targets
-		for _, tgtCfg := range cfg.Targets {
-			tgtConfig := tgtCfg.Config
-			if tgtConfig == nil {
-				tgtConfig = make(map[string]interface{})
-			}
-			tgtConfig["name"] = tgtCfg.Name
-			tgt, err := registry.CreateTarget(tgtCfg.Type, tgtConfig)
-			if err != nil {
-				fmt.Printf("  Target %s: FAILED - %v\n", tgtCfg.Name, err)
-				continue
-			}
-			if err := tgt.Initialize(ctx); err != nil {
-				fmt.Printf("  Target %s: FAILED - %v\n", tgtCfg.Name, err)
-			} else {
-				fmt.Printf("  Target %s: OK\n", tgtCfg.Name)
-				if err := tgt.Close(); err != nil {
-					fmt.Printf("  Target %s: close FAILED - %v\n", tgtCfg.Name, err)
-				}
-			}
-		}
-	}
-
-	return nil
+	report, validationErr := validateConfiguration()
+	return errors.Join(validationErr, printValidationReport(report))
 }
 
 func runListSources(cmd *cobra.Command, args []string) error {
@@ -308,6 +232,7 @@ func runListSources(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	cfg = listingConfig(cfg)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -329,6 +254,7 @@ func runListTargets(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	cfg = listingConfig(cfg)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -346,7 +272,7 @@ func runListTargets(cmd *cobra.Command, args []string) error {
 }
 
 func runVersion(cmd *cobra.Command, args []string) {
-	fmt.Println("mailvault version dev")
+	fmt.Printf("mailvault version %s\n", version)
 }
 
 func main() {

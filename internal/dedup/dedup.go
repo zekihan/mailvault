@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"sync"
 
 	"github.com/zekihan/mailvault/internal/plugins"
 )
@@ -60,6 +61,7 @@ func (k DedupKey) Key() string {
 
 // DedupTracker tracks seen messages for deduplication within a sync run.
 type DedupTracker struct {
+	mu         sync.Mutex
 	seen       map[string]bool
 	state      StateStore
 	sourceName string
@@ -91,6 +93,8 @@ func NewDedupTracker(state StateStore, sourceName string) *DedupTracker {
 // ShouldSkip checks if a message should be skipped (already seen or in state).
 // Returns true if the message is a duplicate and should be skipped.
 func (d *DedupTracker) ShouldSkip(ctx context.Context, msg *plugins.Message, folder string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	// Check in-memory tracker first (within this run)
 	key := DedupKey{MessageID: msg.MessageID, ContentHash: msg.ContentHash}.Key()
 	if key != "" {
@@ -143,6 +147,8 @@ func (d *DedupTracker) ShouldSkip(ctx context.Context, msg *plugins.Message, fol
 
 // MarkSeen marks a message as seen in this run.
 func (d *DedupTracker) MarkSeen(msg *plugins.Message) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	key := DedupKey{MessageID: msg.MessageID, ContentHash: msg.ContentHash}.Key()
 	if key != "" {
 		d.seen[key] = true
@@ -151,5 +157,7 @@ func (d *DedupTracker) MarkSeen(msg *plugins.Message) {
 
 // SeenCount returns the number of unique messages seen in this run.
 func (d *DedupTracker) SeenCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return len(d.seen)
 }
