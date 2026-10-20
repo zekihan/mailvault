@@ -60,6 +60,10 @@ func (t *MboxTarget) Type() string {
 	return "mbox"
 }
 
+func (t *MboxTarget) DestinationIdentity() string {
+	return destinationFingerprint(t.Type(), canonicalDestinationPath(t.path))
+}
+
 func (t *MboxTarget) Initialize(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

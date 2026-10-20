@@ -30,6 +30,7 @@ func TestVerifyReportsCorruptMaildirWithoutChangingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := maildir.(*target.MaildirTarget)
+	md.SetName("local")
 	if err := md.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestVerifyReportsCorruptMaildirWithoutChangingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordBackupMessage(context.Background(), plugins.BackupMessage{Source: "test-account", Target: "local", Scope: "scope", Folder: "INBOX", UID: "1", Locator: locator, RawSHA256: dedup.ComputeContentHash(raw)}); err != nil {
+	if err := store.RecordBackupMessage(context.Background(), plugins.BackupMessage{Source: "test-account", Target: plugins.TargetStateKey(md), Scope: "scope", Folder: "INBOX", UID: "1", Locator: locator, RawSHA256: dedup.ComputeContentHash(raw)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

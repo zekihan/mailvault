@@ -13,7 +13,8 @@ func (e *SyncEngine) validateRepairedBackups(ctx context.Context, src plugins.So
 	if !ok {
 		return []error{fmt.Errorf("target %q does not support verification", tgt.Name())}
 	}
-	entries, err := e.stateStore.BackupMessages(ctx, tgt.Name())
+	stateTarget := plugins.TargetStateKey(tgt)
+	entries, err := e.stateStore.BackupMessages(ctx, stateTarget)
 	if err != nil {
 		return []error{err}
 	}
@@ -40,7 +41,7 @@ func (e *SyncEngine) validateRepairedBackups(ctx context.Context, src plugins.So
 			failures = append(failures, fmt.Errorf("repair unresolved for %q (source folder %q, UID %s): checksum mismatch; source may no longer contain the message", entry.Locator, entry.Folder, entry.UID))
 		}
 	}
-	legacy, err := e.stateStore.LegacyBackupCandidates(ctx, tgt.Name())
+	legacy, err := e.stateStore.LegacyBackupCandidates(ctx, stateTarget)
 	if err != nil {
 		return append(failures, err)
 	}

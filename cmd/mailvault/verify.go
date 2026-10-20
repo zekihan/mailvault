@@ -58,7 +58,7 @@ func newVerifyCommand() *cobra.Command {
 			}
 		}
 		defer func() { _ = target.Close() }()
-		report, err := verifyTarget(cmd.Context(), tc.Name, reader)
+		report, err := verifyTargetWithStateTarget(cmd.Context(), tc.Name, plugins.TargetStateKey(target), reader)
 		if err != nil {
 			return err
 		}
@@ -83,6 +83,10 @@ func newVerifyCommand() *cobra.Command {
 }
 
 func verifyTarget(ctx context.Context, targetName string, reader plugins.TargetBackupReader) (report verificationReport, runErr error) {
+	return verifyTargetWithStateTarget(ctx, targetName, targetName, reader)
+}
+
+func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget string, reader plugins.TargetBackupReader) (report verificationReport, runErr error) {
 	report = verificationReport{Target: targetName}
 	entries, err := reader.ListBackupMessages(ctx)
 	if err != nil {
@@ -123,11 +127,11 @@ func verifyTarget(ctx context.Context, targetName string, reader plugins.TargetB
 		return report, nil
 	}
 	defer func() { runErr = errors.Join(runErr, store.Close()) }()
-	manifest, err := store.BackupMessages(ctx, targetName)
+	manifest, err := store.BackupMessages(ctx, stateTarget)
 	if err != nil {
 		return report, fmt.Errorf("read backup manifest: %w", err)
 	}
-	superseded, err := store.SupersededBackupObjects(ctx, targetName)
+	superseded, err := store.SupersededBackupObjects(ctx, stateTarget)
 	if err != nil {
 		return report, fmt.Errorf("read repair history: %w", err)
 	}
@@ -175,7 +179,7 @@ func verifyTarget(ctx context.Context, targetName string, reader plugins.TargetB
 			report.Corrupt++
 		}
 	}
-	legacy, err := store.LegacyBackupCandidates(ctx, targetName)
+	legacy, err := store.LegacyBackupCandidates(ctx, stateTarget)
 	if err != nil {
 		return report, fmt.Errorf("read legacy delivery records: %w", err)
 	}

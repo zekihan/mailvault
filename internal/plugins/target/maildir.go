@@ -79,6 +79,10 @@ func (t *MaildirTarget) Type() string {
 	return "maildir"
 }
 
+func (t *MaildirTarget) DestinationIdentity() string {
+	return destinationFingerprint(t.Type(), canonicalDestinationPath(t.path))
+}
+
 func (t *MaildirTarget) Initialize(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -103,6 +103,24 @@ type Target interface {
 	Close() error
 }
 
+// TargetDestinationIdentity exposes the configured storage location without credentials.
+type TargetDestinationIdentity interface {
+	DestinationIdentity() string
+}
+
+// TargetStateKey namespaces receipts and manifests by both target name and storage location.
+func TargetStateKey(target Target) string {
+	if target == nil {
+		return ""
+	}
+	if identified, ok := target.(TargetDestinationIdentity); ok {
+		if identity := identified.DestinationIdentity(); identity != "" {
+			return target.Name() + "#" + identity
+		}
+	}
+	return target.Name()
+}
+
 // BackupMessage identifies a stored message and the source delivery that owns it.
 // Locator is opaque to callers and interpreted by the target that produced it.
 type BackupMessage struct {

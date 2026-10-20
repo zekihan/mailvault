@@ -84,6 +84,16 @@ messages again. Maildir and mbox targets may receive duplicate copies on that
 first run. Subsequent syncs use per-target delivery state to skip them.
 Keep target names stable; a new target name is treated as a new destination.
 
+Receipts and integrity manifests are also bound to the configured storage
+location: the canonical local Maildir/mbox path or the S3 bucket, region,
+endpoint, and prefix. Changing that location makes the next sync treat it as a
+new destination and write messages there, including with `--force-fetch-all`.
+Old files and state records are retained, but receipts and manifests from before
+this upgrade or from another location cannot prove what is stored at the current
+location. The first sync to each location therefore scans and delivers its
+messages once; Maildir and mbox may gain duplicate copies, and S3 may receive
+additional objects. Later runs use that location's own receipts.
+
 ### content-identity upgrade
 
 Delivery identities now use the SHA-256 of the actual raw message bytes, not
@@ -92,7 +102,9 @@ identical raw content is deduplicated per target even if envelope metadata diffe
 Legacy `mid:` receipts cannot prove which content was delivered and are ignored.
 The first sync after this upgrade can therefore redeliver previously backed-up
 mail once; Maildir and mbox may gain duplicate copies. New content-hash receipts
-make subsequent runs stable. Existing `hash:` receipts remain usable.
+make subsequent runs stable. Existing `hash:` receipts remain usable when they
+are bound to the current destination; older receipts without destination
+identity are ignored as described above.
 
 ### overlapping writers
 

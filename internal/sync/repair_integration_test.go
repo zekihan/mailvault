@@ -40,7 +40,12 @@ func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
 	}
 	locator := func() string {
 		t.Helper()
-		entries, err := store.BackupMessages(ctx, "local")
+		currentTarget, createErr := target.NewMaildirTarget(cfg.Targets[0].Config)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		currentTarget.(interface{ SetName(string) }).SetName("local")
+		entries, err := store.BackupMessages(ctx, plugins.TargetStateKey(currentTarget))
 		if err != nil || len(entries) != 1 {
 			t.Fatalf("manifest: %+v %v", entries, err)
 		}
@@ -105,7 +110,7 @@ func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
 	}
 }
 
-func TestRepairReportsUnverifiableLegacyReceipt(t *testing.T) {
+func TestRepairIgnoresLegacyReceiptWithoutDestinationIdentity(t *testing.T) {
 	f := newEngineFixture(t)
 	f.source.messages = nil
 	if err := f.store.MarkDelivered(context.Background(), "first", "mid:legacy", "account", "INBOX", "old"); err != nil {
@@ -123,7 +128,7 @@ func TestRepairReportsUnverifiableLegacyReceipt(t *testing.T) {
 	}
 	reader.(interface{ SetName(string) }).SetName("first")
 	failures := engine.validateRepairedBackups(context.Background(), f.source, reader)
-	if len(failures) == 0 {
-		t.Fatal("unverifiable legacy receipt silently accepted")
+	if len(failures) != 0 {
+		t.Fatalf("unscoped receipt was treated as current destination evidence: %v", failures)
 	}
 }

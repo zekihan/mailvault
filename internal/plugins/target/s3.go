@@ -118,6 +118,10 @@ func (t *S3Target) Type() string {
 	return "s3"
 }
 
+func (t *S3Target) DestinationIdentity() string {
+	return destinationFingerprint(t.Type(), t.bucket, t.region, canonicalEndpoint(t.endpoint), strings.TrimSuffix(t.prefix, "/"))
+}
+
 func (t *S3Target) Initialize(ctx context.Context) error {
 	if err := t.InitializeForRead(ctx); err != nil {
 		return err

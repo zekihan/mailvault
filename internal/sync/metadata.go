@@ -13,7 +13,7 @@ func WithRefreshFlags(enabled bool) SyncOption {
 }
 
 func (e *SyncEngine) refreshMetadata(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message) error {
-	entry, found, err := e.stateStore.FindBackupMessage(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID)
+	entry, found, err := e.stateStore.FindBackupMessage(ctx, src.Name(), plugins.TargetStateKey(tgt), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID)
 	if err != nil {
 		return err
 	}

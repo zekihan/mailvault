@@ -35,6 +35,7 @@ func (s *durableFixtureSource) FetchMessages(context.Context, []string, int64, i
 
 func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
 	target := durableMaildirFixture(t)
+	target.SetName("archive")
 	newDir := filepath.Join(target.path, "new")
 	target.syncDir = func(path string) error {
 		if path == newDir {
@@ -75,8 +76,9 @@ func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
 	if failed.TotalWritten != 0 || failed.TotalErrors != 1 {
 		t.Fatalf("failed sync acknowledged delivery: %+v", failed)
 	}
-	identity := "hash:" + dedup.ComputeContentHash(message.Raw)
-	exists, err := store.DeliveryExists(context.Background(), "archive", identity)
+	identity := "placement:" + dedup.ComputeContentHash([]byte(target.DestinationIdentity()+"\x00hash:"+dedup.ComputeContentHash(message.Raw)))
+	stateTarget := plugins.TargetStateKey(target)
+	exists, err := store.DeliveryExists(context.Background(), stateTarget, identity)
 	if err != nil || exists {
 		t.Fatalf("failed durability persisted receipt: %v %v", exists, err)
 	}
@@ -85,7 +87,7 @@ func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
 	if success.TotalWritten != 1 || success.TotalErrors != 0 {
 		t.Fatalf("durable retry failed: %+v", success)
 	}
-	exists, err = store.DeliveryExists(context.Background(), "archive", identity)
+	exists, err = store.DeliveryExists(context.Background(), stateTarget, identity)
 	if err != nil || !exists {
 		t.Fatalf("durable delivery missing receipt: %v %v", exists, err)
 	}

@@ -370,7 +370,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 	}
 	if !e.forceFetchAll && !e.repair {
 		ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
-			return e.stateStore.KnownUIDs(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, scope), folder)
+			return e.stateStore.KnownUIDs(ctx, src.Name(), plugins.TargetStateKey(tgt), targetReceiptScope(tgt, scope), folder)
 		})
 	}
 
@@ -411,7 +411,7 @@ func (e *SyncEngine) syncPair(ctx context.Context, src plugins.Source, tgt plugi
 				}
 			}
 			if !e.dryRun && msg.UIDScope != "" && len(result.Errors) == errorsBefore {
-				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID); err != nil {
+				if err := e.stateStore.MarkUIDDelivered(ctx, src.Name(), plugins.TargetStateKey(tgt), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID); err != nil {
 					result.Errors = append(result.Errors, fmt.Errorf("persist incremental receipt: %w", err))
 				}
 			}
@@ -452,7 +452,8 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 		result.MessagesSkipped++
 		return
 	}
-	exists, err := e.stateStore.DeliveryExists(ctx, tgt.Name(), identity)
+	stateTarget := plugins.TargetStateKey(tgt)
+	exists, err := e.stateStore.DeliveryExists(ctx, stateTarget, identity)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("delivery check: %w", err))
 		return
@@ -470,7 +471,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	}
 	supersededLocator := ""
 	if e.repair {
-		entry, found, findErr := e.stateStore.FindBackupMessage(ctx, src.Name(), tgt.Name(), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, backupMessageUID(msg, contentHash))
+		entry, found, findErr := e.stateStore.FindBackupMessage(ctx, src.Name(), stateTarget, targetReceiptScope(tgt, msg.UIDScope), msg.Folder, backupMessageUID(msg, contentHash))
 		if findErr != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("find backup manifest entry: %w", findErr))
 			return
@@ -501,12 +502,12 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 		} else if ok {
 			if !e.dryRun {
 				if supersededLocator != "" && locator != supersededLocator {
-					if err := e.stateStore.MarkBackupObjectSuperseded(ctx, tgt.Name(), supersededLocator, locator); err != nil {
+					if err := e.stateStore.MarkBackupObjectSuperseded(ctx, stateTarget, supersededLocator, locator); err != nil {
 						result.Errors = append(result.Errors, fmt.Errorf("mark repaired original: %w", err))
 						return
 					}
 				}
-				if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
+				if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: stateTarget, Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
 					result.Errors = append(result.Errors, fmt.Errorf("persist recovered backup manifest: %w", err))
 					return
 				}
@@ -528,7 +529,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 			e.rememberRepairBackup(tgt, msg, contentHash, locator)
 		}
 		if supersededLocator != "" && locator != "" {
-			if err := e.stateStore.MarkBackupObjectSuperseded(ctx, tgt.Name(), supersededLocator, locator); err != nil {
+			if err := e.stateStore.MarkBackupObjectSuperseded(ctx, stateTarget, supersededLocator, locator); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("mark repaired original: %w", err))
 				return
 			}
@@ -538,13 +539,13 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	result.MessagesWritten++
 	if !e.dryRun {
 		if locator != "" {
-			if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
+			if err := e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: stateTarget, Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, contentHash), Locator: locator, RawSHA256: contentHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate}); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("persist backup manifest: %w", err))
 				return
 			}
 		}
 		err := errors.Join(
-			e.stateStore.MarkDelivered(ctx, tgt.Name(), identity, src.Name(), msg.Folder, msg.UID),
+			e.stateStore.MarkDelivered(ctx, stateTarget, identity, src.Name(), msg.Folder, msg.UID),
 			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
 		)
 		if err != nil {
@@ -554,7 +555,8 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 }
 
 func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message, rawHash string) error {
-	entries, err := e.stateStore.BackupMessages(ctx, tgt.Name())
+	stateTarget := plugins.TargetStateKey(tgt)
+	entries, err := e.stateStore.BackupMessages(ctx, stateTarget)
 	if err != nil {
 		return fmt.Errorf("find existing backup locations: %w", err)
 	}
@@ -571,7 +573,7 @@ func (e *SyncEngine) recordBackupAlias(ctx context.Context, src plugins.Source, 
 	if !found {
 		return nil
 	}
-	return e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: tgt.Name(), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, rawHash), Locator: entry.Locator, RawSHA256: rawHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate})
+	return e.stateStore.RecordBackupMessage(ctx, plugins.BackupMessage{Source: src.Name(), Target: plugins.TargetStateKey(tgt), Scope: targetReceiptScope(tgt, msg.UIDScope), Folder: msg.Folder, UID: backupMessageUID(msg, rawHash), Locator: entry.Locator, RawSHA256: rawHash, Flags: append([]string(nil), msg.Flags...), InternalDate: msg.InternalDate})
 }
 
 func backupMessageUID(msg *plugins.Message, rawHash string) string {
