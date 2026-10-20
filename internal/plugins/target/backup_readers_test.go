@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,5 +63,39 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 	}
 	if dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(raw) {
 		t.Fatalf("mbox roundtrip changed raw bytes: %q", stored.Raw)
+	}
+}
+
+func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testing.T) {
+	ctx := context.Background()
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mbox := target.(*MboxTarget)
+	if err := mbox.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wants := [][]byte{
+		[]byte("Message-ID: <one@example.invalid>\r\n\r\nfirst\r\nFrom separator\r\n"),
+		[]byte("Message-ID: <two@example.invalid>\r\n\r\nsecond with final newline\r\n"),
+	}
+	for _, raw := range wants {
+		if _, err := mbox.WriteBackupMessage(ctx, &plugins.Message{Raw: raw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := mbox.ListBackupMessages(ctx)
+	if err != nil || len(entries) != len(wants) {
+		t.Fatalf("listed %d messages, %v", len(entries), err)
+	}
+	for i, entry := range entries {
+		stored, err := mbox.ReadBackupMessage(ctx, entry.Locator)
+		if err != nil || dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(wants[i]) {
+			t.Fatalf("message %d read = %v, %v", i, stored, err)
+		}
+	}
+	if _, err := mbox.ReadBackupMessage(ctx, "0:999999:1:1"); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+		t.Fatalf("out-of-bounds locator error = %v", err)
 	}
 }

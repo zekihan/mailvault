@@ -367,9 +367,12 @@ func (t *S3Target) ReadBackupMessage(ctx context.Context, locator string) (*plug
 	if object.ContentLength != nil && *object.ContentLength > maxBackupMessageReadBytes {
 		return nil, fmt.Errorf("S3 message exceeds the %d byte verification limit", maxBackupMessageReadBytes)
 	}
-	raw, err := io.ReadAll(object.Body)
+	raw, err := io.ReadAll(io.LimitReader(object.Body, maxBackupMessageReadBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(raw)) > maxBackupMessageReadBytes {
+		return nil, fmt.Errorf("S3 message exceeds the %d byte verification limit", maxBackupMessageReadBytes)
 	}
 	msg := backupMessageFromRaw(raw)
 	if object.Metadata != nil {
