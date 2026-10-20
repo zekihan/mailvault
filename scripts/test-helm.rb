@@ -23,7 +23,9 @@ check(cron(base)['suspend'] == true, 'schedule must default to suspended')
 check(cron(base)['concurrencyPolicy'] == 'Forbid', 'scheduled jobs must not overlap')
 check(base.select { |d| d['kind'] == 'PersistentVolumeClaim' }.all? { |d| d['metadata']['annotations']['helm.sh/resource-policy'] == 'keep' }, 'PVCs must be retained')
 base_image = cron(base)['jobTemplate']['spec']['template']['spec']['containers'][0]['image']
-check(base_image == 'ghcr.io/zekihan/mailvault:dev', 'image must default to chart appVersion')
+app_version = YAML.load_file('charts/mailvault/Chart.yaml')['appVersion']
+check(app_version.match?(/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\z/), 'appVersion must be a semantic version')
+check(base_image == "ghcr.io/zekihan/mailvault:#{app_version}", 'image must default to chart appVersion')
 override = render('--set', 'image.tag=custom')
 check(cron(override)['jobTemplate']['spec']['template']['spec']['containers'][0]['image'] == 'ghcr.io/zekihan/mailvault:custom', 'explicit image tag must take precedence')
 setup = render('--set', 'proton.enabled=true')

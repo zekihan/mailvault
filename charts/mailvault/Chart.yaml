@@ -1,7 +1,7 @@
 apiVersion: v2
 name: mailvault
 description: Scheduled Mailvault backups with optional persistent Proton Mail Bridge
-version: 0.1.0
-appVersion: dev
+version: 0.2.0
+appVersion: "0.2.0"
 type: application
 kubeVersion: '>=1.27.0-0'

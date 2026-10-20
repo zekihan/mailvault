@@ -9,8 +9,9 @@ to suspended and cannot be enabled without `initialized: true`.
 The patched Bridge image `3.27.1-r1` must be published from `zekihan/dockerfiles`
 before deploying Proton. Do not substitute the original 3.27.1 image: it only
 listens on loopback. Select a published Mailvault image tag/digest in values;
-The Mailvault image tag defaults to the chart appVersion; source checkouts use
-`dev`, so override it when installing locally.
+The Mailvault image tag defaults to the semantic version in chart appVersion
+(currently `0.2.0`). Ensure that image version has been published before installing,
+or override it with an available tag/digest.
 
 ## Storage and configuration
 
