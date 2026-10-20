@@ -300,7 +300,7 @@ func (s *Store) UpsertOAuthToken(ctx context.Context, sourceName string, tok *OA
 
 // CleanOldMessages removes message records older than the given duration.
 func (s *Store) CleanOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
+	cutoff := messageMetadataCutoff(olderThan)
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM messages WHERE fetched_at < ?
 	`, cutoff)
@@ -308,6 +308,18 @@ func (s *Store) CleanOldMessages(ctx context.Context, olderThan time.Duration) (
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// CountOldMessages reports how many message metadata records are older than the
+// supplied duration. It does not inspect or modify delivery receipts.
+func (s *Store) CountOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE fetched_at < ?`, messageMetadataCutoff(olderThan)).Scan(&count)
+	return count, err
+}
+
+func messageMetadataCutoff(olderThan time.Duration) string {
+	return time.Now().UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
 }
 
 // Stats returns database statistics.

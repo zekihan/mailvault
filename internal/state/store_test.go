@@ -171,3 +171,44 @@ func TestStore_CleanOldMessages(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupOldMessageMetadataRetainsDeliveryReceipts(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewStore(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertSource(ctx, "src", "imap", "host", "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkMessageFetched(ctx, "src", "INBOX", "1", "<id>", "hash", 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDelivered(ctx, "target", "hash", "src", "INBOX", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkUIDDelivered(ctx, "src", "target", "scope", "INBOX", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE messages SET fetched_at = datetime('now', '-48 hours') WHERE uid = '1'"); err != nil {
+		t.Fatal(err)
+	}
+	count, err := store.CountOldMessages(ctx, 24*time.Hour)
+	if err != nil || count != 1 {
+		t.Fatalf("CountOldMessages() = %d, %v; want 1, nil", count, err)
+	}
+	deleted, err := store.CleanOldMessages(ctx, 24*time.Hour)
+	if err != nil || deleted != 1 {
+		t.Fatalf("CleanOldMessages() = %d, %v; want 1, nil", deleted, err)
+	}
+	for name, query := range map[string]string{
+		"delivery":            `SELECT EXISTS(SELECT 1 FROM deliveries WHERE target_name='target' AND identity='hash')`,
+		"incremental receipt": `SELECT EXISTS(SELECT 1 FROM imap_receipts WHERE source='src' AND target='target' AND scope='scope' AND folder='INBOX' AND uid='1')`,
+	} {
+		var exists bool
+		if err := store.db.QueryRowContext(ctx, query).Scan(&exists); err != nil || !exists {
+			t.Errorf("%s after cleanup = %t, %v; want true, nil", name, exists, err)
+		}
+	}
+}
