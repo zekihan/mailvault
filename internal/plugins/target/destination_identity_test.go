@@ -68,6 +68,12 @@ func TestS3DestinationIdentityIncludesStorageCoordinatesWithoutCredentials(t *te
 	if base.DestinationIdentity() != newTarget("archive", "us-east-1", "https://s3.example.invalid", "mail/").DestinationIdentity() {
 		t.Fatal("equivalent S3 endpoint and prefix forms produced different identities")
 	}
+	if newTarget("archive", "us-east-1", "https://s3.example.invalid", "").DestinationIdentity() == newTarget("archive", "us-east-1", "https://s3.example.invalid", "/").DestinationIdentity() {
+		t.Fatal("empty and slash S3 prefixes shared a destination identity")
+	}
+	if newTarget("archive", "us-east-1", "https://s3.example.invalid", "mail/").DestinationIdentity() == newTarget("archive", "us-east-1", "https://s3.example.invalid", "mail//").DestinationIdentity() {
+		t.Fatal("single and double trailing S3 prefix slashes shared a destination identity")
+	}
 	for _, changed := range []*S3Target{
 		newTarget("other", "us-east-1", "https://s3.example.invalid", "mail/"),
 		newTarget("archive", "us-west-2", "https://s3.example.invalid", "mail/"),

@@ -119,7 +119,7 @@ func (t *S3Target) Type() string {
 }
 
 func (t *S3Target) DestinationIdentity() string {
-	return destinationFingerprint(t.Type(), t.bucket, t.region, canonicalEndpoint(t.endpoint), strings.TrimSuffix(t.prefix, "/"))
+	return destinationFingerprint(t.Type(), t.bucket, t.region, canonicalEndpoint(t.endpoint), t.prefix)
 }
 
 func (t *S3Target) Initialize(ctx context.Context) error {
