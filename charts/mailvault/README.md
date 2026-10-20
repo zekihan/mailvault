@@ -14,7 +14,7 @@ The patched Bridge image `3.27.1-r1` must be published from `zekihan/dockerfiles
 before deploying Proton. Do not substitute the original 3.27.1 image: it only
 listens on loopback. Select a published Mailvault image tag/digest in values;
 The Mailvault image tag defaults to the semantic version in chart appVersion
-(currently `0.2.2`). Ensure that image version has been published before installing,
+(currently `0.2.3`). Ensure that image version has been published before installing,
 or override it with an available tag/digest.
 
 ## Storage and configuration
@@ -242,3 +242,5 @@ helm upgrade --install backup oci://ghcr.io/zekihan/charts/mailvault \
 
 Replace `1.2.3` with an actual published release. Initial scheduling remains
 suspended; follow the setup instructions above before enabling it.
+
+PVC metadata labels can be set independently with `persistence.state.labels`, `persistence.backups.labels`, and `proton.persistence.labels`. Values must be strings. Labels apply only to chart-created claims; existing claims must be labeled by their owner.

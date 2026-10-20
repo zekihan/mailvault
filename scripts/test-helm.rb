@@ -102,3 +102,15 @@ Dir.mktmpdir('mailvault-semver-') do |directory|
   end
 end
 puts 'Packaged SemVer build metadata image-tag regressions passed'
+
+Dir.mktmpdir do |dir|
+  path = File.join(dir, 'labels.yaml')
+  labels = {'hornkeeper.noqer.com/replicas'=>'2', 'recurring-job-group.longhorn.io/backup'=>'enabled'}
+  File.write(path, {'persistence'=>{'state'=>{'labels'=>labels}}, 'proton'=>{'enabled'=>true, 'persistence'=>{'labels'=>labels}}}.to_yaml)
+  docs = render('-f', path)
+  claims = docs.select { |d| d['kind'] == 'PersistentVolumeClaim' }
+  %w[state bridge].each do |name|
+    check(claims.find { |d| d['metadata']['name'] == "test-mailvault-#{name}" }.dig('metadata', 'labels') == labels, "#{name} PVC labels must preserve string values")
+  end
+  check(!claims.find { |d| d['metadata']['name'].end_with?('-backups') }['metadata'].key?('labels'), 'labels must not leak into backup claim')
+end

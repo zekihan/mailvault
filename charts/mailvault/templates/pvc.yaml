@@ -8,6 +8,10 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ $name }}-{{ $key }}
+  {{- with $settings.labels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   annotations:
     helm.sh/resource-policy: keep
 spec:

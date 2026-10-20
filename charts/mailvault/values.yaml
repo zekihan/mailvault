@@ -23,11 +23,13 @@ resources:
     memory: 128Mi
 persistence:
   state:
+    labels: {}
     existingClaim: ""
     size: 1Gi
     storageClass: null
     accessModes: [ReadWriteOnce]
   backups:
+    labels: {}
     existingClaim: ""
     size: 20Gi
     storageClass: null
@@ -44,6 +46,7 @@ proton:
   # Secret keys: tls.crt, tls.key, ca.crt. Certificate SAN must match the Service.
   tlsSecret: mailvault-proton-tls
   persistence:
+    labels: {}
     existingClaim: ""
     size: 20Gi
     storageClass: null
