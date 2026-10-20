@@ -174,6 +174,10 @@ func (t *MaildirTarget) ResolveBackupLocator(locator string) (string, error) {
 }
 
 func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
+	return t.listBackupMessages(ctx, maxBackupMessageReadBytes)
+}
+
+func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int64) ([]plugins.BackupMessage, error) {
 	file, err := os.Open(t.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -189,23 +193,39 @@ func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMe
 	var starts []int64
 	reader := bufio.NewReader(file)
 	var offset int64
+	lineStart := true
 	for {
-		line, readErr := reader.ReadString('\n')
-		if offset == 0 || (offset > 0) {
-			if strings.HasPrefix(line, "From ") {
+		fragment, readErr := reader.ReadSlice('\n')
+		if lineStart && len(fragment) > 0 {
+			if bytes.HasPrefix(fragment, []byte("From ")) {
 				starts = append(starts, offset)
 			}
+			lineStart = false
 		}
-		offset += int64(len(line))
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
+		switch readErr {
+		case bufio.ErrBufferFull:
+			// Keep scanning oversized lines in bounded fragments.
+		case nil, io.EOF:
+			lineStart = true
+		default:
 			return nil, readErr
+		}
+		offset += int64(len(fragment))
+		if len(starts) > 0 && offset-starts[len(starts)-1] > maxRecordBytes {
+			return nil, fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
+		}
+		if len(starts) == 0 && offset > maxRecordBytes {
+			return nil, fmt.Errorf("%w: mbox has no initial separator within the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+	if info.Size() > 0 && (len(starts) == 0 || starts[0] != 0) {
+		return nil, fmt.Errorf("%w: mbox record missing initial separator", plugins.ErrBackupMessageCorrupt)
 	}
 	result := make([]plugins.BackupMessage, 0, len(starts))
 	for i, start := range starts {
@@ -214,6 +234,9 @@ func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMe
 			end = starts[i+1]
 		}
 		length := end - start
+		if length > maxRecordBytes {
+			return nil, fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
+		}
 		record := make([]byte, length)
 		n, readErr := file.ReadAt(record, start)
 		if readErr != nil && readErr != io.EOF {

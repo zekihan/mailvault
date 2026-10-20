@@ -99,3 +99,41 @@ func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testin
 		t.Fatalf("out-of-bounds locator error = %v", err)
 	}
 }
+
+func TestMboxListingRejectsMissingInitialSeparator(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.mbox")
+	if err := os.WriteFile(path, []byte("Subject: damaged\n\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := NewMboxTarget(map[string]interface{}{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.(*MboxTarget).ListBackupMessages(context.Background()); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+		t.Fatalf("listing malformed mbox error = %v, want corruption", err)
+	}
+}
+
+func TestMboxListingBoundsOversizedRecordBeforeAllocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.mbox")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("From sender\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(1 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target, err := NewMboxTarget(map[string]interface{}{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.(*MboxTarget).listBackupMessages(context.Background(), 128); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+		t.Fatalf("listing oversized record error = %v, want corruption", err)
+	}
+}
