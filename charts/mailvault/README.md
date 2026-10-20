@@ -225,7 +225,10 @@ the unattended GPG key inside that volume permits decrypting its credentials.
 The release workflow packages and pushes the chart after checks and container
 publication succeed for a `v*` release tag. The chart version, appVersion, and
 default Mailvault image tag match that release (for example, `v1.2.3` becomes
-`1.2.3`). Manual branch runs publish containers only; they do not overwrite a
+`1.2.3`). SemVer build metadata stays in the chart version and appVersion but
+is omitted from the default container tag, matching the release workflow
+(`0.2.0-rc.1+build.2` uses image tag `0.2.0-rc.1`). Explicit `image.tag`
+overrides are used unchanged. Manual branch runs publish containers only; they do not overwrite a
 released chart. Authentication uses the workflow's GITHUB_TOKEN with packages
 write permission. Make the GHCR chart package public if anonymous pulls are wanted.
 

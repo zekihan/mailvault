@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 require 'yaml'
 require 'open3'
+require 'tmpdir'
 
 def render(*args)
   out, err, status = Open3.capture3('helm', 'template', 'test', 'charts/mailvault', *args)
@@ -25,7 +26,7 @@ check(base.select { |d| d['kind'] == 'PersistentVolumeClaim' }.all? { |d| d['met
 base_image = cron(base)['jobTemplate']['spec']['template']['spec']['containers'][0]['image']
 app_version = YAML.load_file('charts/mailvault/Chart.yaml')['appVersion']
 check(app_version.match?(/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\z/), 'appVersion must be a semantic version')
-check(base_image == "ghcr.io/zekihan/mailvault:#{app_version}", 'image must default to chart appVersion')
+check(base_image == "ghcr.io/zekihan/mailvault:#{app_version.split('+').first}", 'image must default to chart appVersion')
 override = render('--set', 'image.tag=custom')
 check(cron(override)['jobTemplate']['spec']['template']['spec']['containers'][0]['image'] == 'ghcr.io/zekihan/mailvault:custom', 'explicit image tag must take precedence')
 setup = render('--set', 'proton.enabled=true')
@@ -81,3 +82,23 @@ readme = File.read('charts/mailvault/README.md')
 check(readme.include?('mkdir -m 700 secrets/proton-tls'), 'TLS instructions must use ignored storage')
 check(readme.include?('auth login --source hotmail') && readme.include?('oauth2.token_file: /state/SOURCE-oauth.json'), 'OAuth initialization instructions missing')
 puts 'Setup upgrades, OAuth lifecycle and private-key ignore regressions passed'
+
+Dir.mktmpdir('mailvault-semver-') do |directory|
+  ['0.2.0+build.1', '0.2.0-rc.1+build.2'].each do |version|
+    _, err, status = Open3.capture3('helm', 'package', 'charts/mailvault', '--destination', directory, '--version', version, '--app-version', version)
+    check(status.success?, err)
+    package = File.join(directory, "mailvault-#{version}.tgz")
+    ['', 'custom-tag'].each do |override_tag|
+      args = ['helm', 'template', 'test', package, '--set', 'setup.enabled=true']
+      args += ['--set', "image.tag=#{override_tag}"] unless override_tag.empty?
+      out, err, status = Open3.capture3(*args)
+      check(status.success?, err)
+      docs = YAML.load_stream(out).compact
+      expected = "ghcr.io/zekihan/mailvault:#{override_tag.empty? ? version.split('+').first : override_tag}"
+      job_image = cron(docs)['jobTemplate']['spec']['template']['spec']['containers'][0]['image']
+      setup_image = docs.find { |d| d['kind'] == 'Deployment' }['spec']['template']['spec']['containers'][0]['image']
+      check(job_image == expected && setup_image == expected, 'packaged chart image tag must match metadata-action semver output and preserve overrides')
+    end
+  end
+end
+puts 'Packaged SemVer build metadata image-tag regressions passed'
