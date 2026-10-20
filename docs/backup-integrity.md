@@ -32,3 +32,5 @@ When repair finds a damaged object, it keeps the original object and records it 
 Verification can identify missing or changed objects represented in the manifest. It cannot prove that a source message still exists unless a repair run fetches and checks that source-target pair. A successful historical receipt alone is not evidence that the current target bytes are intact.
 
 Readers currently limit individual messages to 512 MiB during verification and restore. An oversized message fails explicitly rather than being skipped or counted as verified.
+
+An mbox file must begin with a valid `From ` separator. If that initial separator is missing or damaged, verification fails closed, including when no manifest exists; repair cannot safely identify and replace messages in that file until its structure is restored.

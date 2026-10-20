@@ -229,6 +229,9 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 	}
 	result := make([]plugins.BackupMessage, 0, len(starts))
 	for i, start := range starts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		end := info.Size()
 		if i+1 < len(starts) {
 			end = starts[i+1]
