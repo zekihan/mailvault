@@ -244,3 +244,8 @@ Replace `1.2.3` with an actual published release. Initial scheduling remains
 suspended; follow the setup instructions above before enabling it.
 
 PVC metadata labels can be set independently with `persistence.state.labels`, `persistence.backups.labels`, and `proton.persistence.labels`. Values must be strings. Labels apply only to chart-created claims; existing claims must be labeled by their owner.
+
+Optional `initContainers` run before scheduled backups, for example to wait for
+IMAP TCP connectivity with a bounded timeout. They do not run in the interactive
+OAuth or Proton setup Deployments. Configure their images, resources and security
+contexts explicitly; no credentials or backup volumes are mounted automatically.

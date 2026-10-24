@@ -24,6 +24,10 @@ spec:
           restartPolicy: Never
           automountServiceAccountToken: false
           imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+          {{- with .Values.initContainers }}
+          initContainers:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           containers:
             - name: mailvault
               image: {{ include "mailvault.image" (merge (dict "defaultTag" .Chart.AppVersion) .Values.image) | quote }}

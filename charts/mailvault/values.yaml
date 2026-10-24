@@ -5,6 +5,8 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
+# Optional startup checks for scheduled backup pods only.
+initContainers: []
 # Secret containing config.yaml and any file-referenced credentials under /config.
 configSecret: mailvault-config
 schedule: '0 3 * * *'

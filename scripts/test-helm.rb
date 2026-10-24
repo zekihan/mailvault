@@ -114,3 +114,15 @@ Dir.mktmpdir do |dir|
   end
   check(!claims.find { |d| d['metadata']['name'].end_with?('-backups') }['metadata'].key?('labels'), 'labels must not leak into backup claim')
 end
+
+Dir.mktmpdir('mailvault-init-') do |directory|
+  waiter = {'name'=>'wait-for-network', 'image'=>'example.invalid/waiter:1', 'command'=>['timeout', '150', '/bin/sh', '-ec'], 'args'=>['exit 0']}
+  values = File.join(directory, 'values.yaml')
+  File.write(values, {'initContainers'=>[waiter]}.to_yaml)
+  docs = render('-f', values, '--set', 'setup.enabled=true,proton.enabled=true')
+  pod = cron(docs)['jobTemplate']['spec']['template']['spec']
+  check(pod['initContainers'] == [waiter], 'scheduled jobs must preserve supplied init containers')
+  check(pod['containers'] == cron(render('--set', 'setup.enabled=true,proton.enabled=true'))['jobTemplate']['spec']['template']['spec']['containers'], 'init checks must preserve the backup command and mounts')
+  check(docs.select { |d| d['kind'] == 'Deployment' }.all? { |d| !d['spec']['template']['spec'].key?('initContainers') }, 'init checks must not block interactive setup or Bridge')
+end
+puts 'Optional scheduled-job startup checks passed'
