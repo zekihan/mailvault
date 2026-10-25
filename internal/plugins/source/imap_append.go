@@ -24,18 +24,21 @@ func (s *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExi
 	}
 
 	finish := s.wire.beginIO(ctx)
-	mailboxes, err := s.client.List("", "*", &imap.ListOptions{}).Collect()
+	exists := false
+	err := s.listMailboxesLocked(func(item *imap.ListData) {
+		if item.Mailbox == mailbox {
+			exists = true
+		}
+	})
 	finish()
 	if err != nil {
 		return false, fmt.Errorf("list destination mailboxes: %w: %w", err, plugins.ErrMailboxUnchanged)
 	}
-	for _, item := range mailboxes {
-		if item.Mailbox == mailbox {
-			if allowExisting {
-				return false, nil
-			}
-			return false, fmt.Errorf("destination mailbox %q already exists; choose a new folder or resume its existing restore job: %w", mailbox, plugins.ErrMailboxExists)
+	if exists {
+		if allowExisting {
+			return false, nil
 		}
+		return false, fmt.Errorf("destination mailbox %q already exists; choose a new folder or resume its existing restore job: %w", mailbox, plugins.ErrMailboxExists)
 	}
 	if allowExisting {
 		return false, fmt.Errorf("resumable destination mailbox %q is missing: %w", mailbox, plugins.ErrMailboxMissing)
