@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/knadh/go-pop3"
 	"github.com/zekihan/mailvault/internal/auth"
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -21,32 +21,39 @@ import (
 	"sync"
 )
 
+type pop3Identity struct {
+	ID  int
+	UID string
+}
+
 // POP3Source implements the Source interface for POP3.
 type POP3Source struct {
-	limits      listingLimits
-	stream      *pop3LineConn
-	listing     *listingBudgetConn
-	name        string
-	host        string
-	port        int
-	username    string
-	password    string
-	useTLS      bool
-	startTLS    bool
-	folders     []string
-	connTimeout time.Duration
-	readTimeout time.Duration
-	client      *pop3.Client
-	conn        *pop3.Conn
-	wire        *deadlineConn
-	tlsConfig   *tls.Config
-	tokenSource func(context.Context) (string, error)
-	connected   bool
-	mu          sync.Mutex
+	limits          listingLimits
+	name            string
+	host            string
+	port            int
+	username        string
+	password        string
+	useTLS          bool
+	startTLS        bool
+	folders         []string
+	connTimeout     time.Duration
+	readTimeout     time.Duration
+	maxMessageBytes int64
+	conn            *pop3Protocol
+	wire            *deadlineConn
+	tlsConfig       *tls.Config
+	tokenSource     func(context.Context) (string, error)
+	connected       bool
+	mu              sync.Mutex
 }
 
 func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	limits, err := parseListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
+	maxMessageBytes, err := config.ParseMessageLimit(configMap)
 	if err != nil {
 		return nil, err
 	}
@@ -86,18 +93,19 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	}
 
 	return &POP3Source{
-		limits:      limits,
-		name:        "pop3:" + host, // Will be overridden by registry
-		host:        host,
-		port:        port,
-		username:    username,
-		password:    passwordRef,
-		useTLS:      useTLS,
-		startTLS:    startTLS,
-		tokenSource: tokenSource,
-		folders:     folders,
-		connTimeout: connTimeout,
-		readTimeout: readTimeout,
+		limits:          limits,
+		name:            "pop3:" + host, // Will be overridden by registry
+		host:            host,
+		port:            port,
+		username:        username,
+		password:        passwordRef,
+		useTLS:          useTLS,
+		startTLS:        startTLS,
+		tokenSource:     tokenSource,
+		folders:         folders,
+		connTimeout:     connTimeout,
+		readTimeout:     readTimeout,
+		maxMessageBytes: maxMessageBytes,
 	}, nil
 }
 
@@ -133,53 +141,29 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 	finish := func() {}
 	defer func() { finish() }()
 	dialer := &net.Dialer{Timeout: s.connTimeout}
-	opt := pop3.Opt{
-		Host:        s.host,
-		Port:        s.port,
-		DialTimeout: s.connTimeout,
-		TLSEnabled:  false,
-		Dialer: dialFunc(func(network, address string) (net.Conn, error) {
-			raw, err := dialer.DialContext(ctx, network, address)
-			if err != nil {
-				return nil, err
-			}
-			wire = &deadlineConn{Conn: raw, timeout: s.readTimeout}
-			finish = wire.beginIO(ctx)
-			upgraded = &switchConn{Conn: wire}
-			if s.useTLS {
-				tlsConn := tls.Client(wire, s.tlsOptions())
-				if err := tlsConn.HandshakeContext(ctx); err != nil {
-					_ = wire.Close()
-					return nil, fmt.Errorf("TLS handshake: %w", err)
-				}
-				upgraded.set(tlsConn)
-			}
-			s.listing = &listingBudgetConn{Conn: upgraded}
-			s.stream = newPOP3LineConn(s.listing)
-			return s.stream, nil
-		}),
-	}
-
-	s.client = pop3.New(opt)
-
-	// Create connection
-	conn, err := s.client.NewConn()
+	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
 	if err != nil {
-		if wire != nil {
-			err = errors.Join(err, wire.Close())
-		}
 		return fmt.Errorf("connect: %w", err)
+	}
+	wire = &deadlineConn{Conn: raw, timeout: s.readTimeout}
+	finish = wire.beginIO(ctx)
+	upgraded = &switchConn{Conn: wire}
+	if s.useTLS {
+		secure := tls.Client(wire, s.tlsOptions())
+		if err := secure.HandshakeContext(ctx); err != nil {
+			return errors.Join(err, wire.Close())
+		}
+		upgraded.set(secure)
+	}
+	conn, err := newPOP3Protocol(upgraded, s.limits.defaults())
+	if err != nil {
+		return errors.Join(fmt.Errorf("connect: %w", err), wire.Close())
 	}
 
 	if s.startTLS {
-		if _, err := conn.Cmd("STLS", false); err != nil {
+		if err := conn.startTLS(ctx, s.tlsOptions()); err != nil {
 			return errors.Join(fmt.Errorf("STARTTLS: %w", err), wire.Close())
 		}
-		tlsConn := tls.Client(wire, s.tlsOptions())
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return errors.Join(fmt.Errorf("STARTTLS handshake: %w", err), wire.Close())
-		}
-		upgraded.set(tlsConn)
 	}
 	if s.tokenSource != nil {
 		token, err := s.tokenSource(ctx)
@@ -221,7 +205,7 @@ func (s *POP3Source) ListFolders(ctx context.Context) ([]string, error) {
 }
 
 func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
-	msgChan := make(chan *plugins.Message, 100)
+	msgChan := make(chan *plugins.Message)
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -257,9 +241,7 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 	plugins.ReportFetchProgress(ctx, progress)
 
 	// Get message count
-	s.listing.begin(s.limits.defaults().bytes)
 	count, _, err := s.conn.Stat()
-	err = errors.Join(err, s.listing.end())
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
 	}
@@ -269,9 +251,7 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", s.host, s.port, s.username)))
-	s.listing.begin(s.limits.defaults().bytes)
-	identities, err := readPOP3UIDLs(s.conn, s.stream, count, s.limits.defaults())
-	err = errors.Join(err, s.listing.end())
+	identities, err := readPOP3UIDLs(s.conn, count, s.limits.defaults())
 	if err != nil {
 		var netErr net.Error
 		var numErr *strconv.NumError
@@ -312,9 +292,9 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 	// Fetch each message
 	for i := 0; i < progress.Total; i++ {
-		var item pop3.MessageID
+		var item pop3Identity
 		if scope == "" {
-			item = pop3.MessageID{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
+			item = pop3Identity{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
 		} else {
 			item = pending[i]
 		}
@@ -325,16 +305,15 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		// RETR retrieves the full message
-		buf, err := s.conn.RetrRaw(item.ID)
+		raw, err := s.conn.retrieve(item.ID, s.maxMessageBytes)
 		if err != nil {
 			return fmt.Errorf("retr message %d: %w", item.ID, err)
 		}
 
-		raw := buf.Bytes()
 		progress.Fetched++
 		plugins.ReportFetchProgress(ctx, progress)
 
-		parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+		parsed, err := mail.ReadMessage(bytes.NewReader(raw))
 		if err != nil {
 			if since != 0 || until != 0 {
 				return fmt.Errorf("parse Date header for UIDL %q: %w", item.UID, err)
@@ -353,10 +332,6 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 		// Parse headers for Message-ID
 		messageID := dedup.ExtractMessageID(raw)
-		if messageID == "" {
-			// Try to extract from common headers
-			messageID = extractMessageIDFromRaw(raw)
-		}
 
 		// Compute content hash
 		contentHash := dedup.ComputeContentHash(raw)
@@ -402,7 +377,6 @@ func (s *POP3Source) Close() error {
 		err = s.conn.Quit()
 		s.conn = nil
 	}
-	s.client = nil
 	s.connected = false
 	return err
 }
@@ -415,7 +389,7 @@ func isUIDLUnsupported(err error) bool {
 	return strings.Contains(message, "not support") || strings.Contains(message, "unsupported") || strings.Contains(message, "unknown command") || strings.Contains(message, "not implemented")
 }
 
-func pop3AuthenticateXOAUTH2(conn *pop3.Conn, mechanism, response string) error {
+func pop3AuthenticateXOAUTH2(conn *pop3Protocol, mechanism, response string) error {
 	if err := conn.Send("AUTH " + mechanism + " " + response); err != nil {
 		return err
 	}
@@ -430,29 +404,4 @@ func pop3AuthenticateXOAUTH2(conn *pop3.Conn, mechanism, response string) error 
 	} else {
 		return err
 	}
-}
-
-// extractMessageIDFromRaw tries to extract Message-ID from raw message more thoroughly.
-func extractMessageIDFromRaw(raw []byte) string {
-	// Simple parser - look for Message-ID header
-	lines := strings.Split(string(raw), "\n")
-	inHeader := true
-	for _, line := range lines {
-		if inHeader {
-			if line == "" || line == "\r" {
-				inHeader = false
-				continue
-			}
-			lower := strings.ToLower(line)
-			if strings.HasPrefix(lower, "message-id:") {
-				value := strings.TrimSpace(line[len("Message-ID:"):])
-				value = strings.TrimSpace(value)
-				if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
-					return value[1 : len(value)-1]
-				}
-				return value
-			}
-		}
-	}
-	return ""
 }

@@ -52,9 +52,28 @@ IMAP folder UIDVALIDITY, UIDNEXT, and available MODSEQ values are recorded as
 server observations. Download decisions use per-target receipts, not a global
 high-water mark that could skip failed deliveries or holes left by date filters.
 `max_connections` bounds the IMAP connection pool; downloads stream through
-bounded batches and channels. Compact sets of delivered UIDs are excluded by the
+bounded batches and unbuffered channels. Compact sets of delivered UIDs are excluded by the
 server search, preserving holes from failures and date filters. If the exclusion
 would exceed 4 KiB, the client filters the search result locally instead.
+
+The global `max_message_bytes` setting defaults to 16 MiB (16777216 bytes),
+accepts integers from 1 through 512 MiB, and can be overridden with
+`MAILVAULT_MAX_MESSAGE_BYTES`. It applies to IMAP/POP3 downloads, all backup
+writes and repair writes, verification reads, and restore reads and APPENDs.
+Oversized messages fail the operation without advancing their delivery receipt.
+IMAP checks literal sizes before allocation; POP3 checks LIST before RETR and
+counts actual decoded bytes even when LIST understates the size. A rejected
+stream is disconnected rather than drained. POP3 requires a valid LIST response.
+
+The source queues are unbuffered. Behind a blocked target, IMAP retains at most
+`max_connections + 2` raw message buffers (workers, retry relay, and target);
+POP3 retains at most three. POP3 buffer growth and target encoding can use extra
+memory, so size `max_connections`, `max_message_bytes`, and deployment memory
+together. Mbox framing/escaping has a separate bounded encoded-record allowance
+so it can verify messages at the raw byte limit. Unterminated mbox input must
+leave one byte for its final newline within that limit. Lowering the setting can make
+older, larger backups unreadable until the previous limit is restored. No mailbox
+messages are deleted when a limit is exceeded.
 
 Mail server listings have per-operation limits: `max_listing_items` defaults to
 1,000,000 entries and `max_listing_bytes` defaults to 67,108,864 bytes (64 MiB).

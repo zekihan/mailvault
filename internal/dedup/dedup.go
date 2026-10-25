@@ -1,6 +1,7 @@
 package dedup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,25 +19,20 @@ func ComputeContentHash(raw []byte) string {
 
 // ExtractMessageID extracts the Message-ID header from raw RFC822 message.
 func ExtractMessageID(raw []byte) string {
-	// Simple parser for Message-ID header
-	// Message-ID: <value>
-	lines := strings.Split(string(raw), "\n")
-	inHeader := true
-	for _, line := range lines {
-		if inHeader {
-			if line == "" || line == "\r" {
-				inHeader = false
-				continue
+	for len(raw) > 0 {
+		line, rest, _ := bytes.Cut(raw, []byte{'\n'})
+		raw = rest
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) == 0 {
+			break
+		}
+		key, value, found := bytes.Cut(line, []byte{':'})
+		if found && bytes.EqualFold(key, []byte("Message-ID")) {
+			text := strings.TrimSpace(string(value))
+			if strings.HasPrefix(text, "<") && strings.HasSuffix(text, ">") {
+				return text[1 : len(text)-1]
 			}
-			if strings.HasPrefix(line, "Message-ID:") || strings.HasPrefix(line, "Message-Id:") || strings.HasPrefix(line, "message-id:") {
-				value := strings.TrimSpace(line[len("Message-ID:"):])
-				// Extract content between < > if present
-				value = strings.TrimSpace(value)
-				if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
-					return value[1 : len(value)-1]
-				}
-				return value
-			}
+			return text
 		}
 	}
 	return ""

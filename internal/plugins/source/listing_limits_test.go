@@ -288,6 +288,9 @@ func TestPOP3UIDLUnsupportedUsesLazySequenceIdentities(t *testing.T) {
 				fmt.Fprint(conn, "+OK 2 100\r\n")
 			case "UIDL":
 				fmt.Fprint(conn, "-ERR UIDL unsupported\r\n")
+			case "LIST":
+				raw := fmt.Sprintf("Subject: synthetic %s\r\n\r\nbody\r\n", parts[1])
+				fmt.Fprintf(conn, "+OK %s %d\r\n", parts[1], len(raw))
 			case "RETR":
 				fmt.Fprintf(conn, "+OK\r\nSubject: synthetic %s\r\n\r\nbody\r\n.\r\n", parts[1])
 			}
@@ -380,6 +383,8 @@ func TestPOP3TLSListingBudgetDoesNotLimitMessageBody(t *testing.T) {
 						fmt.Fprint(secure, "+OK 1 10000\r\n")
 					case "UIDL":
 						fmt.Fprint(secure, "+OK\r\n1 fixture-id\r\n.\r\n")
+					case "LIST":
+						fmt.Fprintf(secure, "+OK %s %d\r\n", parts[1], len(raw))
 					case "RETR":
 						fmt.Fprintf(secure, "+OK\r\n%s.\r\n", raw)
 					case "QUIT":

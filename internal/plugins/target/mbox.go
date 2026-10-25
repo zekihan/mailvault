@@ -17,16 +17,21 @@ import (
 
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
-	name        string
-	path        string
-	create      bool
-	file        *os.File
-	broken      error
-	lastLocator string
-	mu          sync.Mutex
+	maxMessageBytes int64
+	name            string
+	path            string
+	create          bool
+	file            *os.File
+	broken          error
+	lastLocator     string
+	mu              sync.Mutex
 }
 
 func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
+	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
+	if limitErr != nil {
+		return nil, limitErr
+	}
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
 
@@ -41,9 +46,10 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &MboxTarget{
-		name:   "mbox:" + path, // Will be overridden by registry
-		path:   path,
-		create: create,
+		maxMessageBytes: maxMessageBytes,
+		name:            "mbox:" + path, // Will be overridden by registry
+		path:            path,
+		create:          create,
 	}, nil
 }
 
@@ -107,6 +113,15 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastLocator = ""
+	// Mbox adds a final newline to unterminated messages. Reserve that byte
+	// within the decoded limit so physical listing/verification can read it.
+	decodedBytes := int64(len(msg.Raw))
+	if len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] != '\n' {
+		decodedBytes++
+	}
+	if err := plugins.CheckMessageSize(decodedBytes, t.maxMessageBytes); err != nil {
+		return "", err
+	}
 
 	if t.file == nil {
 		return "", errors.New("mbox not initialized")

@@ -22,24 +22,25 @@ import (
 
 // IMAPSource implements the Source interface for IMAP.
 type IMAPSource struct {
-	limits      listingLimits
-	listing     *listingBudgetConn
-	name        string
-	host        string
-	port        int
-	username    string
-	password    string
-	useTLS      bool
-	startTLS    bool
-	folders     []string
-	connTimeout time.Duration
-	readTimeout time.Duration
-	maxConns    int
-	tokenSource func(context.Context) (string, error)
-	client      *imapclient.Client
-	wire        *deadlineConn
-	connected   bool
-	mu          sync.Mutex
+	limits          listingLimits
+	listing         *listingBudgetConn
+	name            string
+	host            string
+	port            int
+	username        string
+	password        string
+	useTLS          bool
+	startTLS        bool
+	folders         []string
+	connTimeout     time.Duration
+	readTimeout     time.Duration
+	maxMessageBytes int64
+	maxConns        int
+	tokenSource     func(context.Context) (string, error)
+	client          *imapclient.Client
+	wire            *deadlineConn
+	connected       bool
+	mu              sync.Mutex
 }
 
 type imapSession struct {
@@ -50,6 +51,10 @@ type imapSession struct {
 
 func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	limits, err := parseListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
+	maxMessageBytes, err := config.ParseMessageLimit(configMap)
 	if err != nil {
 		return nil, err
 	}
@@ -90,19 +95,20 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	}
 
 	return &IMAPSource{
-		limits:      limits,
-		name:        "imap:" + host, // Will be overridden by registry
-		host:        host,
-		port:        port,
-		username:    username,
-		password:    passwordRef, // Already resolved by config loader
-		useTLS:      useTLS,
-		startTLS:    startTLS,
-		folders:     folders,
-		connTimeout: connTimeout,
-		readTimeout: readTimeout,
-		maxConns:    maxConns,
-		tokenSource: tokenSource,
+		limits:          limits,
+		name:            "imap:" + host, // Will be overridden by registry
+		host:            host,
+		port:            port,
+		username:        username,
+		password:        passwordRef, // Already resolved by config loader
+		useTLS:          useTLS,
+		startTLS:        startTLS,
+		folders:         folders,
+		connTimeout:     connTimeout,
+		readTimeout:     readTimeout,
+		maxConns:        maxConns,
+		maxMessageBytes: maxMessageBytes,
+		tokenSource:     tokenSource,
 	}, nil
 }
 
@@ -216,7 +222,7 @@ func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
 }
 
 func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
-	msgChan := make(chan *plugins.Message, 100)
+	msgChan := make(chan *plugins.Message)
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -388,7 +394,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 					return
 				}
 				ioDone = session.wire.beginIO(workerCtx)
-				err = s.fetchBatch(workerCtx, session.client, folder, batch, msgChan, since, until, scope, func() {
+				err = s.fetchBatch(workerCtx, session, folder, batch, msgChan, since, until, scope, func() {
 					progressMu.Lock()
 					progress.Fetched++
 					plugins.ReportFetchProgress(ctx, progress)
@@ -438,7 +444,8 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	return nil
 }
 
-func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, scope string, fetched func()) (err error) {
+func (s *IMAPSource) fetchBatch(ctx context.Context, session *imapSession, folder string, uids []imap.UID, msgChan chan<- *plugins.Message, since, until int64, scope string, fetched func()) (err error) {
+	client := session.client
 	// Fetch RFC822 for each UID.
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
@@ -472,12 +479,14 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 		}
 
 		// Collect message data into buffer
-		buf, err := collectFetchMessage(msg)
+		buf, err := collectFetchMessage(msg, plugins.MessageLimit(s.maxMessageBytes), func() { _ = session.wire.Close() })
 		if err != nil {
 			// A truncated literal releases the IMAP decoder before this goroutine
 			// can read again. Closing the command would race that decoder; the
-			// caller closes this session after the failed batch.
-			closeFetch = false
+			// caller closes this session after the failed batch. Oversized literals
+			// instead close the transport and discard each item exactly once, so
+			// the command can safely release any remaining decoder waiters.
+			closeFetch = errors.Is(err, plugins.ErrMessageTooLarge)
 			return fmt.Errorf("collect message: %w", err)
 		}
 		fetched()
@@ -539,8 +548,17 @@ func (s *IMAPSource) fetchBatch(ctx context.Context, client *imapclient.Client, 
 	return nil
 }
 
-func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMessageBuffer, error) {
+func collectFetchMessage(data *imapclient.FetchMessageData, maxBytes int64, abort func()) (*imapclient.FetchMessageBuffer, error) {
 	buf := &imapclient.FetchMessageBuffer{SeqNum: data.SeqNum}
+	var buffered int64
+	reject := func(err error) (*imapclient.FetchMessageBuffer, error) {
+		// Close before discarding: only already-buffered bytes remain. Next
+		// releases each literal's decoder waiter once, without allocating it.
+		abort()
+		for data.Next() != nil {
+		}
+		return nil, err
+	}
 	for item := data.Next(); item != nil; item = data.Next() {
 		switch item := item.(type) {
 		case imapclient.FetchItemDataBodySection:
@@ -548,8 +566,12 @@ func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMe
 			if item.Literal != nil {
 				want := item.Literal.Size()
 				if want < 0 || uint64(want) > uint64(^uint(0)>>1) {
-					return nil, fmt.Errorf("invalid body literal size %d", want)
+					return reject(fmt.Errorf("%w: invalid body literal size %d", plugins.ErrMessageTooLarge, want))
 				}
+				if err := plugins.CheckMessageSize(buffered+want, maxBytes); err != nil {
+					return reject(err)
+				}
+				buffered += want
 				body = make([]byte, int(want))
 				_, err := io.ReadFull(item.Literal, body)
 				if err != nil {
@@ -576,8 +598,12 @@ func collectFetchMessage(data *imapclient.FetchMessageData) (*imapclient.FetchMe
 			if item.Literal != nil {
 				want := item.Literal.Size()
 				if want < 0 || uint64(want) > uint64(^uint(0)>>1) {
-					return nil, fmt.Errorf("invalid binary literal size %d", want)
+					return reject(fmt.Errorf("%w: invalid binary literal size %d", plugins.ErrMessageTooLarge, want))
 				}
+				if err := plugins.CheckMessageSize(buffered+want, maxBytes); err != nil {
+					return reject(err)
+				}
+				buffered += want
 				body = make([]byte, int(want))
 				_, err := io.ReadFull(item.Literal, body)
 				if err != nil {

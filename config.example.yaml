@@ -1,3 +1,7 @@
+# Maximum decoded RFC822 message size in bytes (16 MiB default; 512 MiB ceiling).
+# Shared by sync, backup writes, verify, repair and restore.
+max_message_bytes: 16777216
+
 sources:
   - name: gmail
     type: imap

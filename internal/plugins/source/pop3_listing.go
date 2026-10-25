@@ -5,59 +5,21 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
 	"strconv"
-
-	"github.com/knadh/go-pop3"
 )
 
-// pop3LineConn presents at most one protocol line per Read. This keeps the
-// dependency's private bufio.Reader from reading ahead into UIDL rows after
-// the preceding command consumes its response. The rows can then be read directly and bounded
-// incrementally, without Cmd(..., true) buffering the entire listing.
-// Access is serialized by POP3Source.mu.
-type pop3LineConn struct {
-	net.Conn
-	reader     *bufio.Reader
-	pending    []byte
-	pendingErr error
-}
-
-func newPOP3LineConn(conn net.Conn) *pop3LineConn {
-	return &pop3LineConn{Conn: conn, reader: bufio.NewReader(conn)}
-}
-
-func (c *pop3LineConn) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if len(c.pending) == 0 {
-		line, err := c.reader.ReadSlice('\n')
-		if err == bufio.ErrBufferFull {
-			err = nil
-		}
-		c.pending, c.pendingErr = line, err
-	}
-	n := copy(p, c.pending)
-	c.pending = c.pending[n:]
-	if len(c.pending) == 0 {
-		return n, c.pendingErr
-	}
-	return n, nil
-}
-
-// readLine never retains more than the remaining byte budget, even when the
+// readListingLine never retains more than the remaining byte budget, even when the
 // server sends one unterminated line. The fixed reader adds at most 4 KiB.
-func (c *pop3LineConn) readLine(remaining *int) ([]byte, error) {
+func (c *pop3Protocol) readListingLine(remaining *int) ([]byte, error) {
 	var line []byte
 	for {
 		part, err := c.reader.ReadSlice('\n')
 		if len(part) > *remaining {
-			return nil, fmt.Errorf("%w: UIDL response byte budget", errListingLimit)
+			return nil, fmt.Errorf("%w: POP3 response byte budget", errListingLimit)
 		}
 		*remaining -= len(part)
 		if len(line)+len(part) > 512 {
-			return nil, errors.New("invalid UIDL response line exceeds 512 bytes")
+			return nil, errors.New("invalid POP3 response line exceeds 512 bytes")
 		}
 		line = append(line, part...)
 		if err == bufio.ErrBufferFull {
@@ -70,12 +32,12 @@ func (c *pop3LineConn) readLine(remaining *int) ([]byte, error) {
 	}
 }
 
-func readPOP3UIDLs(conn *pop3.Conn, stream *pop3LineConn, count int, limits listingLimits) ([]pop3.MessageID, error) {
+func readPOP3UIDLs(conn *pop3Protocol, count int, limits listingLimits) ([]pop3Identity, error) {
 	if err := conn.Send("UIDL"); err != nil {
 		return nil, err
 	}
 	remaining := limits.bytes
-	status, err := stream.readLine(&remaining)
+	status, err := conn.readListingLine(&remaining)
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +50,9 @@ func readPOP3UIDLs(conn *pop3.Conn, stream *pop3LineConn, count int, limits list
 	}
 	seen := make(map[string]bool)
 	seenIDs := make(map[int]bool)
-	var identities []pop3.MessageID
+	var identities []pop3Identity
 	for {
-		line, err := stream.readLine(&remaining)
+		line, err := conn.readListingLine(&remaining)
 		if err != nil {
 			return nil, err
 		}
@@ -122,6 +84,6 @@ func readPOP3UIDLs(conn *pop3.Conn, stream *pop3LineConn, count int, limits list
 			}
 		}
 		seenIDs[id], seen[uid] = true, true
-		identities = append(identities, pop3.MessageID{ID: id, UID: uid})
+		identities = append(identities, pop3Identity{ID: id, UID: uid})
 	}
 }
