@@ -4,111 +4,92 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 )
 
+type maildirCreation struct {
+	parent    *maildirDirectory
+	directory *maildirDirectory
+	name      string
+}
+
 func syncMaildirDirectory(path string) error {
-	directory, err := os.Open(path)
+	directory, err := openMaildirPath(path, false, nil)
 	if err != nil {
 		return err
 	}
-	return errors.Join(directory.Sync(), directory.Close())
+	defer func() { _ = directory.Close() }()
+	return syncOpenedMaildirDirectory(directory)
 }
 
-func (t *MaildirTarget) syncDirectory(path string) error {
-	syncDir := t.syncDir
-	if syncDir == nil {
-		syncDir = syncMaildirDirectory
-	}
-	return syncDir(path)
-}
-
-// mkdirMaildirPath creates each missing path component and returns exactly the
-// directories created by this call, in parent-to-child order.
-func mkdirMaildirPath(path string) ([]string, error) {
-	path, err := filepath.Abs(path)
+func syncOpenedMaildirDirectory(directory *maildirDirectory) error {
+	file, err := directory.root.Open(".")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	missing := []string{}
-	for current := path; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
-		if err == nil {
-			if !info.IsDir() {
-				return nil, fmt.Errorf("%q is not a directory", current)
-			}
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		missing = append(missing, current)
-		if filepath.Dir(current) == current {
-			return nil, err
-		}
-	}
-	created := []string{}
-	for i := len(missing) - 1; i >= 0; i-- {
-		err := os.Mkdir(missing[i], 0750)
-		if err == nil {
-			created = append(created, missing[i])
-			continue
-		}
-		if errors.Is(err, os.ErrExist) {
-			info, statErr := os.Stat(missing[i])
-			if statErr == nil && info.IsDir() {
-				continue
-			}
-			if statErr != nil {
-				return created, statErr
-			}
-			return created, fmt.Errorf("%q is not a directory", missing[i])
-		}
-		return created, err
-	}
-	return created, nil
+	return errors.Join(file.Sync(), file.Close())
 }
 
-func removeOwnedMaildirDirs(dirs []string) error {
-	var cleanup error
-	for i := len(dirs) - 1; i >= 0; i-- {
-		if err := os.Remove(dirs[i]); err != nil && !errors.Is(err, os.ErrNotExist) {
-			cleanup = errors.Join(cleanup, fmt.Errorf("remove newly created maildir directory %q: %w", dirs[i], err))
+func (t *MaildirTarget) syncOpenedDirectory(directory *maildirDirectory) error {
+	if t.syncDir != nil {
+		if err := t.syncDir(directory.path); err != nil {
+			return err
 		}
 	}
-	return cleanup
+	return syncOpenedMaildirDirectory(directory)
 }
 
-// Sync only directories created by Initialize and their immediate parents.
-// Child directories are persisted bottom-up; unrelated ancestors are untouched.
-func (t *MaildirTarget) syncStructure(created []string) error {
-	needed := map[string]bool{}
-	for _, dir := range created {
-		needed[dir] = true
-		needed[filepath.Dir(dir)] = true
+func closeMaildirCreations(created []maildirCreation) {
+	for _, item := range created {
+		_ = item.parent.Close()
+		_ = item.directory.Close()
 	}
-	ordered := make([]string, 0, len(needed))
-	for path := range needed {
-		ordered = append(ordered, path)
+}
+
+func rollbackMaildirStructure(created []maildirCreation) error {
+	var result error
+	for i := len(created) - 1; i >= 0; i-- {
+		item := created[i]
+		info, err := item.parent.root.Lstat(item.name)
+		if err == nil && !os.SameFile(info, item.directory.info) {
+			err = fmt.Errorf("newly created directory identity changed: %s", item.directory.path)
+		}
+		if err == nil {
+			err = item.parent.root.Remove(item.name)
+		}
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("remove newly created maildir directory: %w", err))
+		}
 	}
-	sort.Slice(ordered, func(i, j int) bool {
-		// Every ancestor is a shorter prefix, so children precede parents.
-		return len(ordered[i]) > len(ordered[j])
-	})
-	for _, path := range ordered {
-		if err := t.syncDirectory(path); err != nil {
-			return fmt.Errorf("sync maildir directory %q: %w", path, err)
+	return result
+}
+
+// Sync only newly created directories and their parents, children first. All
+// descriptors were acquired during creation; renamed paths are never reopened.
+func (t *MaildirTarget) syncStructure(created []maildirCreation) error {
+	needed := map[string]*maildirDirectory{}
+	for _, item := range created {
+		needed[item.directory.path] = item.directory
+		needed[item.parent.path] = item.parent
+	}
+	ordered := make([]*maildirDirectory, 0, len(needed))
+	for _, directory := range needed {
+		ordered = append(ordered, directory)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i].path) > len(ordered[j].path) })
+	for _, directory := range ordered {
+		if err := t.syncOpenedDirectory(directory); err != nil {
+			return fmt.Errorf("sync maildir directory %q: %w", directory.path, err)
 		}
 	}
 	return nil
 }
 
-func (t *MaildirTarget) rollbackPublication(path, directory string) error {
-	if err := os.Remove(path); err != nil {
+func (t *MaildirTarget) rollbackPublication(directory *maildirDirectory, name string) error {
+	if err := directory.root.Remove(name); err != nil {
 		return fmt.Errorf("remove unconfirmed publication: %w", err)
 	}
-	if err := t.syncDirectory(directory); err != nil {
+	if err := t.syncOpenedDirectory(directory); err != nil {
 		return fmt.Errorf("sync publication rollback: %w", err)
 	}
 	return nil

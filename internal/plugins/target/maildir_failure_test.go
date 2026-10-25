@@ -35,7 +35,7 @@ func TestMaildirPreservesWriteAndCleanupErrors(t *testing.T) {
 	if err := maildir.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	maildir.removeTemp = func(string) error { return os.ErrPermission }
+	maildir.removeTemp = func(*maildirDirectory, string) error { return os.ErrPermission }
 	var original syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 		t.Fatal(err)
