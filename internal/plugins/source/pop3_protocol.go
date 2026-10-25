@@ -3,6 +3,8 @@ package source
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +27,24 @@ func newPOP3Protocol(conn net.Conn, limits listingLimits) (*pop3Protocol, error)
 	c := &pop3Protocol{conn: conn, reader: bufio.NewReader(conn), limits: limits}
 	_, err := c.ReadOne()
 	return c, err
+}
+
+func (c *pop3Protocol) startTLS(ctx context.Context, config *tls.Config) error {
+	if _, err := c.Cmd("STLS"); err != nil {
+		return err
+	}
+	// No POP3 responses may cross the plaintext/TLS boundary. In particular,
+	// prefetched +OK lines must not satisfy authentication commands after TLS.
+	if c.reader.Buffered() != 0 {
+		return errors.New("unexpected buffered plaintext after STLS response")
+	}
+	secure := tls.Client(c.conn, config)
+	if err := secure.HandshakeContext(ctx); err != nil {
+		return fmt.Errorf("handshake: %w", err)
+	}
+	c.conn = secure
+	c.reader.Reset(secure)
+	return nil
 }
 
 func (c *pop3Protocol) Send(command string) error {

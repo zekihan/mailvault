@@ -161,14 +161,9 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 	}
 
 	if s.startTLS {
-		if _, err := conn.Cmd("STLS"); err != nil {
+		if err := conn.startTLS(ctx, s.tlsOptions()); err != nil {
 			return errors.Join(fmt.Errorf("STARTTLS: %w", err), wire.Close())
 		}
-		tlsConn := tls.Client(wire, s.tlsOptions())
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return errors.Join(fmt.Errorf("STARTTLS handshake: %w", err), wire.Close())
-		}
-		upgraded.set(tlsConn)
 	}
 	if s.tokenSource != nil {
 		token, err := s.tokenSource(ctx)
