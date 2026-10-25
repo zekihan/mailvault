@@ -159,13 +159,17 @@ mailvault cleanup-state --older-than 720h --apply
   is needed for these public-client flows.
 - Credential references support `env:NAME`, `file:path`, and
   `keyring:service:account`. Relative file paths resolve from the configuration
-  file's directory. On Linux, macOS, and BSD, file references must resolve to
-  regular files (the final path component cannot be a symlink), owned by the
-  effective user or root, without group/world write permissions, and at most
-  64 KiB. Reads are bounded even if the file grows. Keep parent directories
-  trusted: intermediate directory symlinks are followed. Other platforms reject
-  `file:` references; use `env:` or `keyring:` instead. Keyring access requires
-  a working OS credential service.
+  file's directory. Files must be regular files of at most 64 KiB; reads remain
+  bounded if the file grows. Linux, macOS, and BSD reject final-component symlinks,
+  require ownership by the effective user or root, and reject group/world write
+  permissions. Windows supports ordinary drive and UNC filesystem paths, rejects
+  device namespaces, named pipes, alternate data streams, and final-component
+  reparse points (including symlinks), and checks the opened disk-file handle
+  before reading. Windows ACLs remain operator-managed; restrict credential ACLs
+  to trusted principals. Keep parent directories trusted on all platforms:
+  intermediate directory symlinks/reparse points are followed. Other platforms
+  reject `file:` references; use `env:` or `keyring:` instead. Keyring access
+  requires a working OS credential service.
 - Normal sync resolves credentials only for sources and targets referenced by
   pairs. Unused secret references remain untouched; explicit `validate-config`
   resolves all declared resources for connectivity checks. Source password files

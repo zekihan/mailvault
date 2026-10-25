@@ -42,3 +42,13 @@ jobs:
           helm lint charts/mailvault
           helm lint charts/mailvault --set proton.enabled=true,proton.setup=false
           ruby scripts/test-helm.rb
+  windows-credentials:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Validate native Windows credential references
+        run: go test -count=1 -timeout=2m ./internal/config
