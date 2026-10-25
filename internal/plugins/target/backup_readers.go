@@ -403,6 +403,32 @@ func (t *MboxTarget) CanonicalBackupLocator(locator string) string {
 	return locator
 }
 
+// BackupLocatorsEquivalent requires the parser-derived start, record length and
+// encoded length to match the manifest. The parser cannot distinguish a final
+// newline added by the writer from an original one, so the recorded raw length
+// may be one byte shorter. Offset-only canonicalization is insufficient here:
+// it deliberately allows changed extents for restore and repair history.
+func (t *MboxTarget) BackupLocatorsEquivalent(current, recorded string) bool {
+	physical, manifest := strings.Split(current, ":"), strings.Split(recorded, ":")
+	if len(physical) != 4 || len(manifest) != 4 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if physical[i] != manifest[i] {
+			return false
+		}
+	}
+	currentRaw, err := strconv.ParseInt(physical[3], 10, 64)
+	if err != nil || currentRaw < 0 {
+		return false
+	}
+	recordedRaw, err := strconv.ParseInt(manifest[3], 10, 64)
+	if err != nil || recordedRaw < 0 {
+		return false
+	}
+	return physical[3] == manifest[3] || (recordedRaw > 0 && recordedRaw == currentRaw-1)
+}
+
 func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
 	parts := strings.Split(locator, ":")
 	if len(parts) != 4 {
