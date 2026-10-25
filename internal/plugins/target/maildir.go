@@ -19,6 +19,7 @@ import (
 // MaildirTarget implements the Target interface for Maildir format.
 type MaildirTarget struct {
 	listingLimits   backupListingLimits
+	maxMessageBytes int64
 	name            string
 	path            string
 	create          bool
@@ -35,6 +36,10 @@ func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) 
 	limits, err := parseBackupListingLimits(configMap)
 	if err != nil {
 		return nil, err
+	}
+	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
+	if limitErr != nil {
+		return nil, limitErr
 	}
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
@@ -62,6 +67,7 @@ func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) 
 
 	return &MaildirTarget{
 		listingLimits:   limits,
+		maxMessageBytes: maxMessageBytes,
 		name:            "maildir:" + path, // Will be overridden by registry
 		path:            path,
 		create:          create,
@@ -140,6 +146,9 @@ func (t *MaildirTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Mes
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastLocator = ""
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), t.maxMessageBytes); err != nil {
+		return "", err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

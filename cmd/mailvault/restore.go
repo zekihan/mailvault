@@ -70,7 +70,7 @@ func newRestoreCommand() *cobra.Command {
 			if destination.Type != "imap" {
 				return fmt.Errorf("destination source %q must use IMAP", destinationSource)
 			}
-			backup, err := registry.CreateTarget(targetConfig.Type, restoreTargetPluginConfig(*targetConfig))
+			backup, err := registry.CreateTarget(targetConfig.Type, config.TargetPluginConfig(*targetConfig, cfg.MaxMessageBytes))
 			if err != nil {
 				return fmt.Errorf("create backup reader: %w", err)
 			}
@@ -140,7 +140,7 @@ func newRestoreCommand() *cobra.Command {
 			}
 			var appender restore.MailboxAppender
 			if !preview {
-				pluginConfig, err := config.SourcePluginConfig(*destination)
+				pluginConfig, err := config.SourcePluginConfig(*destination, cfg.MaxMessageBytes)
 				if err != nil {
 					return fmt.Errorf("configure destination source: %w", err)
 				}
@@ -309,7 +309,7 @@ func newRestoreResolveCommand() *cobra.Command {
 			if targetConfig == nil {
 				return fmt.Errorf("backup target %q is not configured", backupTarget)
 			}
-			backup, err := builtin.Registry().CreateTarget(targetConfig.Type, restoreTargetPluginConfig(*targetConfig))
+			backup, err := builtin.Registry().CreateTarget(targetConfig.Type, config.TargetPluginConfig(*targetConfig, cfg.MaxMessageBytes))
 			if err != nil {
 				return fmt.Errorf("create backup target: %w", err)
 			}
@@ -375,13 +375,4 @@ func restoreSourceIdentity(source config.SourceConfig) string {
 	values := fmt.Sprintf("%s\x00%s\x00%d\x00%s", source.Name, source.Host, source.Port, source.Username)
 	digest := sha256.Sum256([]byte(values))
 	return source.Name + ":" + hex.EncodeToString(digest[:])
-}
-
-func restoreTargetPluginConfig(target config.TargetConfig) map[string]interface{} {
-	values := make(map[string]interface{}, len(target.Config)+1)
-	for key, value := range target.Config {
-		values[key] = value
-	}
-	values["name"] = target.Name
-	return values
 }

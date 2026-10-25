@@ -37,7 +37,7 @@ func newListFoldersCommand() *cobra.Command {
 			if selected == nil {
 				return fmt.Errorf("unknown source %q", sourceName)
 			}
-			values, err := config.SourcePluginConfig(*selected)
+			values, err := config.SourcePluginConfig(*selected, cfg.MaxMessageBytes)
 			if err != nil {
 				return err
 			}

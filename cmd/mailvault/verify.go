@@ -41,7 +41,7 @@ func newVerifyCommand() *cobra.Command {
 		if tc == nil {
 			return fmt.Errorf("unknown target %q", args[0])
 		}
-		target, err := builtin.Registry().CreateTarget(tc.Type, tc.Config)
+		target, err := builtin.Registry().CreateTarget(tc.Type, config.TargetPluginConfig(*tc, cfg.MaxMessageBytes))
 		if err != nil {
 			return fmt.Errorf("create target: %w", err)
 		}
@@ -88,15 +88,25 @@ func verifyTarget(ctx context.Context, targetName string, reader plugins.TargetB
 
 func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget string, reader plugins.TargetBackupReader) (report verificationReport, runErr error) {
 	report = verificationReport{Target: targetName}
-	// Retain bounded hash/locator indexes for manifest reconciliation, never
-	// the full physical entry list. Raw message buffers live for one callback.
+	// Retain bounded reconciliation indexes, while reading each message before
+	// advancing enumeration. Mbox hashes always come from current record extents.
 	var locators []string
 	byHash := make(map[string]string)
-	physicalErrors := make(map[string]error)
+	physicalHashes, physicalErrors := make(map[string]string), make(map[string]error)
+	physicalLocators, physicalCounts := make(map[string]string), make(map[string]int)
+	physicalUnpaddedHashes := make(map[string]string)
+	matcher, matchStructure := reader.(interface{ BackupLocatorsEquivalent(string, string) bool })
 	err := plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
 		canonical := canonicalBackupLocator(reader, entry.Locator)
 		locators = append(locators, canonical)
 		report.Scanned++
+		physicalCounts[canonical]++
+		if physicalCounts[canonical] > 1 {
+			physicalErrors[canonical] = plugins.ErrBackupMessageCorrupt
+			delete(physicalHashes, canonical)
+			return nil
+		}
+		physicalLocators[canonical] = entry.Locator
 		msg, readErr := reader.ReadBackupMessage(ctx, entry.Locator)
 		if readErr != nil {
 			if errors.Is(readErr, plugins.ErrBackupMessageMissing) || errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
@@ -105,14 +115,23 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			}
 			return fmt.Errorf("read target message %q: %w", entry.Locator, readErr)
 		}
-		hash := dedup.ComputeContentHash(msg.Raw)
-		if previous := byHash[hash]; previous == "" || canonical < previous {
-			byHash[hash] = canonical
+		physicalHashes[canonical] = dedup.ComputeContentHash(msg.Raw)
+		if matchStructure && len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] == '\n' {
+			physicalUnpaddedHashes[canonical] = dedup.ComputeContentHash(msg.Raw[:len(msg.Raw)-1])
 		}
 		return nil
 	})
 	if err != nil {
 		return report, fmt.Errorf("list target messages: %w", err)
+	}
+	// Build legacy matching only after enumeration: duplicate canonical
+	// locations must not leave a previously indexed hash eligible for recovery.
+	for _, canonical := range locators {
+		if hash, ok := physicalHashes[canonical]; ok {
+			if previous := byHash[hash]; previous == "" || canonical < previous {
+				byHash[hash] = canonical
+			}
+		}
 	}
 	store, err := openReadOnlyState()
 	if err != nil {
@@ -144,20 +163,28 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		canonicalSuperseded[canonicalBackupLocator(reader, locator)] = true
 	}
 	expectedByLocator, originalByLocator := make(map[string]map[string]bool), make(map[string]string)
+	conflictingLocators := make(map[string]bool)
 	known := make(map[string]bool)
 	for _, item := range manifest {
 		canonical := canonicalBackupLocator(reader, item.Locator)
 		known[canonical] = true
+		if original, exists := originalByLocator[canonical]; matchStructure && exists && original != item.Locator {
+			conflictingLocators[canonical] = true
+		}
 		originalByLocator[canonical] = item.Locator
 		if expectedByLocator[canonical] == nil {
 			expectedByLocator[canonical] = make(map[string]bool)
 		}
 		expectedByLocator[canonical][item.RawSHA256] = true
 	}
-	verifiedLocators := make(map[string]bool)
 	for locator, expected := range expectedByLocator {
-		if len(expected) != 1 {
+		if len(expected) != 1 || conflictingLocators[locator] {
 			report.Corrupt++
+			continue
+		}
+		currentLocator, present := physicalLocators[locator]
+		if !present {
+			report.Missing++
 			continue
 		}
 		if readErr := physicalErrors[locator]; readErr != nil {
@@ -168,21 +195,26 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			}
 			continue
 		}
-		msg, readErr := reader.ReadBackupMessage(ctx, originalByLocator[locator])
-		if readErr != nil {
-			if errors.Is(readErr, plugins.ErrBackupMessageMissing) {
-				report.Missing++
-			} else if errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
+		hash := physicalHashes[locator]
+		if matchStructure {
+			if !matcher.BackupLocatorsEquivalent(currentLocator, originalByLocator[locator]) {
 				report.Corrupt++
-			} else {
-				return report, fmt.Errorf("verify %q: %w", originalByLocator[locator], readErr)
+				continue
 			}
-			continue
+			// Equivalent locators can differ only by the writer-added final
+			// newline. Both hashes come from the current physical record;
+			// never re-read a historical byte range from the manifest.
+			if currentLocator != originalByLocator[locator] {
+				var ok bool
+				hash, ok = physicalUnpaddedHashes[locator]
+				if !ok {
+					report.Corrupt++
+					continue
+				}
+			}
 		}
-		hash := dedup.ComputeContentHash(msg.Raw)
 		if expected[hash] {
 			report.Verified++
-			verifiedLocators[locator] = true
 		} else {
 			report.Corrupt++
 		}
@@ -198,10 +230,10 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			continue
 		}
 		if locator := byHash[item.RawSHA256]; locator != "" {
-			known[locator] = true
-			if !verifiedLocators[locator] {
+			if !known[locator] {
 				legacyVerified[locator] = true
 			}
+			known[locator] = true
 		} else {
 			report.Unverifiable++
 		}

@@ -6,9 +6,10 @@ import (
 
 // Config is the root configuration structure.
 type Config struct {
-	Sources []SourceConfig `mapstructure:"sources" yaml:"sources"`
-	Targets []TargetConfig `mapstructure:"targets" yaml:"targets"`
-	Pairs   []PairConfig   `mapstructure:"pairs" yaml:"pairs"`
+	MaxMessageBytes int64          `mapstructure:"max_message_bytes" yaml:"max_message_bytes"`
+	Sources         []SourceConfig `mapstructure:"sources" yaml:"sources"`
+	Targets         []TargetConfig `mapstructure:"targets" yaml:"targets"`
+	Pairs           []PairConfig   `mapstructure:"pairs" yaml:"pairs"`
 }
 
 // SourceConfig defines a mail source (IMAP/POP3).
@@ -25,6 +26,9 @@ type SourceConfig struct {
 	ConnectionTimeout time.Duration `mapstructure:"connection_timeout" yaml:"connection_timeout"`
 	ReadTimeout       time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
 	MaxConnections    int           `mapstructure:"max_connections" yaml:"max_connections"`
+
+	MaxListingItems int `mapstructure:"max_listing_items" yaml:"max_listing_items"`
+	MaxListingBytes int `mapstructure:"max_listing_bytes" yaml:"max_listing_bytes"`
 
 	// OAuth2 (optional)
 	OAuth2 *OAuth2Config `mapstructure:"oauth2" yaml:"oauth2"`

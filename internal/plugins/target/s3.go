@@ -1,6 +1,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 // S3Target implements the Target interface for S3-compatible storage.
 type S3Target struct {
 	listingLimits    backupListingLimits
+	maxMessageBytes  int64
 	name             string
 	bucket           string
 	region           string
@@ -44,6 +46,10 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	limits, err := parseBackupListingLimits(configMap)
 	if err != nil {
 		return nil, err
+	}
+	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
+	if limitErr != nil {
+		return nil, limitErr
 	}
 	operationTimeout, err := config.ParseDuration(configMap, config.TargetConfigOperationTimeout, defaultS3OperationTimeout)
 	if err != nil || operationTimeout <= 0 {
@@ -101,6 +107,7 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 
 	return &S3Target{
 		listingLimits:    limits,
+		maxMessageBytes:  maxMessageBytes,
 		name:             "s3:" + bucket, // Will be overridden by registry
 		bucket:           bucket,
 		region:           region,
@@ -186,6 +193,9 @@ func (t *S3Target) WriteBackupMessage(ctx context.Context, msg *plugins.Message)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastLocator = ""
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), t.maxMessageBytes); err != nil {
+		return "", err
+	}
 
 	if t.uploader == nil {
 		return "", errors.New("S3 target not initialized")
@@ -202,7 +212,7 @@ func (t *S3Target) WriteBackupMessage(ctx context.Context, msg *plugins.Message)
 	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
 		Bucket:      aws.String(t.bucket),
 		Key:         aws.String(key),
-		Body:        strings.NewReader(string(msg.Raw)),
+		Body:        bytes.NewReader(msg.Raw),
 		ContentType: aws.String("message/rfc822"),
 		Metadata:    s3ObjectMetadata(msg, hash),
 	})
@@ -217,6 +227,9 @@ func (t *S3Target) WriteBackupMessage(ctx context.Context, msg *plugins.Message)
 }
 
 func (t *S3Target) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), t.maxMessageBytes); err != nil {
+		return "", err
+	}
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", fmt.Errorf("create repair key: %w", err)
@@ -235,7 +248,7 @@ func (t *S3Target) WriteRepairMessage(ctx context.Context, msg *plugins.Message)
 		return "", errors.New("S3 target not initialized")
 	}
 	_, err := t.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
-		Bucket: aws.String(t.bucket), Key: aws.String(key), Body: strings.NewReader(string(msg.Raw)),
+		Bucket: aws.String(t.bucket), Key: aws.String(key), Body: bytes.NewReader(msg.Raw),
 		ContentType: aws.String("message/rfc822"), Metadata: s3ObjectMetadata(msg, hash),
 	})
 	if err != nil {

@@ -52,9 +52,43 @@ IMAP folder UIDVALIDITY, UIDNEXT, and available MODSEQ values are recorded as
 server observations. Download decisions use per-target receipts, not a global
 high-water mark that could skip failed deliveries or holes left by date filters.
 `max_connections` bounds the IMAP connection pool; downloads stream through
-bounded batches and channels. Compact sets of delivered UIDs are excluded by the
+bounded batches and unbuffered channels. Compact sets of delivered UIDs are excluded by the
 server search, preserving holes from failures and date filters. If the exclusion
 would exceed 4 KiB, the client filters the search result locally instead.
+
+The global `max_message_bytes` setting defaults to 16 MiB (16777216 bytes),
+accepts integers from 1 through 512 MiB, and can be overridden with
+`MAILVAULT_MAX_MESSAGE_BYTES`. It applies to IMAP/POP3 downloads, all backup
+writes and repair writes, verification reads, and restore reads and APPENDs.
+Oversized messages fail the operation without advancing their delivery receipt.
+IMAP checks literal sizes before allocation; POP3 checks LIST before RETR and
+counts actual decoded bytes even when LIST understates the size. A rejected
+stream is disconnected rather than drained. POP3 requires a valid LIST response.
+
+The source queues are unbuffered. Behind a blocked target, IMAP retains at most
+`max_connections + 2` raw message buffers (workers, retry relay, and target);
+POP3 retains at most three. POP3 buffer growth and target encoding can use extra
+memory, so size `max_connections`, `max_message_bytes`, and deployment memory
+together. Mbox framing/escaping has a separate bounded encoded-record allowance
+so it can verify messages at the raw byte limit. Unterminated mbox input must
+leave one byte for its final newline within that limit. Lowering the setting can make
+older, larger backups unreadable until the previous limit is restored. No mailbox
+messages are deleted when a limit is exceeded.
+
+Mail server listings have per-operation limits: `max_listing_items` defaults to
+1,000,000 entries and `max_listing_bytes` defaults to 67,108,864 bytes (64 MiB).
+Set these on an IMAP or POP3 source to accommodate larger trusted accounts;
+omitted or zero values use the defaults, and negative values are rejected.
+The item limit applies to all IMAP LIST entries (including non-selectable parents),
+IMAP SEARCH candidate UIDs per folder, and the POP3 STAT count and UIDL rows.
+The byte limit bounds each LIST, SEARCH, STAT or UIDL response, including protocol
+framing; IMAP over TLS also counts TLS framing. Small fixed protocol/TLS read
+buffers can be retained across commands. POP3 UIDLs must contain unique message
+numbers and unique visible ASCII identifiers of at most 70 characters.
+An invalid or oversized listing closes the session and fails the operation without
+using partial results. Restore destination checks use the same limits before
+creating or appending to a mailbox. Large accounts that exceed a limit need an
+explicit increase; listings are not silently truncated or paginated.
 
 Downloads retry transient connection failures up to two times with a short
 backoff. Stable IMAP UIDs and POP3 UIDLs already streamed in the current run are
@@ -159,7 +193,17 @@ mailvault cleanup-state --older-than 720h --apply
   is needed for these public-client flows.
 - Credential references support `env:NAME`, `file:path`, and
   `keyring:service:account`. Relative file paths resolve from the configuration
-  file's directory. Keyring access requires a working OS credential service.
+  file's directory. Files must be regular files of at most 64 KiB; reads remain
+  bounded if the file grows. Linux, macOS, and BSD reject final-component symlinks,
+  require ownership by the effective user or root, and reject group/world write
+  permissions. Windows supports ordinary drive and UNC filesystem paths, rejects
+  device namespaces, named pipes, alternate data streams, and final-component
+  reparse points (including symlinks), and checks the opened disk-file handle
+  before reading. Windows ACLs remain operator-managed; restrict credential ACLs
+  to trusted principals. Keep parent directories trusted on all platforms:
+  intermediate directory symlinks/reparse points are followed. Other platforms
+  reject `file:` references; use `env:` or `keyring:` instead. Keyring access
+  requires a working OS credential service.
 - Normal sync resolves credentials only for sources and targets referenced by
   pairs. Unused secret references remain untouched; explicit `validate-config`
   resolves all declared resources for connectivity checks. Source password files
@@ -172,6 +216,12 @@ mailvault cleanup-state --older-than 720h --apply
   represented by a private in-memory database.
   State database paths are literal filesystem paths; characters such as `?`,
   `#`, and `%` cannot redirect the database or inject SQLite connection options.
+- New mbox archives use mode `0600`; newly created parent directories use
+  `0700` (subject to umask). Existing files and directories retain their modes.
+  To intentionally share an archive, explicitly pre-create it and its parent
+  directories with the desired group permissions. Members of that group can
+  read the plaintext archived mail; review existing archive permissions when
+  upgrading, since Mailvault does not silently tighten them.
 - Filesystem targets honor `create_if_missing: false`: the mbox file, or all
   Maildir directories, must already exist. Maildir publication never replaces
   an existing message. Cooperating mbox writers lock the mailbox while appending

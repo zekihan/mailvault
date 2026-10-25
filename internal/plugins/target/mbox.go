@@ -17,20 +17,25 @@ import (
 
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
-	listingLimits backupListingLimits
-	name          string
-	path          string
-	create        bool
-	file          *os.File
-	broken        error
-	lastLocator   string
-	mu            sync.Mutex
+	listingLimits   backupListingLimits
+	maxMessageBytes int64
+	name            string
+	path            string
+	create          bool
+	file            *os.File
+	broken          error
+	lastLocator     string
+	mu              sync.Mutex
 }
 
 func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	limits, err := parseBackupListingLimits(configMap)
 	if err != nil {
 		return nil, err
+	}
+	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
+	if limitErr != nil {
+		return nil, limitErr
 	}
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
@@ -46,10 +51,11 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &MboxTarget{
-		listingLimits: limits,
-		name:          "mbox:" + path, // Will be overridden by registry
-		path:          path,
-		create:        create,
+		listingLimits:   limits,
+		maxMessageBytes: maxMessageBytes,
+		name:            "mbox:" + path, // Will be overridden by registry
+		path:            path,
+		create:          create,
 	}, nil
 }
 
@@ -78,14 +84,14 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	dir := filepath.Dir(t.path)
 	flags := os.O_RDWR | os.O_APPEND
 	if t.create {
-		if err := os.MkdirAll(dir, 0750); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("create mbox directory: %w", err)
 		}
 		flags |= os.O_CREATE
 	}
 
 	// Open mbox file for appending
-	file, err := os.OpenFile(t.path, flags, 0640)
+	file, err := os.OpenFile(t.path, flags, 0600)
 	if err != nil {
 		return fmt.Errorf("open mbox file: %w", err)
 	}
@@ -113,6 +119,15 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastLocator = ""
+	// Mbox adds a final newline to unterminated messages. Reserve that byte
+	// within the decoded limit so physical listing/verification can read it.
+	decodedBytes := int64(len(msg.Raw))
+	if len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] != '\n' {
+		decodedBytes++
+	}
+	if err := plugins.CheckMessageSize(decodedBytes, t.maxMessageBytes); err != nil {
+		return "", err
+	}
 
 	if t.file == nil {
 		return "", errors.New("mbox not initialized")
@@ -150,8 +165,8 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 		}
 	}
 
-	// Escape body lines using mboxrd: prefix one '>' to each line whose
-	// existing leading '>' run is followed by "From ". Headers remain untouched.
+	// Escape every raw line using mboxrd, including malformed headers: the
+	// reader recognizes "From " separators throughout the record.
 	raw := escapeMboxrd(msg.Raw)
 	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
 		raw = append(raw, '\n')
@@ -183,18 +198,8 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 }
 
 func escapeMboxrd(raw []byte) []byte {
-	sep := bytes.Index(raw, []byte("\n\n"))
-	crlf := bytes.Index(raw, []byte("\r\n\r\n"))
-	if crlf >= 0 && (sep < 0 || crlf < sep) {
-		sep = crlf + 4
-	} else if sep >= 0 {
-		sep += 2
-	} else {
-		// Headerless input is a body.
-		sep = 0
-	}
-	out := append([]byte(nil), raw[:sep]...)
-	for pos := sep; pos < len(raw); {
+	var out []byte
+	for pos := 0; pos < len(raw); {
 		end := bytes.IndexByte(raw[pos:], '\n')
 		lineEnd := len(raw)
 		if end >= 0 {

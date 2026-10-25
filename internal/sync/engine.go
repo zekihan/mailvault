@@ -78,7 +78,7 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 		if !usedSources[srcCfg.Name] {
 			continue
 		}
-		srcConfig, err := config.SourcePluginConfig(srcCfg)
+		srcConfig, err := config.SourcePluginConfig(srcCfg, cfg.MaxMessageBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -95,11 +95,7 @@ func NewSyncEngine(cfg *config.Config, stateStore *state.Store, registry *plugin
 		if !usedTargets[tgtCfg.Name] {
 			continue
 		}
-		tgtConfig := tgtCfg.Config
-		if tgtConfig == nil {
-			tgtConfig = make(map[string]interface{})
-		}
-		tgtConfig["name"] = tgtCfg.Name
+		tgtConfig := config.TargetPluginConfig(tgtCfg, cfg.MaxMessageBytes)
 		tgt, err := registry.CreateTarget(tgtCfg.Type, tgtConfig)
 		if err != nil {
 			return nil, fmt.Errorf("create target %q: %w", tgtCfg.Name, err)
@@ -438,6 +434,10 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 	delivery.mu.Lock()
 	defer delivery.mu.Unlock()
 	if err := ctx.Err(); err != nil {
+		result.Errors = append(result.Errors, err)
+		return
+	}
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), e.config.MaxMessageBytes); err != nil {
 		result.Errors = append(result.Errors, err)
 		return
 	}

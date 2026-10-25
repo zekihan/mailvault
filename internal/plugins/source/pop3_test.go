@@ -59,6 +59,19 @@ func pop3Fixture(t *testing.T, messages []pop3FixtureMessage, retr chan<- int, u
 					_, _ = fmt.Fprintf(conn, "%d %s\r\n", number, message.uid)
 				}
 				_, _ = fmt.Fprint(conn, ".\r\n")
+			case "LIST":
+				var id int
+				if len(parts) != 2 {
+					return
+				}
+				if _, err := fmt.Sscanf(parts[1], "%d", &id); err != nil || id < 1 || id > len(messages) {
+					return
+				}
+				size := len(messages[id-1].raw)
+				if !strings.HasSuffix(messages[id-1].raw, "\r\n") {
+					size += 2
+				}
+				_, _ = fmt.Fprintf(conn, "+OK %d %d\r\n", id, size)
 			case "RETR":
 				if len(parts) != 2 {
 					return

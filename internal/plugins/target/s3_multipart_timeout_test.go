@@ -73,7 +73,7 @@ func TestS3MultipartTimeoutBoundsPartsCompletionAndAbort(t *testing.T) {
 			}))
 			defer server.Close()
 			defer close(release)
-			plugin, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "endpoint": server.URL, "credentials_ref": `{"access_key_id":"x","secret_access_key":"y"}`, "operation_timeout": "2s"})
+			plugin, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "endpoint": server.URL, "credentials_ref": `{"access_key_id":"x","secret_access_key":"y"}`, "operation_timeout": "2s", "max_message_bytes": 32 << 20})
 			if err != nil {
 				t.Fatal(err)
 			}

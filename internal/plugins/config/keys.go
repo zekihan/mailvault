@@ -12,6 +12,8 @@ const (
 	SourceConfigConnectionTimeout = "connection_timeout"
 	SourceConfigReadTimeout       = "read_timeout"
 	SourceConfigMaxConnections    = "max_connections"
+	SourceConfigMaxListingItems   = "max_listing_items"
+	SourceConfigMaxListingBytes   = "max_listing_bytes"
 	SourceConfigOAuth2            = "oauth2"
 )
 
@@ -29,4 +31,10 @@ const (
 	TargetConfigOperationTimeout       = "operation_timeout"
 	TargetConfigMaxListingEntries      = "max_listing_entries"
 	TargetConfigMaxListingLocatorBytes = "max_listing_locator_bytes"
+)
+
+// Zero-valued listing settings use these bounded defaults.
+const (
+	DefaultMaxListingItems = 1_000_000
+	DefaultMaxListingBytes = 64 << 20
 )

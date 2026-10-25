@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/zalando/go-keyring"
+	"github.com/zekihan/mailvault/internal/plugins"
+	pluginconfig "github.com/zekihan/mailvault/internal/plugins/config"
 )
 
 // Load reads configuration from file and environment.
@@ -69,6 +71,7 @@ func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
 func load(path string, resolveAll bool, authSource, authTarget string, skipSourceCredential bool) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("yaml")
+	v.SetDefault("max_message_bytes", plugins.DefaultMaxMessageBytes)
 
 	if path != "" {
 		v.SetConfigFile(path)
@@ -98,6 +101,11 @@ func load(path string, resolveAll bool, authSource, authTarget string, skipSourc
 	if err := applyIndexedEnvironment(&cfg, v); err != nil {
 		return nil, err
 	}
+	limit, err := pluginconfig.ParseMessageLimit(map[string]interface{}{"max_message_bytes": v.Get("max_message_bytes")})
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxMessageBytes = limit
 	applySourceDefaults(&cfg, v)
 	configDir := ""
 	if used := v.ConfigFileUsed(); used != "" {
@@ -155,6 +163,9 @@ func expandNamedCredentialRefsAt(cfg *Config, sourceName, targetName, configDir 
 
 // Validate checks the configuration for correctness.
 func Validate(cfg *Config) error {
+	if err := plugins.ValidateMessageLimit(plugins.MessageLimit(cfg.MaxMessageBytes)); err != nil {
+		return err
+	}
 	if len(cfg.Sources) == 0 {
 		return fmt.Errorf("at least one source is required")
 	}
@@ -210,6 +221,9 @@ func Validate(cfg *Config) error {
 			if s.OAuth2.TokenFile != "" && s.OAuth2.TokenKey != "" {
 				return fmt.Errorf("source %q: configure either oauth2.token_file or oauth2.token_key", s.Name)
 			}
+		}
+		if s.MaxListingItems < 0 || s.MaxListingBytes < 0 {
+			return fmt.Errorf("source %q: max_listing_items and max_listing_bytes must be >= 0 (zero uses defaults)", s.Name)
 		}
 		if s.MaxConnections <= 0 {
 			return fmt.Errorf("source %q: max_connections must be > 0", s.Name)
@@ -328,7 +342,7 @@ func resolveCredentialRefAtWithKeyring(ref, configDir string, lookup func(servic
 			}
 			path = filepath.Join(configDir, path)
 		}
-		data, err := os.ReadFile(path)
+		data, err := readCredentialFile(path)
 		if err != nil {
 			return "", fmt.Errorf("read file %q: %w", path, err)
 		}
@@ -409,6 +423,15 @@ func applyIndexedEnvironment(cfg *Config, v *viper.Viper) error {
 				return fmt.Errorf("environment override for %smax_connections: %w", p, err)
 			}
 			cfg.Sources[i].MaxConnections = parsed
+		}
+		for key, dst := range map[string]*int{"max_listing_items": &cfg.Sources[i].MaxListingItems, "max_listing_bytes": &cfg.Sources[i].MaxListingBytes} {
+			if set, value := bind(key); set {
+				parsed, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("environment override for %s%s: %w", p, key, err)
+				}
+				*dst = parsed
+			}
 		}
 		if set, value := bind("folders"); set {
 			if value == "" {
