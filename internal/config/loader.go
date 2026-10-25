@@ -328,7 +328,7 @@ func resolveCredentialRefAtWithKeyring(ref, configDir string, lookup func(servic
 			}
 			path = filepath.Join(configDir, path)
 		}
-		data, err := os.ReadFile(path)
+		data, err := readCredentialFile(path)
 		if err != nil {
 			return "", fmt.Errorf("read file %q: %w", path, err)
 		}

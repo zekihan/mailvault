@@ -159,7 +159,13 @@ mailvault cleanup-state --older-than 720h --apply
   is needed for these public-client flows.
 - Credential references support `env:NAME`, `file:path`, and
   `keyring:service:account`. Relative file paths resolve from the configuration
-  file's directory. Keyring access requires a working OS credential service.
+  file's directory. On Linux, macOS, and BSD, file references must resolve to
+  regular files (the final path component cannot be a symlink), owned by the
+  effective user or root, without group/world write permissions, and at most
+  64 KiB. Reads are bounded even if the file grows. Keep parent directories
+  trusted: intermediate directory symlinks are followed. Other platforms reject
+  `file:` references; use `env:` or `keyring:` instead. Keyring access requires
+  a working OS credential service.
 - Normal sync resolves credentials only for sources and targets referenced by
   pairs. Unused secret references remain untouched; explicit `validate-config`
   resolves all declared resources for connectivity checks. Source password files
@@ -172,6 +178,12 @@ mailvault cleanup-state --older-than 720h --apply
   represented by a private in-memory database.
   State database paths are literal filesystem paths; characters such as `?`,
   `#`, and `%` cannot redirect the database or inject SQLite connection options.
+- New mbox archives use mode `0600`; newly created parent directories use
+  `0700` (subject to umask). Existing files and directories retain their modes.
+  To intentionally share an archive, explicitly pre-create it and its parent
+  directories with the desired group permissions. Members of that group can
+  read the plaintext archived mail; review existing archive permissions when
+  upgrading, since Mailvault does not silently tighten them.
 - Filesystem targets honor `create_if_missing: false`: the mbox file, or all
   Maildir directories, must already exist. Maildir publication never replaces
   an existing message. Cooperating mbox writers lock the mailbox while appending

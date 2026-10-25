@@ -72,14 +72,14 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	dir := filepath.Dir(t.path)
 	flags := os.O_RDWR | os.O_APPEND
 	if t.create {
-		if err := os.MkdirAll(dir, 0750); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("create mbox directory: %w", err)
 		}
 		flags |= os.O_CREATE
 	}
 
 	// Open mbox file for appending
-	file, err := os.OpenFile(t.path, flags, 0640)
+	file, err := os.OpenFile(t.path, flags, 0600)
 	if err != nil {
 		return fmt.Errorf("open mbox file: %w", err)
 	}
