@@ -164,3 +164,35 @@ func TestS3BackupReaderAndRepairRetainOriginalObject(t *testing.T) {
 		t.Fatal("repair did not retain the original object and publish exact replacement bytes")
 	}
 }
+
+func TestS3ReadEnforcesActualStreamLimit(t *testing.T) {
+	isolateS3AWS(t)
+	const limit = 64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Flush first to omit Content-Length: the SDK cannot rely on advertised size.
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		count := limit
+		if strings.HasSuffix(r.URL.Path, "large.eml") {
+			count++
+		}
+		_, _ = io.WriteString(w, strings.Repeat("x", count))
+	}))
+	defer server.Close()
+	value, err := NewS3Target(map[string]interface{}{"bucket": "fixture", "region": "us-east-1", "endpoint": server.URL, "max_message_bytes": limit, "credentials_ref": `{"access_key_id":"fixture","secret_access_key":"fixture"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := value.(*S3Target)
+	if err := target.InitializeForRead(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	msg, err := target.ReadBackupMessage(context.Background(), "exact.eml")
+	if err != nil || len(msg.Raw) != limit {
+		t.Fatalf("at-limit read: %v, %v", msg, err)
+	}
+	if _, err := target.ReadBackupMessage(context.Background(), "large.eml"); !errors.Is(err, plugins.ErrMessageTooLarge) {
+		t.Fatalf("stream overflow accepted: %v", err)
+	}
+}

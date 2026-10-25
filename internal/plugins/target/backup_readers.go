@@ -23,7 +23,9 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
-const maxBackupMessageReadBytes = 512 << 20
+// Mbox framing and mboxrd escaping can expand a raw message. Keep this
+// bounded independently of the decoded RFC822 limit.
+func maxMboxRecordBytes(limit int64) int64 { return 2*plugins.MessageLimit(limit) + 128 }
 
 func (t *MaildirTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
 	t.mu.Lock()
@@ -105,7 +107,7 @@ func (t *MaildirTarget) readBackupMessage(ctx context.Context, locator string) (
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	raw, err := readMaildirMessage(file, maxBackupMessageReadBytes)
+	raw, err := readMaildirMessage(file, t.maxMessageBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +166,7 @@ func (t *MaildirTarget) ResolveBackupLocator(locator string) (string, error) {
 }
 
 func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
-	return t.listBackupMessages(ctx, maxBackupMessageReadBytes)
+	return t.listBackupMessages(ctx, maxMboxRecordBytes(t.maxMessageBytes))
 }
 
 func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int64) ([]plugins.BackupMessage, error) {
@@ -235,6 +237,9 @@ func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int6
 		}
 		encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(ctx, file, start, length)
 		if err != nil {
+			return nil, err
+		}
+		if err := plugins.CheckMessageSize(decodedLength, t.maxMessageBytes); err != nil {
 			return nil, err
 		}
 		if !hasSeparatorNewline {
@@ -455,8 +460,11 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 	if offset > info.Size() || length > info.Size()-offset || length > int64(^uint(0)>>1) {
 		return nil, fmt.Errorf("%w: mbox locator exceeds file bounds", plugins.ErrBackupMessageCorrupt)
 	}
-	if length > maxBackupMessageReadBytes {
-		return nil, fmt.Errorf("mbox message exceeds the %d byte verification limit", maxBackupMessageReadBytes)
+	if length > maxMboxRecordBytes(t.maxMessageBytes) {
+		return nil, fmt.Errorf("%w: mbox record exceeds encoded byte limit", plugins.ErrMessageTooLarge)
+	}
+	if err := plugins.CheckMessageSize(rawLength, t.maxMessageBytes); err != nil {
+		return nil, err
 	}
 	data := make([]byte, length)
 	n, err := file.ReadAt(data, offset)
@@ -537,15 +545,14 @@ func (t *S3Target) ReadBackupMessage(ctx context.Context, locator string) (*plug
 		return nil, err
 	}
 	defer func() { _ = object.Body.Close() }()
-	if object.ContentLength != nil && *object.ContentLength > maxBackupMessageReadBytes {
-		return nil, fmt.Errorf("S3 message exceeds the %d byte verification limit", maxBackupMessageReadBytes)
+	if object.ContentLength != nil {
+		if err := plugins.CheckMessageSize(*object.ContentLength, t.maxMessageBytes); err != nil {
+			return nil, err
+		}
 	}
-	raw, err := io.ReadAll(io.LimitReader(object.Body, maxBackupMessageReadBytes+1))
+	raw, err := plugins.ReadMessage(object.Body, t.maxMessageBytes)
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(raw)) > maxBackupMessageReadBytes {
-		return nil, fmt.Errorf("S3 message exceeds the %d byte verification limit", maxBackupMessageReadBytes)
 	}
 	msg := backupMessageFromRaw(raw)
 	if object.Metadata != nil {

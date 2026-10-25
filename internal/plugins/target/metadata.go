@@ -31,7 +31,7 @@ func (t *MaildirTarget) UpdateBackupMetadata(ctx context.Context, entry plugins.
 		return "", err
 	}
 	defer func() { _ = file.Close() }()
-	raw, err := readMaildirMessage(file, maxBackupMessageReadBytes)
+	raw, err := readMaildirMessage(file, t.maxMessageBytes)
 	if err != nil {
 		return "", err
 	}

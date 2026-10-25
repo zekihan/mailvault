@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/zalando/go-keyring"
+	"github.com/zekihan/mailvault/internal/plugins"
+	pluginconfig "github.com/zekihan/mailvault/internal/plugins/config"
 )
 
 // Load reads configuration from file and environment.
@@ -69,6 +71,7 @@ func LoadOAuthSource(path, sourceName string) (SourceConfig, error) {
 func load(path string, resolveAll bool, authSource, authTarget string, skipSourceCredential bool) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("yaml")
+	v.SetDefault("max_message_bytes", plugins.DefaultMaxMessageBytes)
 
 	if path != "" {
 		v.SetConfigFile(path)
@@ -98,6 +101,11 @@ func load(path string, resolveAll bool, authSource, authTarget string, skipSourc
 	if err := applyIndexedEnvironment(&cfg, v); err != nil {
 		return nil, err
 	}
+	limit, err := pluginconfig.ParseMessageLimit(map[string]interface{}{"max_message_bytes": v.Get("max_message_bytes")})
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxMessageBytes = limit
 	applySourceDefaults(&cfg, v)
 	configDir := ""
 	if used := v.ConfigFileUsed(); used != "" {
@@ -155,6 +163,9 @@ func expandNamedCredentialRefsAt(cfg *Config, sourceName, targetName, configDir 
 
 // Validate checks the configuration for correctness.
 func Validate(cfg *Config) error {
+	if err := plugins.ValidateMessageLimit(plugins.MessageLimit(cfg.MaxMessageBytes)); err != nil {
+		return err
+	}
 	if len(cfg.Sources) == 0 {
 		return fmt.Errorf("at least one source is required")
 	}

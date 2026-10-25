@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,14 +179,10 @@ func readMaildirMessage(file *os.File, limit int64) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("maildir locator is not a regular file")
 	}
-	if info.Size() > limit {
-		return nil, fmt.Errorf("maildir message exceeds the %d byte verification limit", limit)
+	if err := plugins.CheckMessageSize(info.Size(), limit); err != nil {
+		return nil, err
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err == nil && int64(len(raw)) > limit {
-		err = fmt.Errorf("maildir message exceeds the %d byte verification limit", limit)
-	}
-	return raw, err
+	return plugins.ReadMessage(file, limit)
 }
 
 func (d *maildirDirectory) entries() ([]os.DirEntry, error) {

@@ -86,6 +86,9 @@ func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plu
 	if len(msg.Raw) == 0 {
 		return errors.New("message is empty")
 	}
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), s.maxMessageBytes); err != nil {
+		return err
+	}
 	var internalDate time.Time
 	if msg.InternalDate != "" {
 		var err error

@@ -212,6 +212,10 @@ func TestWindowsMaildirPublicationRejectsDirectoryReplacement(t *testing.T) {
 		path := filepath.Join(target.path, "new")
 		if err := os.Rename(path, path+"-old"); err != nil {
 			// Denying rename of a pinned directory is also fail-closed behavior.
+			if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) && !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				t.Fatalf("replace fixture directory: %v", err)
+			}
+			t.Logf("Windows denied replacement of the pinned directory: %v", err)
 			return err
 		}
 		windowsJunction(t, path, outside)

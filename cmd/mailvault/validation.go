@@ -83,7 +83,7 @@ func validateConfiguration(contexts ...context.Context) (report validationReport
 		failures = append(failures, wrapped)
 	}
 	for i, sourceConfig := range cfg.Sources {
-		values, failure := config.SourcePluginConfig(sourceConfig)
+		values, failure := config.SourcePluginConfig(sourceConfig, cfg.MaxMessageBytes)
 		if failure != nil {
 			record(&report.Sources[i], "source", failure)
 			continue
@@ -95,11 +95,7 @@ func validateConfiguration(contexts ...context.Context) (report validationReport
 		record(&report.Sources[i], "source", failure)
 	}
 	for i, targetConfig := range cfg.Targets {
-		values := make(map[string]interface{}, len(targetConfig.Config)+1)
-		for key, value := range targetConfig.Config {
-			values[key] = value
-		}
-		values["name"] = targetConfig.Name
+		values := config.TargetPluginConfig(targetConfig, cfg.MaxMessageBytes)
 		target, failure := registry.CreateTarget(targetConfig.Type, values)
 		if failure == nil {
 			failure = errors.Join(target.Initialize(ctx), target.Close())
