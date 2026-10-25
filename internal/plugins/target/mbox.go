@@ -144,8 +144,8 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 		}
 	}
 
-	// Escape body lines using mboxrd: prefix one '>' to each line whose
-	// existing leading '>' run is followed by "From ". Headers remain untouched.
+	// Escape every raw line using mboxrd, including malformed headers: the
+	// reader recognizes "From " separators throughout the record.
 	raw := escapeMboxrd(msg.Raw)
 	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
 		raw = append(raw, '\n')
@@ -177,18 +177,8 @@ func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Messag
 }
 
 func escapeMboxrd(raw []byte) []byte {
-	sep := bytes.Index(raw, []byte("\n\n"))
-	crlf := bytes.Index(raw, []byte("\r\n\r\n"))
-	if crlf >= 0 && (sep < 0 || crlf < sep) {
-		sep = crlf + 4
-	} else if sep >= 0 {
-		sep += 2
-	} else {
-		// Headerless input is a body.
-		sep = 0
-	}
-	out := append([]byte(nil), raw[:sep]...)
-	for pos := sep; pos < len(raw); {
+	var out []byte
+	for pos := 0; pos < len(raw); {
 		end := bytes.IndexByte(raw[pos:], '\n')
 		lineEnd := len(raw)
 		if end >= 0 {
