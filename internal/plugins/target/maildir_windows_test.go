@@ -226,3 +226,30 @@ func TestWindowsMaildirPublicationRejectsDirectoryReplacement(t *testing.T) {
 		t.Fatalf("publication escaped root: %v, %v", entries, err)
 	}
 }
+
+func TestWindowsMaildirSyncFailureRollsBackPublication(t *testing.T) {
+	target := windowsMaildirFixture(t, false)
+	syncFailure := errors.New("synthetic directory sync failure")
+	calls := 0
+	target.syncDir = func(string) error {
+		calls++
+		if calls == 1 {
+			return syncFailure
+		}
+		return nil
+	}
+	locator, err := target.WriteBackupMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")})
+	if !errors.Is(err, syncFailure) || locator != "" || target.LastBackupLocator() != "" || calls != 2 {
+		t.Fatalf("acknowledged unsynced publication: calls=%d locator=%q err=%v", calls, locator, err)
+	}
+	for _, name := range []string{"new", "tmp"} {
+		entries, err := os.ReadDir(filepath.Join(target.path, name))
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("failed publication left %s entries: %v, %v", name, entries, err)
+		}
+	}
+	target.syncDir = nil
+	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("retry fixture")}); err != nil {
+		t.Fatal(err)
+	}
+}

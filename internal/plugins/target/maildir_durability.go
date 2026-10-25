@@ -22,14 +22,6 @@ func syncMaildirDirectory(path string) error {
 	return syncOpenedMaildirDirectory(directory)
 }
 
-func syncOpenedMaildirDirectory(directory *maildirDirectory) error {
-	file, err := directory.root.Open(".")
-	if err != nil {
-		return err
-	}
-	return errors.Join(file.Sync(), file.Close())
-}
-
 func (t *MaildirTarget) syncOpenedDirectory(directory *maildirDirectory) error {
 	if t.syncDir != nil {
 		if err := t.syncDir(directory.path); err != nil {

@@ -57,6 +57,7 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	mbox := target.(*MboxTarget)
+	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +184,7 @@ func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testin
 		t.Fatal(err)
 	}
 	mbox := target.(*MboxTarget)
+	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
