@@ -294,3 +294,23 @@ func TestS3ListingSucceedsExactlyAtBudgets(t *testing.T) {
 		t.Fatalf("exact boundary: entries=%v, error=%v", entries, err)
 	}
 }
+
+func TestS3ListingBoundsTotalIOAcrossEmptyPages(t *testing.T) {
+	var requests atomic.Int32
+	target := newListingTestS3(t, func(w http.ResponseWriter, r *http.Request) {
+		page := requests.Add(1)
+		select {
+		case <-time.After(35 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprintf(w, `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>page%d</NextContinuationToken></ListBucketResult>`, page)
+	}, backupListingLimits{})
+	target.operationTimeout = 80 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err := target.WalkBackupMessages(ctx, func(plugins.BackupMessage) error { t.Fatal("empty page produced a message"); return nil })
+	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || requests.Load() > 3 {
+		t.Fatalf("listing reset its I/O timeout: error=%v, parent=%v, requests=%d", err, ctx.Err(), requests.Load())
+	}
+}

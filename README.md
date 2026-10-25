@@ -234,9 +234,9 @@ S3 requests pages of 128 objects and finishes consuming each page before request
 the next. A fixed 2 MiB XML response cap also bounds endpoints that ignore the page
 size; oversized pages or keys fail closed. Ordinary transient S3 failures retain
 SDK retries, while listing budget failures are not retried. The configured
-`operation_timeout` applies separately to each page request and its decoding;
-consumer processing time uses the caller's context. Enumeration order is
-backend-specific. Verification and repair retain hash/locator indexes bounded by
+`operation_timeout` bounds total listing I/O across all page requests, including
+SDK retries and decoding; consumer processing time uses the caller's context.
+Enumeration order is backend-specific. Verification and repair retain hash/locator indexes bounded by
 the listing budgets, while message bodies are processed one at a time. Restore
 retains trusted manifest metadata and hash deduplication indexes and spools its
 normalized plan (metadata only) to a private `0600` file in the system temporary

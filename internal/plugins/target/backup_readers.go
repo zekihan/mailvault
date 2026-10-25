@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -547,20 +548,29 @@ func (t *S3Target) WalkBackupMessages(ctx context.Context, visit func(plugins.Ba
 		return fmt.Errorf("S3 target not initialized")
 	}
 	budget := t.listingLimits.budget()
+	remaining := t.operationTimeout
+	if remaining <= 0 {
+		remaining = defaultS3OperationTimeout
+	}
 	var token *string
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Consumer work can take longer than one S3 operation. Bound the
-		// request and its decoding, without timing out downstream callbacks.
-		pageCtx, cancel := t.operationContext(ctx)
+		// Preserve a total listing I/O budget, even for endless empty pages.
+		// Consumer processing time does not consume this network budget.
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		started := time.Now()
+		pageCtx, cancel := context.WithTimeout(ctx, remaining)
 		page, err := client.ListObjectsV2(pageCtx, &s3.ListObjectsV2Input{Bucket: aws.String(t.bucket), Prefix: aws.String(prefix), ContinuationToken: token, MaxKeys: aws.Int32(s3ListingPageSize)}, func(options *s3.Options) {
 			options.HTTPClient = listingHTTPClient{next: options.HTTPClient}
 			// A rejected response must not retry the same oversized page.
 			options.Retryer = listingRetryer{Retryer: options.Retryer}
 		})
 		cancel()
+		remaining -= time.Since(started)
 		if err != nil {
 			return err
 		}
