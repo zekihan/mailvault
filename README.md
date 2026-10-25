@@ -253,6 +253,16 @@ suffix, so set `preserve_flags: false` on Windows. Switching preservation modes
 creates a separate receipt scope and can write new copies for the new layout;
 existing backup files are retained.
 
+Maildir access pins directory handles and rejects symlinks in the configured root,
+its ancestors, `tmp/`, `new/`, `cur/`, and preserved-folder components. Configure a
+physical path (for example `/private/tmp/...` instead of macOS's `/tmp/...` alias).
+Replacing a directory during delivery fails the write; publication, rollback, and
+sync stay on the opened directories. Backup reads check and read one regular-file
+descriptor with the configured message byte limit, including when the file grows
+during the read.
+These controls address directory-entry replacement by another local writer;
+manifest checksums remain necessary to detect modifications to message contents.
+
 ### S3 operation limits
 
 S3 initialization and each message upload have a five-minute total timeout,

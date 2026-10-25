@@ -28,90 +28,100 @@ import (
 func maxMboxRecordBytes(limit int64) int64 { return 2*plugins.MessageLimit(limit) + 128 }
 
 func (t *MaildirTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	var result []plugins.BackupMessage
-	if _, err := os.Stat(t.path); os.IsNotExist(err) {
+	root, err := t.backupRoot()
+	if errors.Is(err, os.ErrNotExist) {
 		return result, nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return nil, err
 	}
-	err := filepath.WalkDir(t.path, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	defer func() { _ = root.Close() }()
+	var walk func(*maildirDirectory, string) error
+	walk = func(directory *maildirDirectory, prefix string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			if entry.Name() == "tmp" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		parent := filepath.Base(filepath.Dir(path))
-		if parent != "cur" && parent != "new" {
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(t.path, path)
+		entries, err := directory.entries()
 		if err != nil {
 			return err
 		}
-		result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: filepath.ToSlash(rel)})
+		for _, entry := range entries {
+			rel := filepath.Join(prefix, entry.Name())
+			if entry.IsDir() {
+				if entry.Name() == "tmp" {
+					continue
+				}
+				child, err := directory.child(entry.Name(), false, nil)
+				if err != nil {
+					return err
+				}
+				err = walk(child, rel)
+				_ = child.Close()
+				if err != nil {
+					return err
+				}
+			} else if entry.Type().IsRegular() && (filepath.Base(directory.path) == "cur" || filepath.Base(directory.path) == "new") {
+				result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: filepath.ToSlash(rel)})
+			}
+		}
 		return nil
-	})
+	}
+	err = walk(root, "")
+	if err == nil {
+		err = root.validate()
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Locator < result[j].Locator })
 	return result, err
 }
 
+func (t *MaildirTarget) backupRoot() (*maildirDirectory, error) {
+	if t.root != nil {
+		if err := t.root.validate(); err != nil {
+			return nil, err
+		}
+		return t.root.walk(".", false, nil)
+	}
+	return openMaildirPath(t.path, false, nil)
+}
+
 func (t *MaildirTarget) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.readBackupMessage(ctx, locator)
+}
+
+func (t *MaildirTarget) readBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	clean := filepath.Clean(filepath.FromSlash(locator))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("invalid maildir locator")
-	}
-	path, err := t.ResolveBackupLocator(locator)
+	root, err := t.backupRoot()
 	if err != nil {
 		return nil, err
 	}
-	rootResolved, err := filepath.EvalSymlinks(t.path)
-	if err != nil {
-		return nil, err
-	}
-	pathResolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, err
-	}
-	if pathResolved != rootResolved && !strings.HasPrefix(pathResolved, rootResolved+string(filepath.Separator)) {
-		return nil, fmt.Errorf("maildir locator escapes target root")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %v", plugins.ErrBackupMessageMissing, err)
-		}
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("maildir locator is not a regular file")
-	}
-	if err := plugins.CheckMessageSize(info.Size(), t.maxMessageBytes); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(path)
+	defer func() { _ = root.Close() }()
+	file, relative, err := root.resolveMessage(locator)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	raw, err := plugins.ReadMessage(file, t.maxMessageBytes)
+	raw, err := readMaildirMessage(file, t.maxMessageBytes)
 	if err != nil {
 		return nil, err
 	}
+	if err := root.validateMessage(relative, file); err != nil {
+		return nil, err
+	}
+	if err := root.validate(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	msg := backupMessageFromRaw(raw)
-	msg.Folder = maildirFolder(t.path, path)
+	msg.Folder = maildirFolder(".", relative)
 	return msg, nil
 }
 
@@ -140,44 +150,19 @@ func maildirFolder(root, path string) string {
 
 // ResolveBackupLocator follows Maildir's allowed new/cur move and flag suffix rename.
 func (t *MaildirTarget) ResolveBackupLocator(locator string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(locator))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid maildir locator")
-	}
-	path := filepath.Join(t.path, clean)
-	if _, err := os.Lstat(path); err == nil {
-		return path, nil
-	} else if !os.IsNotExist(err) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	root, err := t.backupRoot()
+	if err != nil {
 		return "", err
 	}
-	parent := filepath.Dir(filepath.Dir(path))
-	base := filepath.Base(path)
-	if i := strings.Index(base, ":2,"); i >= 0 {
-		base = base[:i]
+	defer func() { _ = root.Close() }()
+	file, relative, err := root.resolveMessage(locator)
+	if err != nil {
+		return "", err
 	}
-	var matches []string
-	for _, subdir := range []string{"cur", "new"} {
-		dir := filepath.Join(parent, subdir)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", err
-		}
-		for _, entry := range entries {
-			if entry.Type().IsRegular() && (entry.Name() == base || strings.HasPrefix(entry.Name(), base+":2,")) {
-				matches = append(matches, filepath.Join(dir, entry.Name()))
-			}
-		}
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("%w: %s", plugins.ErrBackupMessageMissing, locator)
-	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("maildir locator %q has multiple matching files", locator)
-	}
-	return matches[0], nil
+	_ = file.Close()
+	return filepath.Join(t.path, relative), nil
 }
 
 func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {

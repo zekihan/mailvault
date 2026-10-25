@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,7 +33,11 @@ func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
 	}
 	old := filepath.Join(root, filepath.FromSlash(locator))
 	newDir := filepath.Join(root, "cur")
-	newPath := filepath.Join(newDir, filepath.Base(old)+":2,S")
+	newName := filepath.Base(old)
+	if runtime.GOOS != "windows" {
+		newName += ":2,S"
+	}
+	newPath := filepath.Join(newDir, newName)
 	if err := os.Rename(old, newPath); err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +57,7 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	mbox := target.(*MboxTarget)
+	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +184,7 @@ func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testin
 		t.Fatal(err)
 	}
 	mbox := target.(*MboxTarget)
+	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}

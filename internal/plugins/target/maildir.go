@@ -25,8 +25,9 @@ type MaildirTarget struct {
 	preserveFolders bool
 	preserveFlags   bool
 	mu              sync.Mutex
-	removeTemp      func(string) error
-	link            func(string, string) error
+	root            *maildirDirectory
+	removeTemp      func(*maildirDirectory, string) error
+	link            func(*maildirDirectory, string, *maildirDirectory, string) error
 	syncDir         func(string) error
 	lastLocator     string
 }
@@ -67,8 +68,6 @@ func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) 
 		create:          create,
 		preserveFolders: preserveFolders,
 		preserveFlags:   preserveFlags,
-		removeTemp:      os.Remove,
-		link:            os.Link,
 	}, nil
 }
 
@@ -93,32 +92,30 @@ func (t *MaildirTarget) Initialize(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Create only the requested structure, tracking directories this call owns.
-	dirs := []string{t.path, filepath.Join(t.path, "cur"), filepath.Join(t.path, "new"), filepath.Join(t.path, "tmp")}
-	var created []string
-	if t.create {
-		for _, dir := range dirs {
-			owned, err := mkdirMaildirPath(dir)
-			created = append(created, owned...)
-			if err != nil {
-				return errors.Join(fmt.Errorf("create maildir %q: %w", dir, err), removeOwnedMaildirDirs(created))
-			}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if t.root != nil {
+		return t.root.validate()
+	}
+	var created []maildirCreation
+	root, err := openMaildirPath(t.path, t.create, &created)
+	if err == nil {
+		err = t.ensureMaildir(root, &created)
+	}
+	if err == nil {
+		err = t.syncStructure(created)
+	}
+	if err != nil {
+		if root != nil {
+			_ = root.Close()
 		}
+		err = errors.Join(err, rollbackMaildirStructure(created))
 	} else {
-		for _, dir := range dirs {
-			info, err := os.Stat(dir)
-			if err != nil {
-				return fmt.Errorf("existing maildir %q: %w", dir, err)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("maildir path %q is not a directory", dir)
-			}
-		}
+		t.root = root
 	}
-	if err := t.syncStructure(created); err != nil {
-		return errors.Join(err, removeOwnedMaildirDirs(created))
-	}
-	return nil
+	closeMaildirCreations(created)
+	return err
 }
 
 func (t *MaildirTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
@@ -146,39 +143,65 @@ func (t *MaildirTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Mes
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	removeTemp, link := t.removeTemp, t.link
-	if removeTemp == nil {
-		removeTemp = os.Remove
+	if t.root == nil {
+		return "", errors.New("maildir target not initialized")
 	}
-	if link == nil {
-		link = os.Link
+	if err := t.root.validate(); err != nil {
+		return "", err
 	}
 	messagePath, err := t.messagePath(msg.Folder)
 	if err != nil {
 		return "", err
 	}
-	if messagePath != t.path {
-		if err := t.ensureMaildir(messagePath); err != nil {
-			return "", fmt.Errorf("create folder maildir: %w", err)
-		}
+	rel, err := filepath.Rel(t.path, messagePath)
+	if err != nil {
+		return "", err
 	}
+	var created []maildirCreation
+	directory, err := t.root.walk(rel, t.create, &created)
+	if err == nil {
+		err = t.ensureMaildir(directory, &created)
+	}
+	if err == nil {
+		err = t.syncStructure(created)
+	}
+	if err != nil {
+		if directory != nil {
+			_ = directory.Close()
+		}
+		err = errors.Join(err, rollbackMaildirStructure(created))
+		closeMaildirCreations(created)
+		return "", err
+	}
+	closeMaildirCreations(created)
+	defer func() { _ = directory.Close() }()
+	tmp, err := directory.child("tmp", false, nil)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tmp.Close() }()
 	flagSuffix := t.maildirFlags(msg.Flags)
 	newDirName := "new"
 	if flagSuffix != "" {
 		newDirName = "cur"
 	}
-	newDir := filepath.Join(messagePath, newDirName)
-	// CreateTemp reserves the name exclusively, even across processes and when
-	// the clock does not advance. Keep mail private with its default 0600 mode.
-	file, err := os.CreateTemp(filepath.Join(messagePath, "tmp"), "mailvault-*")
+	published, err := directory.child(newDirName, false, nil)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = published.Close() }()
+	file, tmpName, err := tmp.createTemp()
 	if err != nil {
 		return "", fmt.Errorf("create tmp message: %w", err)
 	}
-	tmpPath := file.Name()
 	defer func() {
-		cleanupErr := removeTemp(tmpPath)
+		remove := t.removeTemp
+		if remove == nil {
+			remove = removeMaildirFile
+		}
+		cleanupErr := remove(tmp, tmpName)
 		if cleanupErr != nil && err == nil {
-			fmt.Fprintf(os.Stderr, "maildir: published message but could not remove temporary file %q: %v\n", tmpPath, cleanupErr)
+			fmt.Fprintf(os.Stderr, "maildir: published message but could not remove temporary file %q: %v\n", tmpName, cleanupErr)
 		} else {
 			err = errors.Join(err, cleanupErr)
 		}
@@ -187,25 +210,39 @@ func (t *MaildirTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Mes
 	if writeErr == nil {
 		writeErr = file.Sync()
 	}
-	if err := errors.Join(writeErr, file.Close()); err != nil {
+	expected, statErr := file.Stat()
+	if err := errors.Join(writeErr, statErr, file.Close()); err != nil {
 		return "", fmt.Errorf("write tmp message: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	// A hard link atomically publishes the complete message without replacing
-	// an existing new/ entry; Rename would silently overwrite on collision.
-	newPath := filepath.Join(newDir, filepath.Base(tmpPath)+flagSuffix)
-	if err := link(tmpPath, newPath); err != nil {
-		return "", fmt.Errorf("publish maildir message: %w", err)
+	// Publication uses the pinned tmp and destination directories. Replacing a
+	// path entry cannot redirect the hard link or its durability operations.
+	link := t.link
+	if link == nil {
+		link = linkMaildirFile
 	}
-	if syncErr := t.syncDirectory(newDir); syncErr != nil {
-		return "", errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(newPath, newDir))
-	}
-	locator, err = filepath.Rel(t.path, newPath)
-	if err != nil {
+	newName := tmpName + flagSuffix
+	if err := validateMaildirDirectories(t.root, directory, tmp, published); err != nil {
 		return "", err
 	}
+	if err := link(tmp, tmpName, published, newName); err != nil {
+		return "", fmt.Errorf("publish maildir message: %w", err)
+	}
+	if err := checkMaildirPublication(published, newName, expected); err != nil {
+		return "", errors.Join(err, t.rollbackPublication(published, newName))
+	}
+	if err := validateMaildirDirectories(t.root, directory, tmp, published); err != nil {
+		return "", errors.Join(err, t.rollbackPublication(published, newName))
+	}
+	if syncErr := t.syncOpenedDirectory(published); syncErr != nil {
+		return "", errors.Join(fmt.Errorf("sync published maildir message: %w", syncErr), t.rollbackPublication(published, newName))
+	}
+	if err := validateMaildirDirectories(t.root, directory, tmp, published); err != nil {
+		return "", errors.Join(err, t.rollbackPublication(published, newName))
+	}
+	locator = filepath.Join(rel, newDirName, newName)
 	t.lastLocator = filepath.ToSlash(locator)
 	return locator, nil
 }
@@ -246,30 +283,13 @@ func (t *MaildirTarget) messagePath(folder string) (string, error) {
 	return path, nil
 }
 
-func (t *MaildirTarget) ensureMaildir(path string) error {
-	dirs := []string{path, filepath.Join(path, "cur"), filepath.Join(path, "new"), filepath.Join(path, "tmp")}
-	if !t.create {
-		for _, dir := range dirs {
-			info, err := os.Stat(dir)
-			if err != nil {
-				return fmt.Errorf("existing maildir %q: %w", dir, err)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("maildir path %q is not a directory", dir)
-			}
-		}
-		return nil
-	}
-	var created []string
-	for _, dir := range dirs {
-		owned, err := mkdirMaildirPath(dir)
-		created = append(created, owned...)
+func (t *MaildirTarget) ensureMaildir(directory *maildirDirectory, created *[]maildirCreation) error {
+	for _, name := range []string{"cur", "new", "tmp"} {
+		child, err := directory.child(name, t.create, created)
 		if err != nil {
-			return errors.Join(fmt.Errorf("create maildir %q: %w", dir, err), removeOwnedMaildirDirs(created))
+			return fmt.Errorf("maildir directory %q: %w", name, err)
 		}
-	}
-	if err := t.syncStructure(created); err != nil {
-		return errors.Join(err, removeOwnedMaildirDirs(created))
+		_ = child.Close()
 	}
 	return nil
 }
@@ -310,6 +330,12 @@ func (t *MaildirTarget) maildirFlags(flags []string) string {
 }
 
 func (t *MaildirTarget) Close() error {
-	// Nothing to close for Maildir
-	return nil
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.root == nil {
+		return nil
+	}
+	err := t.root.Close()
+	t.root = nil
+	return err
 }
