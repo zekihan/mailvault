@@ -56,6 +56,21 @@ bounded batches and channels. Compact sets of delivered UIDs are excluded by the
 server search, preserving holes from failures and date filters. If the exclusion
 would exceed 4 KiB, the client filters the search result locally instead.
 
+Mail server listings have per-operation limits: `max_listing_items` defaults to
+1,000,000 entries and `max_listing_bytes` defaults to 67,108,864 bytes (64 MiB).
+Set these on an IMAP or POP3 source to accommodate larger trusted accounts;
+omitted or zero values use the defaults, and negative values are rejected.
+The item limit applies to all IMAP LIST entries (including non-selectable parents),
+IMAP SEARCH candidate UIDs per folder, and the POP3 STAT count and UIDL rows.
+The byte limit bounds each LIST, SEARCH, STAT or UIDL response, including protocol
+framing; IMAP over TLS also counts TLS framing. Small fixed protocol/TLS read
+buffers can be retained across commands. POP3 UIDLs must contain unique message
+numbers and unique visible ASCII identifiers of at most 70 characters.
+An invalid or oversized listing closes the session and fails the operation without
+using partial results. Restore destination checks use the same limits before
+creating or appending to a mailbox. Large accounts that exceed a limit need an
+explicit increase; listings are not silently truncated or paginated.
+
 Downloads retry transient connection failures up to two times with a short
 backoff. Stable IMAP UIDs and POP3 UIDLs already streamed in the current run are
 excluded on reconnect. POP3 without UIDL does not retry after streaming a message,
