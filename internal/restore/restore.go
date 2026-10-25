@@ -1,11 +1,15 @@
 package restore
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -60,23 +64,24 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 	if !options.DryRun && (appender == nil || receipts == nil) {
 		return Result{}, errors.New("appender and restore receipt store are required")
 	}
-	entries, err := reader.ListBackupMessages(ctx)
+	// Complete preflight before touching the destination. Spool normalized
+	// metadata privately on disk instead of retaining every locator in memory.
+	spool, err := os.CreateTemp("", "mailvault-restore-*.json")
 	if err != nil {
-		return Result{}, fmt.Errorf("list backup messages: %w", err)
+		return Result{}, fmt.Errorf("create restore plan: %w", err)
 	}
-	entries = append([]plugins.BackupMessage(nil), entries...)
-	result := Result{Messages: len(entries)}
-	if options.DryRun {
-		seen := make(map[string]bool)
-		for i, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return result, err
-			}
-			_, normalized, unverified, err := readAndValidate(ctx, reader, entry, true)
-			if err != nil {
-				return result, err
-			}
-			entries[i] = normalized
+	defer func() { _ = spool.Close(); _ = os.Remove(spool.Name()) }()
+	writer := bufio.NewWriter(spool)
+	encoder := json.NewEncoder(writer)
+	result := Result{}
+	seen := make(map[string]bool)
+	err = plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
+		result.Messages++
+		_, normalized, unverified, err := readAndValidate(ctx, reader, entry, options.DryRun || options.AllowUnverified)
+		if err != nil {
+			return err
+		}
+		if options.DryRun {
 			if !seen[normalized.RawSHA256] {
 				result.Planned++
 				if unverified {
@@ -84,12 +89,26 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 				}
 				seen[normalized.RawSHA256] = true
 			}
+			return nil
 		}
+		if unverified {
+			result.Unverified++
+		}
+		return encoder.Encode(normalized)
+	})
+	if err != nil {
+		return result, fmt.Errorf("preflight backup messages: %w", err)
+	}
+	if err := writer.Flush(); err != nil {
+		return result, fmt.Errorf("write restore plan: %w", err)
+	}
+	if options.DryRun || result.Messages == 0 {
 		return result, nil
 	}
-	if len(entries) == 0 {
-		return result, nil
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return result, err
 	}
+	decoder := json.NewDecoder(bufio.NewReader(spool))
 	pending, err := receipts.HasPendingRestore(ctx, options.DestinationSource, options.DestinationFolder, options.BackupTarget)
 	if err != nil {
 		return result, fmt.Errorf("check pending restore: %w", err)
@@ -100,19 +119,6 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 			return result, fmt.Errorf("list uncertain restore messages: %w", err)
 		}
 		return result, fmt.Errorf("prior APPEND outcome is uncertain for %s; inspect the destination, then pass the exact raw locator (without the quoted display marks or alias annotation) to `mailvault restore resolve --locator` with --action mark-restored or retry", strings.Join(locators, ", "))
-	}
-	for i, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		_, normalized, unverified, err := readAndValidate(ctx, reader, entry, options.AllowUnverified)
-		if err != nil {
-			return result, err
-		}
-		entries[i] = normalized
-		if unverified {
-			result.Unverified++
-		}
 	}
 	resuming, expectedUIDValidity, err := receipts.BeginRestoreJob(ctx, options.DestinationSource, options.DestinationFolder, options.BackupTarget)
 	if err != nil {
@@ -140,7 +146,13 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 			return result, fmt.Errorf("activate restore job: %w", err)
 		}
 	}
-	for _, entry := range entries {
+	for {
+		var entry plugins.BackupMessage
+		if err := decoder.Decode(&entry); err == io.EOF {
+			break
+		} else if err != nil {
+			return result, fmt.Errorf("read restore plan: %w", err)
+		}
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}

@@ -28,7 +28,7 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Sources: []config.SourceConfig{{Name: "account-a", Type: "fixture", Folders: []string{"INBOX"}}, {Name: "account-b", Type: "fixture", Folders: []string{"INBOX"}}},
-		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}},
+		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root, "max_listing_entries": 64, "max_listing_locator_bytes": 4096}}},
 		Pairs:   []config.PairConfig{{Source: "account-a", Targets: []string{"local"}}, {Source: "account-b", Targets: []string{"local"}}},
 	}
 	registry := plugins.NewRegistry()
@@ -63,6 +63,11 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	}
 	originalLocator := entries[0].Locator
 	original := filepath.Join(root, filepath.FromSlash(originalLocator))
+	moved := filepath.Join(root, "cur", filepath.Base(original))
+	if err := os.Rename(original, moved); err != nil {
+		t.Fatal(err)
+	}
+	original = moved
 	if err := os.WriteFile(original, []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}

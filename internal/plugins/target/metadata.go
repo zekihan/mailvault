@@ -26,7 +26,7 @@ func (t *MaildirTarget) UpdateBackupMetadata(ctx context.Context, entry plugins.
 		return "", err
 	}
 	defer func() { _ = root.Close() }()
-	file, relative, err := root.resolveMessage(entry.Locator)
+	file, relative, err := root.resolveMessageBounded(ctx, entry.Locator, t.listingLimits)
 	if err != nil {
 		return "", err
 	}

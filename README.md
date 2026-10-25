@@ -277,6 +277,37 @@ metadata containing their hex digests until the budget is met. These digest
 fields cannot reconstruct the original oversized values; raw RFC822 message
 bytes and stable object keys are unaffected.
 
+### Backup listing limits
+
+Backup verification, repair scans, and restore preflight enumerate targets
+incrementally. Each target's `config` accepts `max_listing_entries` (default
+1,000,000) and `max_listing_locator_bytes` (default 67,108,864 bytes, or 64 MiB).
+Omitted values and zero select these bounded defaults; negative, fractional, or
+out-of-range values are rejected. Set explicit larger positive integers for
+larger archives after sizing available memory and temporary disk space. Exceeding
+either budget fails the operation with an error; entries are never silently
+truncated. Maildir counts all traversed directory entries and their relative path
+bytes, including directories and ignored files; `tmp` contents are skipped.
+Traversal and renamed-message searches use bounded streams under pinned directory
+handles. Replacing a directory during enumeration fails the operation.
+Mbox and S3 count message records/object keys and their locator bytes.
+
+S3 requests pages of 128 objects and finishes consuming each page before requesting
+the next. A fixed 2 MiB XML response cap also bounds endpoints that ignore the page
+size; oversized pages or keys fail closed. Ordinary transient S3 failures retain
+SDK retries, while listing budget failures are not retried. The configured
+`operation_timeout` bounds total listing I/O across all page requests, including
+SDK retries and decoding; consumer processing time uses the caller's context.
+Enumeration order is backend-specific. Verification and repair retain hash/locator indexes bounded by
+the listing budgets, while message bodies are processed one at a time. Restore
+retains trusted manifest metadata and hash deduplication indexes and spools its
+normalized plan (metadata only) to a private `0600` file in the system temporary
+directory. It completes preflight before creating the destination mailbox, then
+re-reads and re-verifies each message before APPEND. Temporary plans are removed
+on normal return and errors; an abrupt process termination can leave a plan for
+operator review. Trusted state database queries remain outside the target listing
+budgets.
+
 ### S3 credentials
 
 Omit `credentials_ref` to use the standard AWS credential chain (environment,

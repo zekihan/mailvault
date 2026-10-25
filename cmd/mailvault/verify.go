@@ -88,43 +88,49 @@ func verifyTarget(ctx context.Context, targetName string, reader plugins.TargetB
 
 func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget string, reader plugins.TargetBackupReader) (report verificationReport, runErr error) {
 	report = verificationReport{Target: targetName}
-	entries, err := reader.ListBackupMessages(ctx)
-	if err != nil {
-		return report, fmt.Errorf("list target messages: %w", err)
-	}
-	report.Scanned = len(entries)
-	byHash := make(map[string][]string)
+	// Retain bounded reconciliation indexes, while reading each message before
+	// advancing enumeration. Mbox hashes always come from current record extents.
+	var locators []string
+	byHash := make(map[string]string)
 	physicalHashes, physicalErrors := make(map[string]string), make(map[string]error)
 	physicalLocators, physicalCounts := make(map[string]string), make(map[string]int)
 	physicalUnpaddedHashes := make(map[string]string)
 	matcher, matchStructure := reader.(interface{ BackupLocatorsEquivalent(string, string) bool })
-	for _, entry := range entries {
+	err := plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
 		canonical := canonicalBackupLocator(reader, entry.Locator)
+		locators = append(locators, canonical)
+		report.Scanned++
 		physicalCounts[canonical]++
 		if physicalCounts[canonical] > 1 {
 			physicalErrors[canonical] = plugins.ErrBackupMessageCorrupt
 			delete(physicalHashes, canonical)
-			continue
+			return nil
 		}
 		physicalLocators[canonical] = entry.Locator
 		msg, readErr := reader.ReadBackupMessage(ctx, entry.Locator)
 		if readErr != nil {
 			if errors.Is(readErr, plugins.ErrBackupMessageMissing) || errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
 				physicalErrors[canonical] = readErr
-				continue
+				return nil
 			}
-			return report, fmt.Errorf("read target message %q: %w", entry.Locator, readErr)
+			return fmt.Errorf("read target message %q: %w", entry.Locator, readErr)
 		}
-		hash := dedup.ComputeContentHash(msg.Raw)
-		physicalHashes[canonical] = hash
+		physicalHashes[canonical] = dedup.ComputeContentHash(msg.Raw)
 		if matchStructure && len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] == '\n' {
 			physicalUnpaddedHashes[canonical] = dedup.ComputeContentHash(msg.Raw[:len(msg.Raw)-1])
 		}
+		return nil
+	})
+	if err != nil {
+		return report, fmt.Errorf("list target messages: %w", err)
 	}
-	for _, entry := range entries {
-		canonical := canonicalBackupLocator(reader, entry.Locator)
+	// Build legacy matching only after enumeration: duplicate canonical
+	// locations must not leave a previously indexed hash eligible for recovery.
+	for _, canonical := range locators {
 		if hash, ok := physicalHashes[canonical]; ok {
-			byHash[hash] = append(byHash[hash], canonical)
+			if previous := byHash[hash]; previous == "" || canonical < previous {
+				byHash[hash] = canonical
+			}
 		}
 	}
 	store, err := openReadOnlyState()
@@ -132,8 +138,7 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		if !errors.Is(err, os.ErrNotExist) {
 			return report, fmt.Errorf("open state database: %w", err)
 		}
-		for _, entry := range entries {
-			canonical := canonicalBackupLocator(reader, entry.Locator)
+		for _, canonical := range locators {
 			if physicalErrors[canonical] != nil {
 				if errors.Is(physicalErrors[canonical], plugins.ErrBackupMessageCorrupt) {
 					report.Corrupt++
@@ -224,8 +229,7 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			report.Unverifiable++
 			continue
 		}
-		if locators := byHash[item.RawSHA256]; len(locators) > 0 {
-			locator := locators[0]
+		if locator := byHash[item.RawSHA256]; locator != "" {
 			if !known[locator] {
 				legacyVerified[locator] = true
 			}
@@ -238,8 +242,7 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		report.Verified++
 		_ = locator
 	}
-	for _, entry := range entries {
-		locator := canonicalBackupLocator(reader, entry.Locator)
+	for _, locator := range locators {
 		isSuperseded := canonicalSuperseded[locator]
 		if !known[locator] && !isSuperseded && physicalErrors[locator] == nil {
 			report.Unverifiable++

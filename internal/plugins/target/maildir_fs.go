@@ -1,9 +1,11 @@
 package target
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,18 +187,69 @@ func readMaildirMessage(file *os.File, limit int64) ([]byte, error) {
 	return plugins.ReadMessage(file, limit)
 }
 
-func (d *maildirDirectory) entries() ([]os.DirEntry, error) {
+// walkEntries uses an independent directory stream under the pinned handle,
+// retaining at most one batch. The budget also charges ignored entries and paths.
+func (d *maildirDirectory) walkEntries(ctx context.Context, budget *backupListingBudget, prefix string, visit func(os.DirEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := d.validate(); err != nil {
+		return err
+	}
 	file, err := d.root.Open(".")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = file.Close() }()
-	return file.ReadDir(-1)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, readErr := file.ReadDir(backupDirectoryBatchSize)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := d.validate(); err != nil {
+				return err
+			}
+			if err := budget.add(filepath.ToSlash(filepath.Join(prefix, entry.Name()))); err != nil {
+				return err
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+			// A callback may mutate or rename directories. Do not acknowledge
+			// the batch or emit another entry if the named identity changed.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := d.validate(); err != nil {
+				return err
+			}
+		}
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		if readErr == io.EOF {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return d.validate()
+		}
+	}
 }
 
 // resolveMessage preserves Maildir's new/cur moves and flag renames, returning
 // the descriptor that was checked rather than a pathname to reopen later.
 func (d *maildirDirectory) resolveMessage(locator string) (*os.File, string, error) {
+	return d.resolveMessageBounded(context.Background(), locator, backupListingLimits{})
+}
+
+func (d *maildirDirectory) resolveMessageBounded(ctx context.Context, locator string, limits backupListingLimits) (*os.File, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	clean := filepath.Clean(filepath.FromSlash(locator))
 	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return nil, "", errors.New("invalid maildir locator")
@@ -205,9 +258,18 @@ func (d *maildirDirectory) resolveMessage(locator string) (*os.File, string, err
 	directory, err := d.walk(parent, false, nil)
 	if err == nil {
 		file, openErr := directory.openMessage(filepath.Base(clean))
+		if openErr == nil {
+			openErr = validateMaildirDirectories(d, directory)
+		}
+		if openErr == nil {
+			openErr = ctx.Err()
+		}
 		_ = directory.Close()
 		if openErr == nil {
 			return file, clean, nil
+		}
+		if file != nil {
+			_ = file.Close()
 		}
 		err = openErr
 	}
@@ -218,38 +280,31 @@ func (d *maildirDirectory) resolveMessage(locator string) (*os.File, string, err
 	folder := filepath.Dir(parent)
 	var found *os.File
 	var relative string
+	budget := limits.budget()
 	for _, subdir := range []string{"cur", "new"} {
 		directory, err := d.walk(filepath.Join(folder, subdir), false, nil)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil {
-			if found != nil {
-				_ = found.Close()
-			}
-			return nil, "", err
-		}
-		entries, err := directory.entries()
 		if err == nil {
-			for _, entry := range entries {
+			err = directory.walkEntries(ctx, budget, filepath.Join(folder, subdir), func(entry os.DirEntry) error {
 				if !entry.Type().IsRegular() || (entry.Name() != base && !strings.HasPrefix(entry.Name(), base+":2,")) {
-					continue
+					return nil
 				}
-				file, openErr := directory.openMessage(entry.Name())
-				if openErr != nil {
-					err = openErr
-					break
+				file, err := directory.openMessage(entry.Name())
+				if err != nil {
+					return err
 				}
 				if found != nil {
 					_ = file.Close()
-					err = fmt.Errorf("maildir locator %q has multiple matching files", locator)
-					break
+					return fmt.Errorf("maildir locator %q has multiple matching files", locator)
 				}
 				found = file
 				relative = filepath.Join(folder, subdir, entry.Name())
-			}
+				return nil
+			})
+			_ = directory.Close()
 		}
-		_ = directory.Close()
 		if err != nil {
 			if found != nil {
 				_ = found.Close()
@@ -257,8 +312,26 @@ func (d *maildirDirectory) resolveMessage(locator string) (*os.File, string, err
 			return nil, "", err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		if found != nil {
+			_ = found.Close()
+		}
+		return nil, "", err
+	}
 	if found == nil {
 		return nil, "", fmt.Errorf("%w: %s", plugins.ErrBackupMessageMissing, locator)
+	}
+	if err := d.validateMessage(relative, found); err != nil {
+		_ = found.Close()
+		return nil, "", err
+	}
+	if err := d.validate(); err != nil {
+		_ = found.Close()
+		return nil, "", err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = found.Close()
+		return nil, "", err
 	}
 	return found, relative, nil
 }

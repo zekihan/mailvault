@@ -614,23 +614,22 @@ func (e *SyncEngine) findBackupByHash(ctx context.Context, tgt plugins.Target, m
 	}
 	index, loaded := e.repairCache[tgt.Name()]
 	if !loaded {
-		entries, err := reader.ListBackupMessages(ctx)
-		if err != nil {
-			e.repairCacheMu.Unlock()
-			return "", false, err
-		}
 		index = make(map[string]string)
-		for _, entry := range entries {
+		err := plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
 			stored, err := reader.ReadBackupMessage(ctx, entry.Locator)
 			if err != nil {
 				if errors.Is(err, plugins.ErrBackupMessageMissing) || errors.Is(err, plugins.ErrBackupMessageCorrupt) {
-					continue
+					return nil
 				}
-				e.repairCacheMu.Unlock()
-				return "", false, fmt.Errorf("read %q: %w", entry.Locator, err)
+				return fmt.Errorf("read %q: %w", entry.Locator, err)
 			}
 			storedHash := dedup.ComputeContentHash(stored.Raw)
 			index[targetDeliveryIdentity(tgt, stored, "hash:"+storedHash)] = entry.Locator
+			return nil
+		})
+		if err != nil {
+			e.repairCacheMu.Unlock()
+			return "", false, err
 		}
 		e.repairCache[tgt.Name()] = index
 	}

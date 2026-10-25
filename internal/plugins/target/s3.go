@@ -23,6 +23,7 @@ import (
 
 // S3Target implements the Target interface for S3-compatible storage.
 type S3Target struct {
+	listingLimits    backupListingLimits
 	maxMessageBytes  int64
 	name             string
 	bucket           string
@@ -42,6 +43,10 @@ const boundedS3ObjectNameBytes = sha256.Size*4 + len("-.eml")
 const defaultS3OperationTimeout = 5 * time.Minute
 
 func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
+	limits, err := parseBackupListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
 	if limitErr != nil {
 		return nil, limitErr
@@ -101,6 +106,7 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &S3Target{
+		listingLimits:    limits,
 		maxMessageBytes:  maxMessageBytes,
 		name:             "s3:" + bucket, // Will be overridden by registry
 		bucket:           bucket,

@@ -23,7 +23,7 @@ func TestAtLimitSyncMessagesVerifyAndRestore(t *testing.T) {
 			cfg := &config.Config{
 				MaxMessageBytes: int64(len(raw)),
 				Sources:         []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}},
-				Targets:         []config.TargetConfig{{Name: "archive", Type: kind, Config: map[string]interface{}{"path": filepath.Join(t.TempDir(), "backup")}}},
+				Targets:         []config.TargetConfig{{Name: "archive", Type: kind, Config: map[string]interface{}{"path": filepath.Join(t.TempDir(), "backup"), "max_listing_entries": 100, "max_listing_locator_bytes": 4096}}},
 				Pairs:           []config.PairConfig{{Source: "account", Targets: []string{"archive"}}},
 			}
 			source := &mboxRepairSource{message: &plugins.Message{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}}

@@ -17,6 +17,7 @@ import (
 
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
+	listingLimits   backupListingLimits
 	maxMessageBytes int64
 	name            string
 	path            string
@@ -28,6 +29,10 @@ type MboxTarget struct {
 }
 
 func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
+	limits, err := parseBackupListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	maxMessageBytes, limitErr := config.ParseMessageLimit(configMap)
 	if limitErr != nil {
 		return nil, limitErr
@@ -46,6 +51,7 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &MboxTarget{
+		listingLimits:   limits,
 		maxMessageBytes: maxMessageBytes,
 		name:            "mbox:" + path, // Will be overridden by registry
 		path:            path,
