@@ -22,6 +22,7 @@ import (
 
 // S3Target implements the Target interface for S3-compatible storage.
 type S3Target struct {
+	listingLimits    backupListingLimits
 	name             string
 	bucket           string
 	region           string
@@ -40,6 +41,10 @@ const boundedS3ObjectNameBytes = sha256.Size*4 + len("-.eml")
 const defaultS3OperationTimeout = 5 * time.Minute
 
 func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
+	limits, err := parseBackupListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	operationTimeout, err := config.ParseDuration(configMap, config.TargetConfigOperationTimeout, defaultS3OperationTimeout)
 	if err != nil || operationTimeout <= 0 {
 		return nil, errors.New("invalid operation_timeout: expected a positive duration")
@@ -95,6 +100,7 @@ func NewS3Target(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &S3Target{
+		listingLimits:    limits,
 		name:             "s3:" + bucket, // Will be overridden by registry
 		bucket:           bucket,
 		region:           region,

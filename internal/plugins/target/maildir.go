@@ -18,6 +18,7 @@ import (
 
 // MaildirTarget implements the Target interface for Maildir format.
 type MaildirTarget struct {
+	listingLimits   backupListingLimits
 	name            string
 	path            string
 	create          bool
@@ -31,6 +32,10 @@ type MaildirTarget struct {
 }
 
 func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) {
+	limits, err := parseBackupListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
 	preserveFolders, err := config.ParseBool(configMap, config.TargetConfigPreserveFolders, false)
@@ -56,6 +61,7 @@ func NewMaildirTarget(configMap map[string]interface{}) (plugins.Target, error) 
 	}
 
 	return &MaildirTarget{
+		listingLimits:   limits,
 		name:            "maildir:" + path, // Will be overridden by registry
 		path:            path,
 		create:          create,

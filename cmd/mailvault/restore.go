@@ -203,37 +203,52 @@ type restoreTargetReader struct {
 }
 
 func (r restoreTargetReader) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
-	physical, err := r.TargetBackupReader.ListBackupMessages(ctx)
+	var result []plugins.BackupMessage
+	err := r.WalkBackupMessages(ctx, func(entry plugins.BackupMessage) error { result = append(result, entry); return nil })
 	if err != nil {
 		return nil, err
 	}
-	for i := range physical {
-		if physical[i].Target == "" {
-			physical[i].Target = r.target
+	return result, nil
+}
+
+func (r restoreTargetReader) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
+	manifest := make(map[string][]plugins.BackupMessage)
+	for _, entry := range r.manifest {
+		key := r.canonicalLocator(entry.Locator)
+		manifest[key] = append(manifest[key], entry)
+	}
+	retired := make(map[string]bool)
+	for locator := range r.superseded {
+		retired[r.canonicalLocator(locator)] = true
+	}
+	for key := range manifest {
+		delete(retired, key)
+	}
+	seen := make(map[string]bool)
+	err := plugins.WalkBackupMessages(ctx, r.TargetBackupReader, func(entry plugins.BackupMessage) error {
+		key := r.canonicalLocator(entry.Locator)
+		if retired[key] || seen[key] {
+			return nil
+		}
+		if entry.Target == "" {
+			entry.Target = r.target
+		}
+		merged, err := restore.MergeBackupMessagesCanonical([]plugins.BackupMessage{entry}, manifest[key], r.canonicalLocator)
+		if err != nil {
+			return err
+		}
+		seen[key] = true
+		return visit(merged[0])
+	})
+	if err != nil {
+		return err
+	}
+	for key, entries := range manifest {
+		if !seen[key] {
+			return fmt.Errorf("manifest locator %q has no physical backup message: %w", entries[0].Locator, plugins.ErrBackupMessageMissing)
 		}
 	}
-	if len(r.superseded) > 0 {
-		retired := make(map[string]bool, len(r.superseded))
-		for locator := range r.superseded {
-			retired[r.canonicalLocator(locator)] = true
-		}
-		for _, active := range r.manifest {
-			delete(retired, r.canonicalLocator(active.Locator))
-		}
-		for i := range physical {
-			if retired[r.canonicalLocator(physical[i].Locator)] {
-				physical[i].Locator = ""
-			}
-		}
-		filtered := physical[:0]
-		for _, entry := range physical {
-			if entry.Locator != "" {
-				filtered = append(filtered, entry)
-			}
-		}
-		physical = filtered
-	}
-	return restore.MergeBackupMessagesCanonical(physical, r.manifest, r.canonicalLocator)
+	return ctx.Err()
 }
 
 func (r restoreTargetReader) canonicalLocator(value string) string {

@@ -17,16 +17,21 @@ import (
 
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
-	name        string
-	path        string
-	create      bool
-	file        *os.File
-	broken      error
-	lastLocator string
-	mu          sync.Mutex
+	listingLimits backupListingLimits
+	name          string
+	path          string
+	create        bool
+	file          *os.File
+	broken        error
+	lastLocator   string
+	mu            sync.Mutex
 }
 
 func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
+	limits, err := parseBackupListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
 	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
 
@@ -41,9 +46,10 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	}
 
 	return &MboxTarget{
-		name:   "mbox:" + path, // Will be overridden by registry
-		path:   path,
-		create: create,
+		listingLimits: limits,
+		name:          "mbox:" + path, // Will be overridden by registry
+		path:          path,
+		create:        create,
 	}, nil
 }
 

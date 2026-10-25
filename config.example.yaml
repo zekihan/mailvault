@@ -38,6 +38,9 @@ targets:
       create_if_missing: true
       preserve_folders: true
       preserve_flags: true
+      # Verification, repair scans and restore listing budgets (zero uses defaults).
+      max_listing_entries: 1000000
+      max_listing_locator_bytes: 67108864
 
   - name: local_mbox
     type: mbox

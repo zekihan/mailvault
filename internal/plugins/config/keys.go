@@ -17,14 +17,16 @@ const (
 
 // Config keys for target factories
 const (
-	TargetConfigPath             = "path"
-	TargetConfigCreateIfMissing  = "create_if_missing"
-	TargetConfigPreserveFolders  = "preserve_folders"
-	TargetConfigPreserveFlags    = "preserve_flags"
-	TargetConfigBucket           = "bucket"
-	TargetConfigRegion           = "region"
-	TargetConfigEndpoint         = "endpoint"
-	TargetConfigPrefix           = "prefix"
-	TargetConfigCredentialsRef   = "credentials_ref"
-	TargetConfigOperationTimeout = "operation_timeout"
+	TargetConfigPath                   = "path"
+	TargetConfigCreateIfMissing        = "create_if_missing"
+	TargetConfigPreserveFolders        = "preserve_folders"
+	TargetConfigPreserveFlags          = "preserve_flags"
+	TargetConfigBucket                 = "bucket"
+	TargetConfigRegion                 = "region"
+	TargetConfigEndpoint               = "endpoint"
+	TargetConfigPrefix                 = "prefix"
+	TargetConfigCredentialsRef         = "credentials_ref"
+	TargetConfigOperationTimeout       = "operation_timeout"
+	TargetConfigMaxListingEntries      = "max_listing_entries"
+	TargetConfigMaxListingLocatorBytes = "max_listing_locator_bytes"
 )

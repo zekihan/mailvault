@@ -26,41 +26,73 @@ import (
 const maxBackupMessageReadBytes = 512 << 20
 
 func (t *MaildirTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
-	var result []plugins.BackupMessage
-	if _, err := os.Stat(t.path); os.IsNotExist(err) {
-		return result, nil
-	} else if err != nil {
-		return nil, err
-	}
-	err := filepath.WalkDir(t.path, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	entries, err := collectBackupMessages(ctx, t.WalkBackupMessages)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Locator < entries[j].Locator })
+	return entries, err
+}
+
+func (t *MaildirTarget) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
+	// Bound traversal as well as message locators: non-message entries can also
+	// be controlled by a writer. Neither WalkDir nor ReadDir(path) is bounded.
+	traversal := t.listingLimits.budget()
+	var walk func(string) error
+	walk = func(path string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			if entry.Name() == "tmp" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		parent := filepath.Base(filepath.Dir(path))
-		if parent != "cur" && parent != "new" {
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(t.path, path)
+		dir, err := openBackupDirectory(path)
 		if err != nil {
 			return err
 		}
-		result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: filepath.ToSlash(rel)})
+		defer func() { _ = dir.Close() }()
+		for {
+			entries, readErr := dir.ReadDir(backupDirectoryBatchSize)
+			for _, entry := range entries {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				child := filepath.Join(path, entry.Name())
+				rel, err := filepath.Rel(t.path, child)
+				if err != nil {
+					return err
+				}
+				locator := filepath.ToSlash(rel)
+				if err := traversal.add(locator); err != nil {
+					return fmt.Errorf("maildir traversal: %w", err)
+				}
+				if entry.IsDir() {
+					if entry.Name() != "tmp" {
+						if err := walk(child); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				parent := filepath.Base(path)
+				if (parent != "cur" && parent != "new") || !entry.Type().IsRegular() {
+					continue
+				}
+				if err := visit(plugins.BackupMessage{Target: t.Name(), Locator: locator}); err != nil {
+					return err
+				}
+			}
+			if readErr == io.EOF {
+				return ctx.Err()
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(t.path); os.IsNotExist(err) {
 		return nil
-	})
-	sort.Slice(result, func(i, j int) bool { return result[i].Locator < result[j].Locator })
-	return result, err
+	} else if err != nil {
+		return err
+	}
+	return walk(t.path)
 }
 
 func (t *MaildirTarget) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
@@ -149,118 +181,152 @@ func (t *MaildirTarget) ResolveBackupLocator(locator string) (string, error) {
 		base = base[:i]
 	}
 	var matches []string
+	budget := t.listingLimits.budget()
 	for _, subdir := range []string{"cur", "new"} {
-		dir := filepath.Join(parent, subdir)
-		entries, err := os.ReadDir(dir)
+		dir, err := openBackupDirectory(filepath.Join(parent, subdir))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return "", err
 		}
-		for _, entry := range entries {
-			if entry.Type().IsRegular() && (entry.Name() == base || strings.HasPrefix(entry.Name(), base+":2,")) {
-				matches = append(matches, filepath.Join(dir, entry.Name()))
+		err = func() error {
+			defer func() { _ = dir.Close() }()
+			for {
+				entries, readErr := dir.ReadDir(backupDirectoryBatchSize)
+				for _, entry := range entries {
+					if err := budget.add(entry.Name()); err != nil {
+						return err
+					}
+					if entry.Type().IsRegular() && (entry.Name() == base || strings.HasPrefix(entry.Name(), base+":2,")) {
+						matches = append(matches, filepath.Join(parent, subdir, entry.Name()))
+						if len(matches) > 1 {
+							return fmt.Errorf("maildir locator %q has multiple matching files", locator)
+						}
+					}
+				}
+				if readErr == io.EOF {
+					return nil
+				}
+				if readErr != nil {
+					return readErr
+				}
 			}
+		}()
+		if err != nil {
+			return "", err
 		}
 	}
 	if len(matches) == 0 {
 		return "", fmt.Errorf("%w: %s", plugins.ErrBackupMessageMissing, locator)
 	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("maildir locator %q has multiple matching files", locator)
-	}
 	return matches[0], nil
 }
 
 func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
-	return t.listBackupMessages(ctx, maxBackupMessageReadBytes)
+	return collectBackupMessages(ctx, t.WalkBackupMessages)
+}
+
+func (t *MboxTarget) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
+	return t.walkBackupMessages(ctx, maxBackupMessageReadBytes, visit)
 }
 
 func (t *MboxTarget) listBackupMessages(ctx context.Context, maxRecordBytes int64) ([]plugins.BackupMessage, error) {
+	return collectBackupMessages(ctx, func(ctx context.Context, visit func(plugins.BackupMessage) error) error {
+		return t.walkBackupMessages(ctx, maxRecordBytes, visit)
+	})
+}
+
+func (t *MboxTarget) walkBackupMessages(ctx context.Context, maxRecordBytes int64, visit func(plugins.BackupMessage) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	file, err := os.Open(t.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var starts []int64
+	budget := t.listingLimits.budget()
+	emit := func(start, end int64) error {
+		length := end - start
+		if length > maxRecordBytes {
+			return fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
+		}
+		encoded, decoded, _, err := mboxRecordLengths(ctx, file, start, length)
+		if err != nil {
+			return err
+		}
+		locator := fmt.Sprintf("%d:%d:%d:%d", start, length, encoded, decoded)
+		if err := budget.add(locator); err != nil {
+			return err
+		}
+		return visit(plugins.BackupMessage{Target: t.Name(), Locator: locator})
+	}
 	reader := bufio.NewReader(io.NewSectionReader(file, 0, info.Size()))
-	var offset int64
-	lineStart := true
+	var offset, start int64
+	found, lineStart := false, true
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fragment, readErr := reader.ReadSlice('\n')
 		if lineStart && len(fragment) > 0 {
 			if bytes.HasPrefix(fragment, []byte("From ")) {
-				starts = append(starts, offset)
+				if found {
+					if err := emit(start, offset); err != nil {
+						return err
+					}
+				} else if offset != 0 {
+					return fmt.Errorf("%w: mbox record missing initial separator", plugins.ErrBackupMessageCorrupt)
+				}
+				if budget.entries >= budget.limits.entries {
+					return fmt.Errorf("%w: mbox entry count exceeds max_listing_entries=%d", plugins.ErrBackupListingLimit, budget.limits.entries)
+				}
+				start, found = offset, true
 			}
 			lineStart = false
 		}
 		switch readErr {
 		case bufio.ErrBufferFull:
-			// Keep scanning oversized lines in bounded fragments.
 		case nil, io.EOF:
 			lineStart = true
 		default:
-			return nil, readErr
+			return readErr
 		}
 		offset += int64(len(fragment))
-		if len(starts) > 0 && offset-starts[len(starts)-1] > maxRecordBytes {
-			return nil, fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
-		}
-		if len(starts) == 0 && offset > maxRecordBytes {
-			return nil, fmt.Errorf("%w: mbox has no initial separator within the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if offset-start > maxRecordBytes {
+			return fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
 		}
 		if readErr == io.EOF {
 			break
 		}
 	}
 	if offset != info.Size() {
-		return nil, io.ErrUnexpectedEOF
+		return io.ErrUnexpectedEOF
 	}
-	if info.Size() > 0 && (len(starts) == 0 || starts[0] != 0) {
-		return nil, fmt.Errorf("%w: mbox record missing initial separator", plugins.ErrBackupMessageCorrupt)
+	if info.Size() > 0 && !found {
+		return fmt.Errorf("%w: mbox record missing initial separator", plugins.ErrBackupMessageCorrupt)
 	}
-	result := make([]plugins.BackupMessage, 0, len(starts))
-	for i, start := range starts {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	if found {
+		if err := emit(start, offset); err != nil {
+			return err
 		}
-		end := info.Size()
-		if i+1 < len(starts) {
-			end = starts[i+1]
-		}
-		length := end - start
-		if length > maxRecordBytes {
-			return nil, fmt.Errorf("%w: mbox record exceeds the %d byte verification limit", plugins.ErrBackupMessageCorrupt, maxRecordBytes)
-		}
-		encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(ctx, file, start, length)
-		if err != nil {
-			return nil, err
-		}
-		if !hasSeparatorNewline {
-			result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: fmt.Sprintf("%d:%d:0:0", start, length)})
-			continue
-		}
-		result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: fmt.Sprintf("%d:%d:%d:%d", start, length, encodedLength, decodedLength)})
 	}
-	latestInfo, err := file.Stat()
+	latest, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if latestInfo.Size() < info.Size() {
-		return nil, io.ErrUnexpectedEOF
+	if latest.Size() < info.Size() {
+		return io.ErrUnexpectedEOF
 	}
-	return result, ctx.Err()
+	return ctx.Err()
 }
 
 func mboxRecordLengths(ctx context.Context, file *os.File, start, length int64) (encodedLength, decodedLength int64, hasSeparatorNewline bool, err error) {
@@ -468,36 +534,64 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 }
 
 func (t *S3Target) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
-	ctx, cancel := t.operationContext(ctx)
-	defer cancel()
+	entries, err := collectBackupMessages(ctx, t.WalkBackupMessages)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Locator < entries[j].Locator })
+	return entries, err
+}
+
+func (t *S3Target) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
 	t.mu.Lock()
 	client, prefix := t.client, t.prefix
 	t.mu.Unlock()
 	if client == nil {
-		return nil, fmt.Errorf("S3 target not initialized")
+		return fmt.Errorf("S3 target not initialized")
 	}
-	var result []plugins.BackupMessage
+	budget := t.listingLimits.budget()
 	var token *string
 	for {
-		page, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(t.bucket), Prefix: aws.String(prefix), ContinuationToken: token})
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Consumer work can take longer than one S3 operation. Bound the
+		// request and its decoding, without timing out downstream callbacks.
+		pageCtx, cancel := t.operationContext(ctx)
+		page, err := client.ListObjectsV2(pageCtx, &s3.ListObjectsV2Input{Bucket: aws.String(t.bucket), Prefix: aws.String(prefix), ContinuationToken: token, MaxKeys: aws.Int32(s3ListingPageSize)}, func(options *s3.Options) {
+			options.HTTPClient = listingHTTPClient{next: options.HTTPClient}
+			// A rejected response must not retry the same oversized page.
+			options.Retryer = listingRetryer{Retryer: options.Retryer}
+		})
+		cancel()
 		if err != nil {
-			return nil, err
+			return err
+		}
+		if len(page.Contents) > s3ListingPageSize {
+			return fmt.Errorf("%w: S3 page exceeds requested entry count", plugins.ErrBackupListingLimit)
 		}
 		for _, object := range page.Contents {
 			if object.Key != nil {
-				result = append(result, plugins.BackupMessage{Target: t.Name(), Locator: *object.Key})
+				if len(*object.Key) > maxS3ObjectKeyBytes {
+					return fmt.Errorf("%w: S3 object key exceeds 1024 bytes", plugins.ErrBackupListingLimit)
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := budget.add(*object.Key); err != nil {
+					return err
+				}
+				if err := visit(plugins.BackupMessage{Target: t.Name(), Locator: *object.Key}); err != nil {
+					return err
+				}
 			}
 		}
 		if !aws.ToBool(page.IsTruncated) {
 			break
 		}
 		if page.NextContinuationToken == nil || (token != nil && *token == *page.NextContinuationToken) {
-			return nil, fmt.Errorf("S3 listing returned no advancing continuation token")
+			return fmt.Errorf("S3 listing returned no advancing continuation token")
 		}
 		token = page.NextContinuationToken
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Locator < result[j].Locator })
-	return result, nil
+	return ctx.Err()
 }
 
 func (t *S3Target) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
