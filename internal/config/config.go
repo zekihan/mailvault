@@ -6,9 +6,10 @@ import (
 
 // Config is the root configuration structure.
 type Config struct {
-	Sources []SourceConfig `mapstructure:"sources" yaml:"sources"`
-	Targets []TargetConfig `mapstructure:"targets" yaml:"targets"`
-	Pairs   []PairConfig   `mapstructure:"pairs" yaml:"pairs"`
+	MaxMessageBytes int64          `mapstructure:"max_message_bytes" yaml:"max_message_bytes"`
+	Sources         []SourceConfig `mapstructure:"sources" yaml:"sources"`
+	Targets         []TargetConfig `mapstructure:"targets" yaml:"targets"`
+	Pairs           []PairConfig   `mapstructure:"pairs" yaml:"pairs"`
 }
 
 // SourceConfig defines a mail source (IMAP/POP3).

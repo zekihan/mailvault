@@ -19,6 +19,8 @@ setup:
 initialized: false
 activeDeadlineSeconds: 14400
 backoffLimit: 0
+# Size memory for max_message_bytes and max_connections in the config Secret.
+# Source backpressure bounds live message count; target encoding adds overhead.
 resources:
   requests:
     cpu: 100m

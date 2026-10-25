@@ -81,12 +81,6 @@ func (c *deadlineConn) beginIO(ctx context.Context) func() {
 	}
 }
 
-type dialFunc func(network, address string) (net.Conn, error)
-
-func (dial dialFunc) Dial(network, address string) (net.Conn, error) {
-	return dial(network, address)
-}
-
 // switchConn keeps a protocol client's buffered reader and writer attached
 // while upgrading its underlying transport to TLS after STARTTLS/STLS.
 type switchConn struct {

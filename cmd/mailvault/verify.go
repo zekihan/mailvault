@@ -41,7 +41,7 @@ func newVerifyCommand() *cobra.Command {
 		if tc == nil {
 			return fmt.Errorf("unknown target %q", args[0])
 		}
-		target, err := builtin.Registry().CreateTarget(tc.Type, tc.Config)
+		target, err := builtin.Registry().CreateTarget(tc.Type, config.TargetPluginConfig(*tc, cfg.MaxMessageBytes))
 		if err != nil {
 			return fmt.Errorf("create target: %w", err)
 		}
