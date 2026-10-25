@@ -131,7 +131,7 @@ func TestMaildirCleanupFailureAfterPublicationDoesNotReturnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupErr := errors.New("injected cleanup permission error")
-	maildir.removeTemp = func(string) error { return cleanupErr }
+	maildir.removeTemp = func(*maildirDirectory, string) error { return cleanupErr }
 	message := []byte("complete message")
 	if err := maildir.WriteMessage(context.Background(), &plugins.Message{Raw: message}); err != nil {
 		t.Fatalf("published message returned cleanup error: %v", err)
@@ -174,8 +174,8 @@ func TestMaildirPrePublicationErrorIncludesCleanupFailure(t *testing.T) {
 	}
 	primaryErr := errors.New("publication blocked")
 	cleanupErr := errors.New("injected cleanup permission error")
-	maildir.link = func(string, string) error { return primaryErr }
-	maildir.removeTemp = func(string) error { return cleanupErr }
+	maildir.link = func(*maildirDirectory, string, *maildirDirectory, string) error { return primaryErr }
+	maildir.removeTemp = func(*maildirDirectory, string) error { return cleanupErr }
 	err = maildir.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("message")})
 	if !errors.Is(err, primaryErr) || !errors.Is(err, cleanupErr) {
 		t.Fatalf("error = %v, want primary and cleanup errors", err)

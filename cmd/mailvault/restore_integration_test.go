@@ -36,7 +36,7 @@ func (r *recordingMailbox) AppendMessage(_ context.Context, _ string, msg *plugi
 func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T) {
 	ctx := context.Background()
 	maildirPath := t.TempDir() + "/backup"
-	backup, err := target.NewMaildirTarget(map[string]interface{}{"path": maildirPath})
+	backup, err := target.NewMaildirTarget(map[string]interface{}{"path": maildirPath, "max_listing_entries": 64, "max_listing_locator_bytes": 4096})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,7 +32,10 @@ func durableMaildirFixture(t *testing.T) *MaildirTarget {
 func TestMaildirSyncsPublicationBeforeSuccessAndCleanup(t *testing.T) {
 	target := durableMaildirFixture(t)
 	var events []string
-	target.link = func(from, to string) error { events = append(events, "link"); return os.Link(from, to) }
+	target.link = func(from *maildirDirectory, oldName string, to *maildirDirectory, newName string) error {
+		events = append(events, "link")
+		return linkMaildirFile(from, oldName, to, newName)
+	}
 	target.syncDir = func(path string) error {
 		events = append(events, "directory-sync")
 		if path != filepath.Join(target.path, "new") {
@@ -44,7 +47,10 @@ func TestMaildirSyncsPublicationBeforeSuccessAndCleanup(t *testing.T) {
 		}
 		return nil
 	}
-	target.removeTemp = func(path string) error { events = append(events, "cleanup"); return os.Remove(path) }
+	target.removeTemp = func(directory *maildirDirectory, name string) error {
+		events = append(events, "cleanup")
+		return removeMaildirFile(directory, name)
+	}
 	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")}); err != nil {
 		t.Fatal(err)
 	}

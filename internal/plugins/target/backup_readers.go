@@ -35,116 +35,95 @@ func (t *MaildirTarget) ListBackupMessages(ctx context.Context) ([]plugins.Backu
 }
 
 func (t *MaildirTarget) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
-	// Bound traversal as well as message locators: non-message entries can also
-	// be controlled by a writer. Neither WalkDir nor ReadDir(path) is bounded.
-	traversal := t.listingLimits.budget()
-	var walk func(string) error
-	walk = func(path string) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		dir, err := openBackupDirectory(path)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = dir.Close() }()
-		for {
-			entries, readErr := dir.ReadDir(backupDirectoryBatchSize)
-			for _, entry := range entries {
-				if err := ctx.Err(); err != nil {
-					return err
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Clone a pinned root while protected from Initialize/Close. The clone is
+	// owned by this walk. Callbacks can re-enter Read/Resolve/Write safely.
+	t.mu.Lock()
+	root, err := t.backupRoot()
+	t.mu.Unlock()
+	if errors.Is(err, os.ErrNotExist) {
+		return ctx.Err()
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	budget := t.listingLimits.budget()
+	var walk func(*maildirDirectory, string) error
+	walk = func(directory *maildirDirectory, prefix string) error {
+		return directory.walkEntries(ctx, budget, prefix, func(entry os.DirEntry) error {
+			relative := filepath.Join(prefix, entry.Name())
+			if entry.IsDir() {
+				if entry.Name() == "tmp" {
+					return nil
 				}
-				child := filepath.Join(path, entry.Name())
-				rel, err := filepath.Rel(t.path, child)
+				child, err := directory.child(entry.Name(), false, nil)
 				if err != nil {
 					return err
 				}
-				locator := filepath.ToSlash(rel)
-				if err := traversal.add(locator); err != nil {
-					return fmt.Errorf("maildir traversal: %w", err)
-				}
-				if entry.IsDir() {
-					if entry.Name() != "tmp" {
-						if err := walk(child); err != nil {
-							return err
-						}
-					}
-					continue
-				}
-				parent := filepath.Base(path)
-				if (parent != "cur" && parent != "new") || !entry.Type().IsRegular() {
-					continue
-				}
-				if err := visit(plugins.BackupMessage{Target: t.Name(), Locator: locator}); err != nil {
-					return err
-				}
+				defer func() { _ = child.Close() }()
+				return walk(child, relative)
 			}
-			if readErr == io.EOF {
-				return ctx.Err()
+			parent := filepath.Base(directory.path)
+			if entry.Type().IsRegular() && (parent == "cur" || parent == "new") {
+				return visit(plugins.BackupMessage{Target: t.Name(), Locator: filepath.ToSlash(relative)})
 			}
-			if readErr != nil {
-				return readErr
-			}
+			return nil
+		})
+	}
+	if err := walk(root, ""); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+func (t *MaildirTarget) backupRoot() (*maildirDirectory, error) {
+	if t.root != nil {
+		if err := t.root.validate(); err != nil {
+			return nil, err
 		}
+		return t.root.walk(".", false, nil)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(t.path); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return walk(t.path)
+	return openMaildirPath(t.path, false, nil)
 }
 
 func (t *MaildirTarget) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.readBackupMessage(ctx, locator)
+}
+
+func (t *MaildirTarget) readBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	clean := filepath.Clean(filepath.FromSlash(locator))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("invalid maildir locator")
-	}
-	path, err := t.ResolveBackupLocator(locator)
+	root, err := t.backupRoot()
 	if err != nil {
 		return nil, err
 	}
-	rootResolved, err := filepath.EvalSymlinks(t.path)
-	if err != nil {
-		return nil, err
-	}
-	pathResolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, err
-	}
-	if pathResolved != rootResolved && !strings.HasPrefix(pathResolved, rootResolved+string(filepath.Separator)) {
-		return nil, fmt.Errorf("maildir locator escapes target root")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %v", plugins.ErrBackupMessageMissing, err)
-		}
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("maildir locator is not a regular file")
-	}
-	if err := plugins.CheckMessageSize(info.Size(), t.maxMessageBytes); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(path)
+	defer func() { _ = root.Close() }()
+	file, relative, err := root.resolveMessageBounded(ctx, locator, t.listingLimits)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	raw, err := plugins.ReadMessage(file, t.maxMessageBytes)
+	raw, err := readMaildirMessage(file, t.maxMessageBytes)
 	if err != nil {
 		return nil, err
 	}
+	if err := root.validateMessage(relative, file); err != nil {
+		return nil, err
+	}
+	if err := root.validate(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	msg := backupMessageFromRaw(raw)
-	msg.Folder = maildirFolder(t.path, path)
+	msg.Folder = maildirFolder(".", relative)
 	return msg, nil
 }
 
@@ -173,62 +152,19 @@ func maildirFolder(root, path string) string {
 
 // ResolveBackupLocator follows Maildir's allowed new/cur move and flag suffix rename.
 func (t *MaildirTarget) ResolveBackupLocator(locator string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(locator))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid maildir locator")
-	}
-	path := filepath.Join(t.path, clean)
-	if _, err := os.Lstat(path); err == nil {
-		return path, nil
-	} else if !os.IsNotExist(err) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	root, err := t.backupRoot()
+	if err != nil {
 		return "", err
 	}
-	parent := filepath.Dir(filepath.Dir(path))
-	base := filepath.Base(path)
-	if i := strings.Index(base, ":2,"); i >= 0 {
-		base = base[:i]
+	defer func() { _ = root.Close() }()
+	file, relative, err := root.resolveMessageBounded(context.Background(), locator, t.listingLimits)
+	if err != nil {
+		return "", err
 	}
-	var matches []string
-	budget := t.listingLimits.budget()
-	for _, subdir := range []string{"cur", "new"} {
-		dir, err := openBackupDirectory(filepath.Join(parent, subdir))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", err
-		}
-		err = func() error {
-			defer func() { _ = dir.Close() }()
-			for {
-				entries, readErr := dir.ReadDir(backupDirectoryBatchSize)
-				for _, entry := range entries {
-					if err := budget.add(entry.Name()); err != nil {
-						return err
-					}
-					if entry.Type().IsRegular() && (entry.Name() == base || strings.HasPrefix(entry.Name(), base+":2,")) {
-						matches = append(matches, filepath.Join(parent, subdir, entry.Name()))
-						if len(matches) > 1 {
-							return fmt.Errorf("maildir locator %q has multiple matching files", locator)
-						}
-					}
-				}
-				if readErr == io.EOF {
-					return nil
-				}
-				if readErr != nil {
-					return readErr
-				}
-			}
-		}()
-		if err != nil {
-			return "", err
-		}
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("%w: %s", plugins.ErrBackupMessageMissing, locator)
-	}
-	return matches[0], nil
+	_ = file.Close()
+	return filepath.Join(t.path, relative), nil
 }
 
 func (t *MboxTarget) ListBackupMessages(ctx context.Context) ([]plugins.BackupMessage, error) {
