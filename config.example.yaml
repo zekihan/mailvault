@@ -16,6 +16,9 @@ sources:
       - "[Gmail]/Starred"
     connection_timeout: 30s
     read_timeout: 60s
+    # Per LIST/SEARCH/UIDL response; POP3 STAT counts share the item limit.
+    max_listing_items: 1000000
+    max_listing_bytes: 67108864
     max_connections: 5
 
   - name: outlook

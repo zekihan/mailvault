@@ -21,7 +21,8 @@ func SourcePluginConfig(source SourceConfig, limits ...int64) (map[string]interf
 		"username": source.Username, "password_ref": source.PasswordRef,
 		"use_tls": source.UseTLS, "start_tls": source.StartTLS, "folders": source.Folders,
 		"connection_timeout": source.ConnectionTimeout, "read_timeout": source.ReadTimeout,
-		"max_connections": source.MaxConnections,
+		"max_connections":   source.MaxConnections,
+		"max_listing_items": source.MaxListingItems, "max_listing_bytes": source.MaxListingBytes,
 	}
 	values["max_message_bytes"] = pluginMessageLimit(limits)
 	if provider != nil {

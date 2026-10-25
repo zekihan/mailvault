@@ -12,7 +12,7 @@ import (
 )
 
 func transientSourceError(err error) bool {
-	if errors.Is(err, plugins.ErrMessageTooLarge) {
+	if errors.Is(err, plugins.ErrMessageTooLarge) || errors.Is(err, errListingLimit) {
 		return false
 	}
 	var transport net.Error

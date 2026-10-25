@@ -22,6 +22,8 @@ import (
 
 // IMAPSource implements the Source interface for IMAP.
 type IMAPSource struct {
+	limits          listingLimits
+	listing         *listingBudgetConn
 	name            string
 	host            string
 	port            int
@@ -42,11 +44,16 @@ type IMAPSource struct {
 }
 
 type imapSession struct {
-	client *imapclient.Client
-	wire   *deadlineConn
+	listing *listingBudgetConn
+	client  *imapclient.Client
+	wire    *deadlineConn
 }
 
 func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
+	limits, err := parseListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	maxMessageBytes, err := config.ParseMessageLimit(configMap)
 	if err != nil {
 		return nil, err
@@ -88,6 +95,7 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	}
 
 	return &IMAPSource{
+		limits:          limits,
 		name:            "imap:" + host, // Will be overridden by registry
 		host:            host,
 		port:            port,
@@ -140,6 +148,7 @@ func (s *IMAPSource) connectLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.listing = session.listing
 	s.client = session.client
 	s.wire = session.wire
 	s.connected = true
@@ -156,19 +165,20 @@ func (s *IMAPSource) openSession(ctx context.Context) (*imapSession, error) {
 	wire := &deadlineConn{Conn: raw, timeout: s.readTimeout}
 	finish := wire.beginIO(ctx)
 	defer finish()
+	listing := &listingBudgetConn{Conn: wire}
 	tlsConfig := &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
 	opts := &imapclient.Options{TLSConfig: tlsConfig}
 	var client *imapclient.Client
 	if s.useTLS {
-		secure := tls.Client(wire, tlsConfig)
+		secure := tls.Client(listing, tlsConfig)
 		if err := secure.HandshakeContext(ctx); err != nil {
 			return nil, errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
 		}
 		client = imapclient.New(secure, opts)
 	} else if s.startTLS {
-		client, err = imapclient.NewStartTLS(wire, opts)
+		client, err = imapclient.NewStartTLS(listing, opts)
 	} else {
-		client = imapclient.New(wire, opts)
+		client = imapclient.New(listing, opts)
 	}
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
@@ -187,7 +197,7 @@ func (s *IMAPSource) openSession(ctx context.Context) (*imapSession, error) {
 	} else if err := client.Login(s.username, s.password).Wait(); err != nil {
 		return nil, errors.Join(fmt.Errorf("login: %w", err), client.Close())
 	}
-	return &imapSession{client: client, wire: wire}, nil
+	return &imapSession{client: client, wire: wire, listing: listing}, nil
 }
 
 func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
@@ -199,20 +209,15 @@ func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
 	finish := s.wire.beginIO(ctx)
 	defer finish()
 
-	list := s.client.List("", "*", &imap.ListOptions{})
-	data, err := list.Collect()
+	var folders []string
+	err := s.listMailboxesLocked(func(mb *imap.ListData) {
+		if !slices.Contains(mb.Attrs, imap.MailboxAttrNoSelect) {
+			folders = append(folders, mb.Mailbox)
+		}
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
 	}
-
-	var folders []string
-	for _, mb := range data {
-		if slices.Contains(mb.Attrs, imap.MailboxAttrNoSelect) {
-			continue
-		}
-		folders = append(folders, mb.Mailbox)
-	}
-
 	return folders, nil
 }
 
@@ -230,7 +235,7 @@ func (s *IMAPSource) FetchMessages(ctx context.Context, folders []string, since,
 			if err := s.connectLocked(ctx); err != nil {
 				return err
 			}
-			sessions := []*imapSession{{client: s.client, wire: s.wire}}
+			sessions := []*imapSession{{client: s.client, wire: s.wire, listing: s.listing}}
 			for _, folder := range folders {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -297,14 +302,19 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 	// Search for messages
 	finish = sessions[0].wire.beginIO(ctx)
+	sessions[0].listing.begin(s.limits.defaults().bytes)
 	search := sessions[0].client.UIDSearch(&criteria, nil)
 	searchData, err := search.Wait()
+	err = errors.Join(err, sessions[0].listing.end())
 	finish()
 	if err != nil {
 		return fmt.Errorf("search: %w", joinTransportError(err, sessions[0].wire))
 	}
 
-	uids := searchData.AllUIDs()
+	uids, err := boundedSearchUIDs(searchData, s.limits.defaults().items)
+	if err != nil {
+		return fmt.Errorf("search: %w", err)
+	}
 	pending := make([]imap.UID, 0, len(uids))
 	for _, uid := range uids {
 		if !known[strconv.FormatUint(uint64(uid), 10)] {

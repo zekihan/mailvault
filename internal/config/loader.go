@@ -222,6 +222,9 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("source %q: configure either oauth2.token_file or oauth2.token_key", s.Name)
 			}
 		}
+		if s.MaxListingItems < 0 || s.MaxListingBytes < 0 {
+			return fmt.Errorf("source %q: max_listing_items and max_listing_bytes must be >= 0 (zero uses defaults)", s.Name)
+		}
 		if s.MaxConnections <= 0 {
 			return fmt.Errorf("source %q: max_connections must be > 0", s.Name)
 		}
@@ -339,7 +342,7 @@ func resolveCredentialRefAtWithKeyring(ref, configDir string, lookup func(servic
 			}
 			path = filepath.Join(configDir, path)
 		}
-		data, err := os.ReadFile(path)
+		data, err := readCredentialFile(path)
 		if err != nil {
 			return "", fmt.Errorf("read file %q: %w", path, err)
 		}
@@ -420,6 +423,15 @@ func applyIndexedEnvironment(cfg *Config, v *viper.Viper) error {
 				return fmt.Errorf("environment override for %smax_connections: %w", p, err)
 			}
 			cfg.Sources[i].MaxConnections = parsed
+		}
+		for key, dst := range map[string]*int{"max_listing_items": &cfg.Sources[i].MaxListingItems, "max_listing_bytes": &cfg.Sources[i].MaxListingBytes} {
+			if set, value := bind(key); set {
+				parsed, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("environment override for %s%s: %w", p, key, err)
+				}
+				*dst = parsed
+			}
 		}
 		if set, value := bind("folders"); set {
 			if value == "" {

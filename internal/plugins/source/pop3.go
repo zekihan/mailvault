@@ -28,6 +28,7 @@ type pop3Identity struct {
 
 // POP3Source implements the Source interface for POP3.
 type POP3Source struct {
+	limits          listingLimits
 	name            string
 	host            string
 	port            int
@@ -48,6 +49,10 @@ type POP3Source struct {
 }
 
 func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
+	limits, err := parseListingLimits(configMap)
+	if err != nil {
+		return nil, err
+	}
 	maxMessageBytes, err := config.ParseMessageLimit(configMap)
 	if err != nil {
 		return nil, err
@@ -88,6 +93,7 @@ func NewPOP3Source(configMap map[string]interface{}) (plugins.Source, error) {
 	}
 
 	return &POP3Source{
+		limits:          limits,
 		name:            "pop3:" + host, // Will be overridden by registry
 		host:            host,
 		port:            port,
@@ -149,13 +155,13 @@ func (s *POP3Source) connectLocked(ctx context.Context) error {
 		}
 		upgraded.set(secure)
 	}
-	conn, err := newPOP3Protocol(upgraded)
+	conn, err := newPOP3Protocol(upgraded, s.limits.defaults())
 	if err != nil {
 		return errors.Join(fmt.Errorf("connect: %w", err), wire.Close())
 	}
 
 	if s.startTLS {
-		if _, err := conn.Cmd("STLS", false); err != nil {
+		if _, err := conn.Cmd("STLS"); err != nil {
 			return errors.Join(fmt.Errorf("STARTTLS: %w", err), wire.Close())
 		}
 		tlsConn := tls.Client(wire, s.tlsOptions())
@@ -222,6 +228,7 @@ func (s *POP3Source) FetchMessages(ctx context.Context, folders []string, since,
 			if err := s.fetchFolder(ctx, "INBOX", output, since, until); err != nil {
 				s.connected = false
 				_ = s.wire.Close()
+				s.conn = nil
 				return fmt.Errorf("fetch folder: %w", err)
 			}
 			return nil
@@ -244,21 +251,22 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		return fmt.Errorf("stat: %w", err)
 	}
 
+	if count < 0 || count > s.limits.defaults().items {
+		return fmt.Errorf("POP3 protocol error: STAT count %d outside 0..%d", count, s.limits.defaults().items)
+	}
+
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", s.host, s.port, s.username)))
-	identities, err := readPOP3UIDLs(s.conn)
+	identities, err := readPOP3UIDLs(s.conn, count, s.limits.defaults())
 	if err != nil {
 		var netErr net.Error
 		var numErr *strconv.NumError
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &netErr) || errors.As(err, &numErr) || !isUIDLUnsupported(err) {
+		if errors.Is(err, errListingLimit) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &netErr) || errors.As(err, &numErr) || !isUIDLUnsupported(err) {
 			return fmt.Errorf("UIDL: %w", err)
 		}
 		progress.Stage = "UIDL unavailable; full fetch"
 		plugins.ReportFetchProgress(ctx, progress)
 		scope = ""
-		identities = make([]pop3Identity, count)
-		for i := range identities {
-			identities[i] = pop3Identity{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
-		}
+		// Fallback identities are generated lazily below.
 	} else if len(identities) != count {
 		return fmt.Errorf("UIDL returned %d messages, STAT reported %d", len(identities), count)
 	}
@@ -269,33 +277,32 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 			return fmt.Errorf("load incremental state: %w", err)
 		}
 	}
-	seen := make(map[string]bool, len(identities))
-	seenIDs := make(map[int]bool, len(identities))
-	pending := make([]pop3Identity, 0, len(identities))
+	pending := identities[:0]
 	for _, item := range identities {
-		if scope != "" {
-			item.UID = strings.TrimSpace(item.UID)
-			if item.ID <= 0 || item.ID > count || item.UID == "" || seen[item.UID] || seenIDs[item.ID] {
-				return fmt.Errorf("invalid or duplicate UIDL result for message %d", item.ID)
-			}
-			seen[item.UID] = true
-			seenIDs[item.ID] = true
-		}
 		if !known[item.UID] {
 			pending = append(pending, item)
 		}
 	}
 	progress.Total = len(pending)
+	if scope == "" {
+		progress.Total = count
+	}
 	progress.Stage = "fetching"
 	plugins.ReportFetchProgress(ctx, progress)
-	if len(pending) == 0 {
+	if progress.Total == 0 {
 		progress.Stage = "finished"
 		plugins.ReportFetchProgress(ctx, progress)
 		return nil
 	}
 
 	// Fetch each message
-	for _, item := range pending {
+	for i := 0; i < progress.Total; i++ {
+		var item pop3Identity
+		if scope == "" {
+			item = pop3Identity{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
+		} else {
+			item = pending[i]
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -402,27 +409,4 @@ func pop3AuthenticateXOAUTH2(conn *pop3Protocol, mechanism, response string) err
 	} else {
 		return err
 	}
-}
-
-func readPOP3UIDLs(conn *pop3Protocol) ([]pop3Identity, error) {
-	response, err := conn.Cmd("UIDL", true)
-	if err != nil {
-		return nil, err
-	}
-	var identities []pop3Identity
-	for _, line := range bytes.Split(response.Bytes(), []byte("\r\n")) {
-		fields := bytes.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if len(fields) != 2 {
-			return nil, fmt.Errorf("malformed UIDL row with %d fields", len(fields))
-		}
-		id, err := strconv.Atoi(string(fields[0]))
-		if err != nil {
-			return nil, fmt.Errorf("parse UIDL message number: %w", err)
-		}
-		identities = append(identities, pop3Identity{ID: id, UID: string(fields[1])})
-	}
-	return identities, nil
 }

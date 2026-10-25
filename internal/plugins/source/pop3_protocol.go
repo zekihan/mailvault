@@ -14,14 +14,15 @@ import (
 )
 
 // POP3 commands share one reader so status-line read-ahead remains visible to
-// the bounded body reader. The dependency's RetrRaw buffers unbounded lines.
+// bounded listing and body readers, including bytes prefetched across commands.
 type pop3Protocol struct {
 	conn   net.Conn
 	reader *bufio.Reader
+	limits listingLimits
 }
 
-func newPOP3Protocol(conn net.Conn) (*pop3Protocol, error) {
-	c := &pop3Protocol{conn: conn, reader: bufio.NewReader(conn)}
+func newPOP3Protocol(conn net.Conn, limits listingLimits) (*pop3Protocol, error) {
+	c := &pop3Protocol{conn: conn, reader: bufio.NewReader(conn), limits: limits}
 	_, err := c.ReadOne()
 	return c, err
 }
@@ -32,11 +33,11 @@ func (c *pop3Protocol) Send(command string) error {
 }
 
 func (c *pop3Protocol) ReadOne() ([]byte, error) {
-	line, err := c.reader.ReadSlice('\n')
+	remaining := c.limits.defaults().bytes
+	line, err := c.readListingLine(&remaining)
 	if err != nil {
 		return nil, err
 	}
-	line = bytes.TrimSuffix(bytes.TrimSuffix(line, []byte{'\n'}), []byte{'\r'})
 	if bytes.Equal(line, []byte("+OK")) {
 		return nil, nil
 	}
@@ -49,7 +50,7 @@ func (c *pop3Protocol) ReadOne() ([]byte, error) {
 	return nil, fmt.Errorf("unknown response: %s", line)
 }
 
-func (c *pop3Protocol) Cmd(command string, multi bool, args ...interface{}) (*bytes.Buffer, error) {
+func (c *pop3Protocol) Cmd(command string, args ...interface{}) (*bytes.Buffer, error) {
 	for _, arg := range args {
 		command += " " + fmt.Sprint(arg)
 	}
@@ -60,12 +61,7 @@ func (c *pop3Protocol) Cmd(command string, multi bool, args ...interface{}) (*by
 	if err != nil {
 		return nil, err
 	}
-	if !multi {
-		return bytes.NewBuffer(status), nil
-	}
-	// Metadata responses are independently bounded; RETR supplies its own limit.
-	raw, err := c.readBody(16 << 20)
-	return bytes.NewBuffer(raw), err
+	return bytes.NewBuffer(status), nil
 }
 
 // readBody counts decoded RFC822 bytes before growing the buffer, including
@@ -112,7 +108,7 @@ func (c *pop3Protocol) readBody(limit int64) ([]byte, error) {
 }
 
 func (c *pop3Protocol) retrieve(id int, limit int64) ([]byte, error) {
-	response, err := c.Cmd("LIST", false, id)
+	response, err := c.Cmd("LIST", id)
 	if err != nil {
 		return nil, fmt.Errorf("LIST: %w", err)
 	}
@@ -127,7 +123,7 @@ func (c *pop3Protocol) retrieve(id int, limit int64) ([]byte, error) {
 	if err := plugins.CheckMessageSize(size, limit); err != nil {
 		return nil, err
 	}
-	if _, err := c.Cmd("RETR", false, id); err != nil {
+	if _, err := c.Cmd("RETR", id); err != nil {
 		return nil, err
 	}
 	return c.readBody(plugins.MessageLimit(limit))
@@ -135,7 +131,7 @@ func (c *pop3Protocol) retrieve(id int, limit int64) ([]byte, error) {
 
 func (c *pop3Protocol) Auth(user, password string) error {
 	for _, command := range []string{"USER " + user, "PASS " + password, "NOOP"} {
-		if _, err := c.Cmd(command, false); err != nil {
+		if _, err := c.Cmd(command); err != nil {
 			return err
 		}
 	}
@@ -143,7 +139,7 @@ func (c *pop3Protocol) Auth(user, password string) error {
 }
 
 func (c *pop3Protocol) Stat() (int, int, error) {
-	response, err := c.Cmd("STAT", false)
+	response, err := c.Cmd("STAT")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -161,6 +157,6 @@ func (c *pop3Protocol) Stat() (int, int, error) {
 
 func (c *pop3Protocol) Quit() error {
 	defer func() { _ = c.conn.Close() }()
-	_, err := c.Cmd("QUIT", false)
+	_, err := c.Cmd("QUIT")
 	return err
 }

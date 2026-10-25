@@ -35,7 +35,7 @@ func TestMboxTargetEscapesFromLines(t *testing.T) {
 	}
 }
 
-func TestMboxrdUsesFirstHeaderBoundary(t *testing.T) {
+func TestMboxrdEscapesAcrossHeaderBoundaries(t *testing.T) {
 	raw := []byte("Subject: test\r\n\r\nFrom forged\r\n\n\nFrom later\n")
 	want := "Subject: test\r\n\r\n>From forged\r\n\n\n>From later\n"
 	if got := string(escapeMboxrd(raw)); got != want {

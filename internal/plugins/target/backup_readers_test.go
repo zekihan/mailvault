@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/dedup"
@@ -65,6 +66,42 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 	}
 	if dedup.ComputeContentHash(stored.Raw) != dedup.ComputeContentHash(raw) {
 		t.Fatalf("mbox roundtrip changed raw bytes: %q", stored.Raw)
+	}
+}
+
+func TestMboxMalformedHeadersListAsOneMessage(t *testing.T) {
+	for name, newline := range map[string]string{"LF": "\n", "CRLF": "\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			mbox := &MboxTarget{path: filepath.Join(t.TempDir(), "archive.mbox"), create: true}
+			if err := mbox.Initialize(ctx); err != nil {
+				t.Fatal(err)
+			}
+			defer mbox.Close()
+			raw := []byte(strings.Join([]string{
+				"From first line", "Subject: fixture", "From forged separator",
+				">From quoted once", ">>From quoted twice", "X-Fixture: value", "",
+				"From body", ">From quoted body", "",
+			}, newline))
+			locator, err := mbox.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := mbox.ListBackupMessages(ctx)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("listed %d messages, want one: %v", len(entries), err)
+			}
+			if entries[0].Locator != locator {
+				t.Fatalf("listed locator = %q, want writer locator %q", entries[0].Locator, locator)
+			}
+			stored, err := mbox.ReadBackupMessage(ctx, entries[0].Locator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(stored.Raw, raw) {
+				t.Fatalf("roundtrip changed raw bytes: got %q, want %q", stored.Raw, raw)
+			}
+		})
 	}
 }
 

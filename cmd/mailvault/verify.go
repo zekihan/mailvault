@@ -95,8 +95,18 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 	report.Scanned = len(entries)
 	byHash := make(map[string][]string)
 	physicalHashes, physicalErrors := make(map[string]string), make(map[string]error)
+	physicalLocators, physicalCounts := make(map[string]string), make(map[string]int)
+	physicalUnpaddedHashes := make(map[string]string)
+	matcher, matchStructure := reader.(interface{ BackupLocatorsEquivalent(string, string) bool })
 	for _, entry := range entries {
 		canonical := canonicalBackupLocator(reader, entry.Locator)
+		physicalCounts[canonical]++
+		if physicalCounts[canonical] > 1 {
+			physicalErrors[canonical] = plugins.ErrBackupMessageCorrupt
+			delete(physicalHashes, canonical)
+			continue
+		}
+		physicalLocators[canonical] = entry.Locator
 		msg, readErr := reader.ReadBackupMessage(ctx, entry.Locator)
 		if readErr != nil {
 			if errors.Is(readErr, plugins.ErrBackupMessageMissing) || errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
@@ -107,7 +117,15 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		}
 		hash := dedup.ComputeContentHash(msg.Raw)
 		physicalHashes[canonical] = hash
-		byHash[hash] = append(byHash[hash], canonical)
+		if matchStructure && len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] == '\n' {
+			physicalUnpaddedHashes[canonical] = dedup.ComputeContentHash(msg.Raw[:len(msg.Raw)-1])
+		}
+	}
+	for _, entry := range entries {
+		canonical := canonicalBackupLocator(reader, entry.Locator)
+		if hash, ok := physicalHashes[canonical]; ok {
+			byHash[hash] = append(byHash[hash], canonical)
+		}
 	}
 	store, err := openReadOnlyState()
 	if err != nil {
@@ -140,20 +158,28 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		canonicalSuperseded[canonicalBackupLocator(reader, locator)] = true
 	}
 	expectedByLocator, originalByLocator := make(map[string]map[string]bool), make(map[string]string)
+	conflictingLocators := make(map[string]bool)
 	known := make(map[string]bool)
 	for _, item := range manifest {
 		canonical := canonicalBackupLocator(reader, item.Locator)
 		known[canonical] = true
+		if original, exists := originalByLocator[canonical]; matchStructure && exists && original != item.Locator {
+			conflictingLocators[canonical] = true
+		}
 		originalByLocator[canonical] = item.Locator
 		if expectedByLocator[canonical] == nil {
 			expectedByLocator[canonical] = make(map[string]bool)
 		}
 		expectedByLocator[canonical][item.RawSHA256] = true
 	}
-	verifiedLocators := make(map[string]bool)
 	for locator, expected := range expectedByLocator {
-		if len(expected) != 1 {
+		if len(expected) != 1 || conflictingLocators[locator] {
 			report.Corrupt++
+			continue
+		}
+		currentLocator, present := physicalLocators[locator]
+		if !present {
+			report.Missing++
 			continue
 		}
 		if readErr := physicalErrors[locator]; readErr != nil {
@@ -164,21 +190,26 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			}
 			continue
 		}
-		msg, readErr := reader.ReadBackupMessage(ctx, originalByLocator[locator])
-		if readErr != nil {
-			if errors.Is(readErr, plugins.ErrBackupMessageMissing) {
-				report.Missing++
-			} else if errors.Is(readErr, plugins.ErrBackupMessageCorrupt) {
+		hash := physicalHashes[locator]
+		if matchStructure {
+			if !matcher.BackupLocatorsEquivalent(currentLocator, originalByLocator[locator]) {
 				report.Corrupt++
-			} else {
-				return report, fmt.Errorf("verify %q: %w", originalByLocator[locator], readErr)
+				continue
 			}
-			continue
+			// Equivalent locators can differ only by the writer-added final
+			// newline. Both hashes come from the current physical record;
+			// never re-read a historical byte range from the manifest.
+			if currentLocator != originalByLocator[locator] {
+				var ok bool
+				hash, ok = physicalUnpaddedHashes[locator]
+				if !ok {
+					report.Corrupt++
+					continue
+				}
+			}
 		}
-		hash := dedup.ComputeContentHash(msg.Raw)
 		if expected[hash] {
 			report.Verified++
-			verifiedLocators[locator] = true
 		} else {
 			report.Corrupt++
 		}
@@ -195,10 +226,10 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		}
 		if locators := byHash[item.RawSHA256]; len(locators) > 0 {
 			locator := locators[0]
-			known[locator] = true
-			if !verifiedLocators[locator] {
+			if !known[locator] {
 				legacyVerified[locator] = true
 			}
+			known[locator] = true
 		} else {
 			report.Unverifiable++
 		}

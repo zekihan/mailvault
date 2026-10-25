@@ -27,6 +27,9 @@ type SourceConfig struct {
 	ReadTimeout       time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
 	MaxConnections    int           `mapstructure:"max_connections" yaml:"max_connections"`
 
+	MaxListingItems int `mapstructure:"max_listing_items" yaml:"max_listing_items"`
+	MaxListingBytes int `mapstructure:"max_listing_bytes" yaml:"max_listing_bytes"`
+
 	// OAuth2 (optional)
 	OAuth2 *OAuth2Config `mapstructure:"oauth2" yaml:"oauth2"`
 }
