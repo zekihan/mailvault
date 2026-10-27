@@ -35,9 +35,13 @@ func NewStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	if path == ":memory:" {
-		db.SetMaxOpenConns(1)
-	}
+	// SQLite permits one writer. Serialize all state operations within this
+	// process instead of making concurrent folder/receipt writes compete for
+	// SQLite's busy timeout. Pool waiters remain cancellable via their context.
+	// Keep rows/transactions scoped to one operation; do not call another Store
+	// method while holding a connection.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	s := &Store{db: db, path: filename}
 	if err := s.migrate(context.Background()); err != nil {

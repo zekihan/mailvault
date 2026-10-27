@@ -16,7 +16,12 @@ func TestSQLiteConnectionPragmas(t *testing.T) {
 	}
 	defer store.Close()
 	ctx := context.Background()
-	// Hold both connections so settings must be applied to separate pool entries.
+	// The production writable pool has one connection. Expand only this test
+	// pool to verify DSN settings apply to every newly opened connection.
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("writable pool limit = %d, want 1", got)
+	}
+	store.db.SetMaxOpenConns(2)
 	first, err := store.db.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +44,12 @@ func TestSQLiteConnectionPragmas(t *testing.T) {
 			if got != query.want {
 				t.Fatalf("%s = %d, want %d", query.sql, got, query.want)
 			}
+		}
+	}
+	for _, conn := range []*sql.Conn{first, second} {
+		var mode string
+		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
+			t.Fatalf("journal mode = %q, %v", mode, err)
 		}
 	}
 	ro, err := NewReadOnlyStore(path)
