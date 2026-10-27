@@ -9,6 +9,10 @@ imagePullSecrets: []
 initContainers: []
 # Secret containing config.yaml and any file-referenced credentials under /config.
 configSecret: mailvault-config
+# Secret keys exposed as regular files at /credentials/<key> using read-only
+# subPath mounts. Reference those paths in config.yaml. Each new pod receives
+# the current Secret; existing pods do not receive projected updates.
+credentialFiles: []
 schedule: '0 3 * * *'
 timeZone: Etc/UTC
 suspend: true

@@ -36,7 +36,12 @@ kubectl -n mailvault create secret generic mailvault-config \
   --from-file=mail-password=/path/to/password-file
 ```
 
-Use `password_ref: file:/config/mail-password` in that configuration. Target
+Set `credentialFiles: [mail-password]` in the chart values and use
+`password_ref: file:/credentials/mail-password` in that configuration. Each
+listed key is mounted as a read-only regular file, compatible with the
+credential reader's symlink protection. Kubernetes does not update a subPath
+mount in an existing pod; each newly created CronJob pod receives the current
+Secret. Restart a running setup pod after rotating credentials. Target
 Maildir paths must be under `/backups`. For OAuth, use a persistent file token
 store under `/state` rather than the desktop keyring, and initialize it before
 scheduling. Do not put passwords or tokens in Helm values or commit them.
@@ -147,7 +152,8 @@ Bridge stores the imported certificate **paths**. Both setup and runtime mount
 these same paths; copying only the exported public certificate is insufficient.
 The private server key is mounted only into Bridge, never into Mailvault.
 
-Use the following source in your config Secret, adding a Maildir target under
+Add `proton-password` to the chart's `credentialFiles` list. Use the following
+source in your config Secret, adding a Maildir target under
 `/backups` and the matching pair as in the repository's example configuration:
 
 ```yaml
@@ -157,7 +163,7 @@ sources:
     host: backup-mailvault-bridge.mailvault.svc
     port: 1143
     username: YOUR_BRIDGE_USERNAME
-    password_ref: file:/config/proton-password
+    password_ref: file:/credentials/proton-password
     use_tls: false
     start_tls: true
     folders: [INBOX]
