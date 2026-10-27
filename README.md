@@ -151,6 +151,27 @@ Dry runs do not acquire or create writer locks. Separate state databases do not
 coordinate deliveries, even if they point at the same backup destination.
 Do not hard-link SQLite state databases under different filenames.
 
+Within a writable store, one SQLite connection serializes folder observations,
+message metadata, and receipt access across concurrent source-target pairs.
+Network fetch/delivery concurrency remains unchanged (default: five). This avoids
+in-process writers consuming one another's SQLite busy timeout. Pool waiters
+honor their caller context; callers that need a whole-operation deadline must
+supply one. An external SQLite lock waits up to five seconds per statement and
+then reports `SQLITE_BUSY`; queued operations can each incur that wait. The
+SQLite driver may finish its busy-handler wait before returning cancellation.
+There is no unbounded retry or suppression of failed state writes.
+
+Writable file databases explicitly use `journal_mode=DELETE`, with foreign keys
+and a 5000 ms busy timeout applied whenever a connection opens. Rollback
+journaling preserves compatibility without assuming WAL shared-memory support;
+WAL still permits only one writer. The state volume must support SQLite locking
+and durable local-filesystem semantics. Verify the deployed storage driver and
+mount before changing journal mode or sharing a state volume across hosts.
+Read-only opens do not change journal mode. Persistent lock failures remain
+errors and must be investigated; never delete state, clear receipts, or remove
+lock files to suppress them. This strategy does not establish which process held
+a previously reported production lock.
+
 ### pruning old metadata
 
 `cleanup-state` previews fetched-message metadata older than a requested age.
