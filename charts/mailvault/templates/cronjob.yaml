@@ -47,6 +47,12 @@ spec:
                 - name: config
                   mountPath: /config
                   readOnly: true
+                {{- range .Values.credentialFiles }}
+                - name: config
+                  mountPath: {{ printf "/credentials/%s" . | quote }}
+                  subPath: {{ . | quote }}
+                  readOnly: true
+                {{- end }}
                 - name: state
                   mountPath: /state
                 - name: backups

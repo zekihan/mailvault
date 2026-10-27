@@ -29,6 +29,17 @@ check(app_version.match?(/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za
 check(base_image == "ghcr.io/zekihan/mailvault:#{app_version.split('+').first}", 'image must default to chart appVersion')
 override = render('--set', 'image.tag=custom')
 check(cron(override)['jobTemplate']['spec']['template']['spec']['containers'][0]['image'] == 'ghcr.io/zekihan/mailvault:custom', 'explicit image tag must take precedence')
+credential_docs = render('--set', 'setup.enabled=true,credentialFiles[0]=mail-password,credentialFiles[1]=other-password')
+credential_job = cron(credential_docs)['jobTemplate']['spec']['template']['spec']['containers'][0]
+credential_setup = credential_docs.find { |d| d.dig('metadata', 'name') == 'test-mailvault-setup' }['spec']['template']['spec']['containers'][0]
+expected_credential_mounts = %w[mail-password other-password].map { |key| {'name'=>'config', 'mountPath'=>"/credentials/#{key}", 'subPath'=>key, 'readOnly'=>true} }
+[credential_job, credential_setup].each do |container|
+  check(container['volumeMounts'].select { |m| m['mountPath'].start_with?('/credentials/') } == expected_credential_mounts, 'credential files must be read-only subPath mounts in job and setup')
+end
+['credentialFiles[0]=../escape', 'credentialFiles[0]=a,credentialFiles[1]=a'].each do |values|
+  _, _, status = Open3.capture3('helm', 'template', 'test', 'charts/mailvault', '--set', values)
+  check(!status.success?, 'unsafe or duplicate credential key accepted')
+end
 setup = render('--set', 'proton.enabled=true')
 check(setup.find { |d| d['kind'] == 'Deployment' }['spec']['replicas'] == 0, 'setup must stop Bridge')
 bridge_setup = setup.find { |d| d['kind'] == 'Deployment' && d['metadata']['name'].end_with?('-bridge-setup') }
