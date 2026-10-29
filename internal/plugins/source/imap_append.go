@@ -144,36 +144,13 @@ func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plu
 }
 
 func appendFlags(values []string) ([]imap.Flag, error) {
-	flags := make([]imap.Flag, 0, len(values))
-	for _, value := range values {
-		switch strings.ToLower(value) {
-		case "\\recent":
-			continue
-		case "\\seen":
-			flags = append(flags, imap.FlagSeen)
-			continue
-		case "\\answered":
-			flags = append(flags, imap.FlagAnswered)
-			continue
-		case "\\flagged":
-			flags = append(flags, imap.FlagFlagged)
-			continue
-		case "\\deleted":
-			flags = append(flags, imap.FlagDeleted)
-			continue
-		case "\\draft":
-			flags = append(flags, imap.FlagDraft)
-			continue
-		}
-		if value == "" || strings.HasPrefix(value, "\\") {
-			return nil, fmt.Errorf("unsupported IMAP system flag %q", value)
-		}
-		for _, char := range []byte(value) {
-			if char < 0x21 || char > 0x7e || strings.ContainsRune("(){%*\\\"]", rune(char)) {
-				return nil, fmt.Errorf("invalid IMAP keyword flag %q", value)
-			}
-		}
-		flags = append(flags, imap.Flag(value))
+	values, err := plugins.NormalizeAppendFlags(values)
+	if err != nil {
+		return nil, err
+	}
+	flags := make([]imap.Flag, len(values))
+	for i, value := range values {
+		flags[i] = imap.Flag(value)
 	}
 	return flags, nil
 }
