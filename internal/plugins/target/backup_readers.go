@@ -503,12 +503,18 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 	if lineEnd < 0 {
 		return nil, fmt.Errorf("%w: invalid mbox separator", plugins.ErrBackupMessageCorrupt)
 	}
-	if int64(len(data)-lineEnd-1) < encodedLength+1 {
+	if int64(len(data)) != length || int64(len(data)-lineEnd-1) != encodedLength+1 {
 		return nil, fmt.Errorf("%w: truncated mbox record", plugins.ErrBackupMessageCorrupt)
 	}
 	encoded := data[lineEnd+1 : lineEnd+1+int(encodedLength)]
+	if data[len(data)-1] != '\n' || (len(encoded) > 0 && encoded[len(encoded)-1] != '\n') {
+		return nil, fmt.Errorf("%w: mbox record missing framing newline", plugins.ErrBackupMessageCorrupt)
+	}
 	raw := unescapeMboxrd(encoded)
-	if int64(len(raw)) < rawLength {
+	// The writer may add one final LF to a nonempty message. Every other
+	// decoded byte belongs to the message and must not be silently discarded.
+	padded := rawLength > 0 && int64(len(raw)) == rawLength+1 && raw[len(raw)-1] == '\n'
+	if int64(len(raw)) != rawLength && !padded {
 		return nil, fmt.Errorf("%w: invalid mbox raw length", plugins.ErrBackupMessageCorrupt)
 	}
 	raw = raw[:rawLength]
