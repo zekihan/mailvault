@@ -191,7 +191,7 @@ func (t *MboxTarget) walkBackupMessages(ctx context.Context, maxRecordBytes int6
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	file, err := os.Open(t.path)
+	file, err := openMboxFile(t.path, os.O_RDONLY, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -469,7 +469,7 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 	if err != nil || rawLength < 0 || rawLength > encodedLength {
 		return nil, fmt.Errorf("%w: invalid mbox locator", plugins.ErrBackupMessageCorrupt)
 	}
-	file, err := os.Open(t.path)
+	file, err := openMboxFile(t.path, os.O_RDONLY, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %v", plugins.ErrBackupMessageMissing, err)

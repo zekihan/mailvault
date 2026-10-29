@@ -91,7 +91,7 @@ func (t *MboxTarget) Initialize(ctx context.Context) error {
 	}
 
 	// Open mbox file for appending
-	file, err := os.OpenFile(t.path, flags, 0600)
+	file, err := openMboxFile(t.path, flags, 0600)
 	if err != nil {
 		return fmt.Errorf("open mbox file: %w", err)
 	}
