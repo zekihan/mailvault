@@ -77,6 +77,40 @@ func TestMaildirFolderEncodingIsSafeAndDistinct(t *testing.T) {
 	}
 }
 
+func TestMaildirBackupReaderPreservesFolderNames(t *testing.T) {
+	for _, folder := range []string{"Archive/2026", "/INBOX", "Archive/", "a//b", "/", "~", "../outside", "受信/保存"} {
+		t.Run(folder, func(t *testing.T) {
+			ctx := context.Background()
+			target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_folders": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			maildir := target.(*MaildirTarget)
+			t.Cleanup(func() { _ = maildir.Close() })
+			if err := maildir.Initialize(ctx); err != nil {
+				t.Fatal(err)
+			}
+			locator, err := maildir.WriteBackupMessage(ctx, &plugins.Message{Folder: folder, Raw: []byte("Subject: fixture\r\n\r\nbody\r\n")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := maildir.ListBackupMessages(ctx)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("listed %d messages, want one: %v", len(entries), err)
+			}
+			for _, readLocator := range []string{locator, entries[0].Locator} {
+				msg, err := maildir.ReadBackupMessage(ctx, readLocator)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if msg.Folder != folder {
+					t.Errorf("folder = %q, want %q", msg.Folder, folder)
+				}
+			}
+		})
+	}
+}
+
 func TestMaildirPreservationDefaultsRemainFlat(t *testing.T) {
 	target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir()})
 	if err != nil {

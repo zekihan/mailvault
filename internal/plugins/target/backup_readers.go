@@ -141,6 +141,12 @@ func maildirFolder(root, path string) string {
 		if part == "cur" || part == "new" {
 			break
 		}
+		// messagePath uses ~ for an empty component because an empty path
+		// segment would be collapsed by filepath.Join.
+		if part == "~" {
+			folders = append(folders, "")
+			continue
+		}
 		decoded, err := base64.RawURLEncoding.DecodeString(part)
 		if err != nil {
 			return ""
