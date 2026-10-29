@@ -142,6 +142,8 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 			if physicalErrors[canonical] != nil {
 				if errors.Is(physicalErrors[canonical], plugins.ErrBackupMessageCorrupt) {
 					report.Corrupt++
+				} else if errors.Is(physicalErrors[canonical], plugins.ErrBackupMessageMissing) {
+					report.Missing++
 				}
 			} else {
 				report.Unverifiable++
@@ -249,6 +251,9 @@ func verifyTargetWithStateTarget(ctx context.Context, targetName, stateTarget st
 		}
 		if !known[locator] && !isSuperseded && errors.Is(physicalErrors[locator], plugins.ErrBackupMessageCorrupt) {
 			report.Corrupt++
+		}
+		if !known[locator] && !isSuperseded && errors.Is(physicalErrors[locator], plugins.ErrBackupMessageMissing) {
+			report.Missing++
 		}
 	}
 	return report, nil
