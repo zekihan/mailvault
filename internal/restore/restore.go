@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/zekihan/mailvault/internal/plugins"
 	"github.com/zekihan/mailvault/internal/state"
@@ -180,21 +181,6 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 		if err != nil {
 			return result, err
 		}
-		if msg.UID == "" {
-			msg.UID = entry.UID
-		}
-		if msg.UIDScope == "" {
-			msg.UIDScope = entry.Scope
-		}
-		if msg.Folder == "" {
-			msg.Folder = entry.Folder
-		}
-		if len(msg.Flags) == 0 {
-			msg.Flags = append([]string(nil), entry.Flags...)
-		}
-		if msg.InternalDate == "" {
-			msg.InternalDate = entry.InternalDate
-		}
 		currentUIDValidity, err := appender.MailboxUIDValidity(ctx, options.DestinationFolder)
 		if err != nil {
 			return result, fmt.Errorf("recheck destination mailbox UIDVALIDITY: %w", err)
@@ -223,6 +209,32 @@ func readAndValidate(ctx context.Context, reader BackupReader, entry plugins.Bac
 	}
 	if msg == nil {
 		return nil, entry, false, fmt.Errorf("backup message %q is empty", entry.Locator)
+	}
+	// Work on a copy: readers may reuse their message object across reads.
+	copy := *msg
+	msg = &copy
+	if msg.UID == "" {
+		msg.UID = entry.UID
+	}
+	if msg.UIDScope == "" {
+		msg.UIDScope = entry.Scope
+	}
+	if msg.Folder == "" {
+		msg.Folder = entry.Folder
+	}
+	if len(msg.Flags) == 0 {
+		msg.Flags = append([]string(nil), entry.Flags...)
+	}
+	if msg.InternalDate == "" {
+		msg.InternalDate = entry.InternalDate
+	}
+	if msg.InternalDate != "" {
+		if _, err := time.Parse(time.RFC3339, msg.InternalDate); err != nil {
+			return nil, entry, false, fmt.Errorf("backup message %q has invalid internal date: %w", entry.Locator, err)
+		}
+	}
+	if _, err := plugins.NormalizeAppendFlags(msg.Flags); err != nil {
+		return nil, entry, false, fmt.Errorf("backup message %q has invalid flags: %w", entry.Locator, err)
 	}
 	digest := sha256.Sum256(msg.Raw)
 	unverified := entry.RawSHA256 == ""
