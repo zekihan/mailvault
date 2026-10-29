@@ -158,7 +158,7 @@ func (c *pop3Protocol) Auth(user, password string) error {
 	return nil
 }
 
-func (c *pop3Protocol) Stat() (int, int, error) {
+func (c *pop3Protocol) Stat() (int, int64, error) {
 	response, err := c.Cmd("STAT")
 	if err != nil {
 		return 0, 0, err
@@ -171,7 +171,9 @@ func (c *pop3Protocol) Stat() (int, int, error) {
 	if err != nil || count < 0 {
 		return 0, 0, errors.New("invalid STAT count")
 	}
-	size, err := strconv.Atoi(string(fields[1]))
+	// The mailbox byte total can exceed a 32-bit int even when every
+	// individual message is small enough to retrieve.
+	size, err := strconv.ParseInt(string(fields[1]), 10, 64)
 	return count, size, err
 }
 
