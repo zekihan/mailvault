@@ -322,3 +322,60 @@ func TestVerifyRequiresUniqueCurrentPhysicalEntry(t *testing.T) {
 		})
 	}
 }
+
+// Remove a real synthetic backup after enumeration, without relying on timing.
+type disappearingBackupReader struct {
+	plugins.TargetBackupReader
+	path string
+}
+
+func (r disappearingBackupReader) ReadBackupMessage(ctx context.Context, locator string) (*plugins.Message, error) {
+	if err := os.Remove(filepath.Join(r.path, filepath.FromSlash(locator))); err != nil {
+		return nil, err
+	}
+	return r.TargetBackupReader.ReadBackupMessage(ctx, locator)
+}
+
+func TestVerifyReportsMessageDisappearingAfterEnumeration(t *testing.T) {
+	for _, database := range []string{"absent", "empty", "manifested"} {
+		t.Run(database, func(t *testing.T) {
+			oldState := stateDir
+			stateDir = t.TempDir()
+			t.Cleanup(func() { stateDir = oldState })
+			ctx := context.Background()
+			path := t.TempDir()
+			backup, err := target.NewMaildirTarget(map[string]interface{}{"path": path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backup.Close()
+			if err := backup.Initialize(ctx); err != nil {
+				t.Fatal(err)
+			}
+			md := backup.(*target.MaildirTarget)
+			raw := []byte("Subject: synthetic\n\nfixture\n")
+			locator, err := md.WriteBackupMessage(ctx, &plugins.Message{Raw: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if database != "absent" {
+				store, err := state.NewStore(filepath.Join(stateDir, "state.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if database == "manifested" {
+					err = store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "fixture", Target: "archive", Scope: "scope", Folder: "INBOX", UID: "1", Locator: locator, RawSHA256: dedup.ComputeContentHash(raw)})
+				}
+				closeErr := store.Close()
+				if err != nil || closeErr != nil {
+					t.Fatalf("prepare manifest: %v, close: %v", err, closeErr)
+				}
+			}
+			report, err := verifyTarget(ctx, "archive", disappearingBackupReader{TargetBackupReader: md, path: path})
+			want := verificationReport{Target: "archive", Scanned: 1, Missing: 1}
+			if err != nil || report != want {
+				t.Fatalf("verify = %+v, %v; want %+v", report, err, want)
+			}
+		})
+	}
+}
