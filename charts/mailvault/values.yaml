@@ -63,7 +63,7 @@ proton:
   setup: true
   image:
     repository: ghcr.io/zekihan/protonmailbridge
-    tag: 3.27.1-r1
+    tag: 3.27.1-r2
     digest: ""
     pullPolicy: IfNotPresent
   # Secret keys: tls.crt, tls.key, ca.crt. Certificate SAN must match the Service.
@@ -75,9 +75,14 @@ proton:
     storageClass: null
     accessModes: [ReadWriteOnce]
   networkPolicy: true
-  # Bridge keeps its state in /root, so it still runs as root until the image and
-  # volume ownership change; privileges and syscalls are restricted regardless.
+  # Bridge runs as the image user (UID/GID 65532) with its state mounted at /root,
+  # where its vault records absolute paths. The state volume must be owned by this
+  # UID before upgrading. Do not set fsGroup: gpg-agent rejects a group-accessible
+  # home directory. Set a key to null to drop it, for example runAsNonRoot.
   podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
     seccompProfile:
       type: RuntimeDefault
   securityContext:

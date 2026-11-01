@@ -10,7 +10,7 @@ Run the local-file examples from this repository checkout. TLS files generated
 below live under ignored `secrets/`; the legacy
 `proton-tls/` path is also ignored. Never force-add these files to Git.
 
-The patched Bridge image `3.27.1-r1` must be published from `zekihan/dockerfiles`
+The patched Bridge image `3.27.1-r2` must be published from `zekihan/dockerfiles`
 before deploying Proton. Do not substitute the original 3.27.1 image: it only
 listens on loopback. Select a published Mailvault image tag/digest in values;
 The Mailvault image tag defaults to the semantic version in chart appVersion
@@ -60,14 +60,21 @@ certificate mounts, or Proton settings are created when Proton is disabled.
 ## Security contexts and resources
 
 Bridge and the Bridge setup Deployment use `proton.podSecurityContext`
-(`RuntimeDefault` seccomp) and `proton.securityContext` (no privilege
-escalation, all capabilities dropped), and `proton.resources` with a 2Gi memory
-limit. Bridge needs no capability: it binds port 1143 and only writes files it
-owns under `/root`. It still runs as root because that is where the image keeps
-its state; the setup Deployment runs the interactive login and initial
-synchronization in the same container, so the limit covers that peak. Bridge caps
-synchronization memory at about 2Gi from host RAM, not the container limit, so
-raise `proton.resources.limits.memory` before re-synchronizing a very large account.
+(UID/GID 65532, `runAsNonRoot`, `RuntimeDefault` seccomp) and
+`proton.securityContext` (no privilege escalation, all capabilities dropped), and
+`proton.resources` with a 2Gi memory limit. Bridge needs no capability: it binds
+port 1143 and only writes files it owns under `/root`, which stays the state mount
+and `HOME` because Bridge's encrypted vault records absolute paths below it. The
+setup Deployment runs the interactive login and initial synchronization in the same
+container, so the limit covers that peak. Bridge caps synchronization memory at
+about 2Gi from host RAM, not the container limit, so raise
+`proton.resources.limits.memory` before re-synchronizing a very large account.
+
+Before upgrading from a chart that ran Bridge as root, stop Bridge and chown the
+Bridge state volume to 65532:65532 once (`chown -R`, modes unchanged: `.gnupg` must
+stay 0700 and private keys 0600). Do not use `fsGroup`; gpg-agent rejects a
+group-accessible home directory. Image tags before `3.27.1-r2` only run as root, so
+to keep an old image set `proton.podSecurityContext.runAsNonRoot=null,proton.podSecurityContext.runAsUser=null,proton.podSecurityContext.runAsGroup=null`.
 
 The backup CronJob and the Mailvault setup Deployment use `podSecurityContext`
 (UID/GID 65532, `runAsNonRoot`, `RuntimeDefault` seccomp) and `securityContext`

@@ -144,7 +144,8 @@ check(bridge_workloads.size == 2, 'Bridge and Bridge setup Deployments expected'
 bridge_workloads.each do |deployment|
   pod = deployment['spec']['template']['spec']
   name = deployment['metadata']['name']
-  check(pod['securityContext'] == {'seccompProfile'=>{'type'=>'RuntimeDefault'}}, "#{name} must use the RuntimeDefault seccomp profile")
+  check(pod['securityContext'] == {'runAsNonRoot'=>true, 'runAsUser'=>65532, 'runAsGroup'=>65532, 'seccompProfile'=>{'type'=>'RuntimeDefault'}}, "#{name} must run as non-root UID 65532 with the RuntimeDefault seccomp profile")
+  check(!pod['securityContext'].key?('fsGroup'), "#{name} must not set fsGroup; gpg-agent rejects group-accessible homes")
   (pod['containers'] + (pod['initContainers'] || [])).each do |container|
     check(container['securityContext'] == {'allowPrivilegeEscalation'=>false, 'capabilities'=>{'drop'=>['ALL']}}, "#{name}/#{container['name']} must block privilege escalation and drop all capabilities")
     check(container.dig('resources', 'limits', 'memory') == '2Gi', "#{name}/#{container['name']} must have a memory limit")
@@ -154,6 +155,8 @@ end
 bridge_override = render('--set', 'proton.enabled=true,proton.setup=false,proton.resources.limits.memory=3Gi,proton.securityContext.readOnlyRootFilesystem=true')
 bridge_container = bridge_override.find { |d| d['kind'] == 'Deployment' }['spec']['template']['spec']['containers'][0]
 check(bridge_container.dig('resources', 'limits', 'memory') == '3Gi' && bridge_container.dig('securityContext', 'readOnlyRootFilesystem') == true, 'Bridge limits and security context must be configurable')
+bridge_interim = render('--set', 'proton.enabled=true,proton.podSecurityContext.runAsNonRoot=null,proton.podSecurityContext.runAsUser=null,proton.podSecurityContext.runAsGroup=null')
+check(bridge_interim.find { |d| d['kind'] == 'Deployment' }['spec']['template']['spec']['securityContext'] == {'seccompProfile'=>{'type'=>'RuntimeDefault'}}, 'Bridge non-root keys must be removable for rollback')
 puts 'Bridge and Bridge setup security contexts and memory limits passed'
 
 expected_pod_security = {'runAsNonRoot'=>true, 'runAsUser'=>65532, 'runAsGroup'=>65532, 'seccompProfile'=>{'type'=>'RuntimeDefault'}}
