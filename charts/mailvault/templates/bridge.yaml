@@ -20,6 +20,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+      securityContext: {{ .Values.proton.podSecurityContext | toJson }}
       terminationGracePeriodSeconds: 60
       containers:
         - name: bridge
@@ -35,6 +36,7 @@ spec:
             tcpSocket:
               port: imap
             periodSeconds: 5
+          securityContext: {{ .Values.proton.securityContext | toJson }}
           resources: {{ .Values.proton.resources | toJson }}
           volumeMounts:
             - name: state
@@ -93,12 +95,14 @@ spec:
     spec:
       automountServiceAccountToken: false
       imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+      securityContext: {{ .Values.proton.podSecurityContext | toJson }}
       restartPolicy: Always
       containers:
         - name: setup
           image: {{ include "mailvault.image" .Values.proton.image | quote }}
           imagePullPolicy: {{ .Values.proton.image.pullPolicy }}
           command: ["sleep", "infinity"]
+          securityContext: {{ .Values.proton.securityContext | toJson }}
           resources: {{ .Values.proton.resources | toJson }}
           volumeMounts:
             - name: state

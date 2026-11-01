@@ -60,7 +60,20 @@ proton:
     storageClass: null
     accessModes: [ReadWriteOnce]
   networkPolicy: true
+  # Bridge keeps its state in /root, so it still runs as root until the image and
+  # volume ownership change; privileges and syscalls are restricted regardless.
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  # Also applies to the interactive setup Deployment, where the initial mailbox
+  # synchronization runs. Bridge caps sync memory at about 2Gi based on host RAM.
   resources:
     requests:
       cpu: 100m
       memory: 512Mi
+    limits:
+      memory: 2Gi

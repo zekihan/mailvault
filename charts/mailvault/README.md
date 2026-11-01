@@ -57,6 +57,18 @@ This creates the suspended CronJob `backup-mailvault`. Provision credentials,
 then follow the manual backup and scheduling steps below. No Bridge resources,
 certificate mounts, or Proton settings are created when Proton is disabled.
 
+## Security contexts and resources
+
+Bridge and the Bridge setup Deployment use `proton.podSecurityContext`
+(`RuntimeDefault` seccomp) and `proton.securityContext` (no privilege
+escalation, all capabilities dropped), and `proton.resources` with a 2Gi memory
+limit. Bridge needs no capability: it binds port 1143 and only writes files it
+owns under `/root`. It still runs as root because that is where the image keeps
+its state; the setup Deployment runs the interactive login and initial
+synchronization in the same container, so the limit covers that peak. Bridge caps
+synchronization memory at about 2Gi from host RAM, not the container limit, so
+raise `proton.resources.limits.memory` before re-synchronizing a very large account.
+
 ## OAuth initialization (Mailvault)
 
 For each OAuth source, configure `oauth2.token_file: /state/SOURCE-oauth.json`

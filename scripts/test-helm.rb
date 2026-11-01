@@ -137,3 +137,21 @@ Dir.mktmpdir('mailvault-init-') do |directory|
   check(docs.select { |d| d['kind'] == 'Deployment' }.all? { |d| !d['spec']['template']['spec'].key?('initContainers') }, 'init checks must not block interactive setup or Bridge')
 end
 puts 'Optional scheduled-job startup checks passed'
+
+bridge_docs = render('--set', 'proton.enabled=true,proton.setup=true')
+bridge_workloads = bridge_docs.select { |d| d['kind'] == 'Deployment' && d['metadata']['name'].include?('-bridge') }
+check(bridge_workloads.size == 2, 'Bridge and Bridge setup Deployments expected')
+bridge_workloads.each do |deployment|
+  pod = deployment['spec']['template']['spec']
+  name = deployment['metadata']['name']
+  check(pod['securityContext'] == {'seccompProfile'=>{'type'=>'RuntimeDefault'}}, "#{name} must use the RuntimeDefault seccomp profile")
+  (pod['containers'] + (pod['initContainers'] || [])).each do |container|
+    check(container['securityContext'] == {'allowPrivilegeEscalation'=>false, 'capabilities'=>{'drop'=>['ALL']}}, "#{name}/#{container['name']} must block privilege escalation and drop all capabilities")
+    check(container.dig('resources', 'limits', 'memory') == '2Gi', "#{name}/#{container['name']} must have a memory limit")
+    check(container.dig('resources', 'requests', 'memory') == '512Mi', "#{name}/#{container['name']} must keep its memory request")
+  end
+end
+bridge_override = render('--set', 'proton.enabled=true,proton.setup=false,proton.resources.limits.memory=3Gi,proton.securityContext.readOnlyRootFilesystem=true')
+bridge_container = bridge_override.find { |d| d['kind'] == 'Deployment' }['spec']['template']['spec']['containers'][0]
+check(bridge_container.dig('resources', 'limits', 'memory') == '3Gi' && bridge_container.dig('securityContext', 'readOnlyRootFilesystem') == true, 'Bridge limits and security context must be configurable')
+puts 'Bridge and Bridge setup security contexts and memory limits passed'
