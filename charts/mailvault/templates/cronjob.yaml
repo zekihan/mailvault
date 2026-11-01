@@ -24,6 +24,7 @@ spec:
           restartPolicy: Never
           automountServiceAccountToken: false
           imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+          securityContext: {{ .Values.podSecurityContext | toJson }}
           {{- with .Values.initContainers }}
           initContainers:
             {{- toYaml . | nindent 12 }}
@@ -33,10 +34,7 @@ spec:
               image: {{ include "mailvault.image" (merge (dict "defaultTag" .Chart.AppVersion) .Values.image) | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               args: ["--config", "/config/config.yaml", "--state-dir", "/state", "sync"]
-              securityContext:
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop: [ALL]
+              securityContext: {{ .Values.securityContext | toJson }}
               resources: {{ .Values.resources | toJson }}
               {{- if .Values.proton.enabled }}
               env:

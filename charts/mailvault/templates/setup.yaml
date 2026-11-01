@@ -23,15 +23,13 @@ spec:
       restartPolicy: Always
       automountServiceAccountToken: false
       imagePullSecrets: {{ .Values.imagePullSecrets | toJson }}
+      securityContext: {{ .Values.podSecurityContext | toJson }}
       containers:
         - name: mailvault
           image: {{ include "mailvault.image" (merge (dict "defaultTag" .Chart.AppVersion) .Values.image) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sleep", "infinity"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: [ALL]
+          securityContext: {{ .Values.securityContext | toJson }}
           resources: {{ .Values.resources | toJson }}
           {{- if .Values.proton.enabled }}
           env:

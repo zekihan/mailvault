@@ -23,6 +23,21 @@ setup:
 initialized: false
 activeDeadlineSeconds: 14400
 backoffLimit: 0
+# Scheduled backups and the Mailvault setup Deployment run as a fixed non-root
+# user. The image has none, so the UID is set here. /state and /backups must be
+# owned by this UID (or otherwise writable) before upgrading. Do not set fsGroup:
+# it makes /state group-writable and OAuth token files 0660, which the token
+# store rejects. Set a key to null to drop it, for example runAsNonRoot.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
 # Size memory for max_message_bytes and max_connections in the config Secret.
 # Source backpressure bounds live message count; target encoding adds overhead.
 resources:

@@ -155,3 +155,22 @@ bridge_override = render('--set', 'proton.enabled=true,proton.setup=false,proton
 bridge_container = bridge_override.find { |d| d['kind'] == 'Deployment' }['spec']['template']['spec']['containers'][0]
 check(bridge_container.dig('resources', 'limits', 'memory') == '3Gi' && bridge_container.dig('securityContext', 'readOnlyRootFilesystem') == true, 'Bridge limits and security context must be configurable')
 puts 'Bridge and Bridge setup security contexts and memory limits passed'
+
+expected_pod_security = {'runAsNonRoot'=>true, 'runAsUser'=>65532, 'runAsGroup'=>65532, 'seccompProfile'=>{'type'=>'RuntimeDefault'}}
+expected_container_security = {'allowPrivilegeEscalation'=>false, 'capabilities'=>{'drop'=>['ALL']}}
+secure_docs = render('--set', 'setup.enabled=true,proton.enabled=true')
+secure_pods = {
+  'CronJob' => cron(secure_docs)['jobTemplate']['spec']['template']['spec'],
+  'setup Deployment' => secure_docs.find { |d| d['metadata']['name'] == 'test-mailvault-setup' }['spec']['template']['spec']
+}
+secure_pods.each do |name, pod|
+  check(pod['securityContext'] == expected_pod_security, "#{name} must run as non-root with RuntimeDefault seccomp")
+  pod['containers'].each { |c| check(c['securityContext'] == expected_container_security, "#{name} must drop capabilities and block privilege escalation") }
+end
+secure_override = render('--set', 'podSecurityContext.runAsUser=2000,securityContext.readOnlyRootFilesystem=true')
+secure_job = cron(secure_override)['jobTemplate']['spec']['template']['spec']
+check(secure_job['securityContext']['runAsUser'] == 2000 && secure_job['containers'][0]['securityContext']['readOnlyRootFilesystem'] == true, 'Mailvault security contexts must be configurable')
+check(!expected_pod_security.key?('fsGroup'), 'fsGroup breaks the OAuth token store checks')
+interim = render('--set', 'podSecurityContext.runAsNonRoot=null,podSecurityContext.runAsUser=null,podSecurityContext.runAsGroup=null')
+check(cron(interim)['jobTemplate']['spec']['template']['spec']['securityContext'] == {'seccompProfile'=>{'type'=>'RuntimeDefault'}}, 'non-root keys must be removable for migration')
+puts 'Mailvault job and setup security contexts passed'
