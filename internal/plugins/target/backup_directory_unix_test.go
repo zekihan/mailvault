@@ -11,7 +11,7 @@ import (
 )
 
 func TestMaildirWalkerRejectsFIFOWithoutBlocking(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fifo")
+	path := filepath.Join(physicalTempDir(t), "fifo")
 	if err := syscall.Mkfifo(path, 0600); err != nil {
 		t.Fatal(err)
 	}

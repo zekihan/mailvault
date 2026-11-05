@@ -18,7 +18,7 @@ var errMaildirSyncFixture = errors.New("synthetic directory sync failure")
 
 func durableMaildirFixture(t *testing.T) *MaildirTarget {
 	t.Helper()
-	plugin, err := NewMaildirTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "maildir"), "create_if_missing": true})
+	plugin, err := NewMaildirTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "maildir"), "create_if_missing": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestMaildirSyncFailureFailsAndRollsBackPublication(t *testing.T) {
 }
 
 func TestMaildirInitializationSyncsCreatedDirectoriesAndParents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "new-parent", "maildir")
+	path := filepath.Join(physicalTempDir(t), "new-parent", "maildir")
 	plugin, err := NewMaildirTarget(map[string]interface{}{"path": path, "create_if_missing": true})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestMaildirInitializeDoesNotReadSearchOnlyAncestors(t *testing.T) {
 	}
 	for _, create := range []bool{false, true} {
 		t.Run(fmt.Sprintf("create=%v", create), func(t *testing.T) {
-			base := t.TempDir()
+			base := physicalTempDir(t)
 			ancestor := filepath.Join(base, "search-only")
 			path := filepath.Join(ancestor, "archive")
 			if err := os.Mkdir(ancestor, 0700); err != nil {
@@ -147,7 +147,7 @@ func TestMaildirInitializeDoesNotReadSearchOnlyAncestors(t *testing.T) {
 }
 
 func TestMaildirInitializationSyncFailureRollsBackOwnedDirectories(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "existing")
+	parent := filepath.Join(physicalTempDir(t), "existing")
 	if err := os.Mkdir(parent, 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -42,7 +42,7 @@ func (r *streamingVerificationReader) ReadBackupMessage(context.Context, string)
 }
 func TestVerificationConsumesEntriesBeforeAdvancingListing(t *testing.T) {
 	previous := stateDir
-	stateDir = t.TempDir()
+	stateDir = physicalTempDir(t)
 	t.Cleanup(func() { stateDir = previous })
 	for _, failure := range []error{nil, plugins.ErrBackupListingLimit} {
 		reader := &streamingVerificationReader{t: t, failure: failure}
@@ -75,7 +75,7 @@ func (r mutatingMaildirRestoreReader) WalkBackupMessages(ctx context.Context, vi
 func TestPinnedMaildirRestoreAbortsBeforeMailboxCreation(t *testing.T) {
 	for _, mode := range []string{"cancellation", "directory replacement"} {
 		t.Run(mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "maildir")
+			path := filepath.Join(physicalTempDir(t), "maildir")
 			backup, err := target.NewMaildirTarget(map[string]any{"path": path, "max_listing_entries": 64, "max_listing_locator_bytes": 4096})
 			if err != nil {
 				t.Fatal(err)
@@ -102,7 +102,7 @@ func TestPinnedMaildirRestoreAbortsBeforeMailboxCreation(t *testing.T) {
 				}
 				return os.Mkdir(directory, 0700)
 			}
-			store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+			store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

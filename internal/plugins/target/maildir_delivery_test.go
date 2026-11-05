@@ -49,7 +49,7 @@ func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
 		}
 		return syncMaildirDirectory(path)
 	}
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

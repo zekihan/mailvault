@@ -84,7 +84,7 @@ func TestVerifyReportsCorruptMaildirWithoutChangingState(t *testing.T) {
 
 func TestVerifyDoesNotResolveMailboxCredentials(t *testing.T) {
 	configureCLI(t)
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	contents := fmt.Sprintf("sources:\n  - name: unavailable\n    type: imap\n    host: example.invalid\n    username: fixture\n    password_ref: env:MAILVAULT_TEST_ABSENT_PASSWORD\ntargets:\n  - name: local\n    type: maildir\n    config:\n      path: %q\npairs:\n  - source: unavailable\n    targets: [local]\n", path)
 	t.Setenv("MAILVAULT_TEST_ABSENT_PASSWORD", "")
 	if err := os.WriteFile(cfgFile, []byte(contents), 0600); err != nil {
@@ -196,7 +196,7 @@ func TestVerifyMboxUsesCurrentRecordStructure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			configureCLI(t)
 			ctx := context.Background()
-			path := filepath.Join(t.TempDir(), "archive.mbox")
+			path := filepath.Join(physicalTempDir(t), "archive.mbox")
 			backup, err := target.NewMboxTarget(map[string]interface{}{"path": path})
 			if err != nil {
 				t.Fatal(err)
@@ -340,10 +340,10 @@ func TestVerifyReportsMessageDisappearingAfterEnumeration(t *testing.T) {
 	for _, database := range []string{"absent", "empty", "manifested"} {
 		t.Run(database, func(t *testing.T) {
 			oldState := stateDir
-			stateDir = t.TempDir()
+			stateDir = physicalTempDir(t)
 			t.Cleanup(func() { stateDir = oldState })
 			ctx := context.Background()
-			path := t.TempDir()
+			path := physicalTempDir(t)
 			backup, err := target.NewMaildirTarget(map[string]interface{}{"path": path})
 			if err != nil {
 				t.Fatal(err)

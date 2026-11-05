@@ -73,7 +73,7 @@ type engineFixture struct {
 
 func newEngineFixture(t *testing.T) *engineFixture {
 	t.Helper()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

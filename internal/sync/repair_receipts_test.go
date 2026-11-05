@@ -22,8 +22,8 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			root := t.TempDir()
-			statePath := filepath.Join(t.TempDir(), "state.db")
+			root := physicalTempDir(t)
+			statePath := filepath.Join(physicalTempDir(t), "state.db")
 			message := &plugins.Message{UID: "42", Folder: "Archive", MessageID: "repair@example.invalid", Raw: []byte("Message-ID: <repair@example.invalid>\r\n\r\nbody\r\n")}
 			if withUIDScope {
 				message.UIDScope = "generation-1"
@@ -39,7 +39,7 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			store := openReceiptTestStore(t, filepath.Join(t.TempDir(), "fresh-state.db"))
+			store := openReceiptTestStore(t, filepath.Join(physicalTempDir(t), "fresh-state.db"))
 			stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
 			if stats.TotalWritten != 0 || stats.TotalSkipped != 1 || stats.TotalErrors != 0 {
 				t.Fatalf("adoption stats: %+v", stats)
@@ -66,8 +66,8 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 
 func TestRepairHealthyManifestRestoresMissingReceipts(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	statePath := filepath.Join(t.TempDir(), "state.db")
+	root := physicalTempDir(t)
+	statePath := filepath.Join(physicalTempDir(t), "state.db")
 	message := &plugins.Message{UID: "42", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: intact\r\n\r\nbody\r\n")}
 	message.ContentHash = dedup.ComputeContentHash(message.Raw)
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
@@ -91,8 +91,8 @@ func TestRepairHealthyManifestRestoresMissingReceipts(t *testing.T) {
 
 func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	statePath := filepath.Join(t.TempDir(), "state.db")
+	root := physicalTempDir(t)
+	statePath := filepath.Join(physicalTempDir(t), "state.db")
 	message := &plugins.Message{UID: "42", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: existing\r\n\r\nbody\r\n")}
 	message.ContentHash = dedup.ComputeContentHash(message.Raw)
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
@@ -109,7 +109,7 @@ func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 		path string
 	}{
 		{name: "healthy-manifest", path: statePath},
-		{name: "hash-scan", path: filepath.Join(t.TempDir(), "fresh-state.db")},
+		{name: "hash-scan", path: filepath.Join(physicalTempDir(t), "fresh-state.db")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			setupStore := openReceiptTestStore(t, test.path)
@@ -128,7 +128,7 @@ func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 
 func TestRepairDoesNotSupersedeSameLocator(t *testing.T) {
 	ctx := context.Background()
-	store := openReceiptTestStore(t, filepath.Join(t.TempDir(), "state.db"))
+	store := openReceiptTestStore(t, filepath.Join(physicalTempDir(t), "state.db"))
 	raw := []byte("Subject: unchanged locator\r\n\r\nbody\r\n")
 	message := &plugins.Message{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}
 	hash := dedup.ComputeContentHash(raw)

@@ -13,7 +13,7 @@ import (
 )
 
 func TestMaildirRefreshFlagsKeepsBytesAndResolvesOldLocator(t *testing.T) {
-	value, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_flags": true})
+	value, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_flags": true})
 	if runtime.GOOS == "windows" {
 		if err == nil || !strings.Contains(err.Error(), "Windows does not support") {
 			t.Fatalf("unsupported Maildir flag preservation was not rejected: %v", err)

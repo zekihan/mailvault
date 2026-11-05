@@ -15,7 +15,7 @@ func TestMaildirInitializeRejectsExistingNonDirectories(t *testing.T) {
 	for _, component := range []string{"cur", "new", "tmp"} {
 		for _, create := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/create=%v", component, create), func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "maildir")
+				path := filepath.Join(physicalTempDir(t), "maildir")
 				if err := os.Mkdir(path, 0750); err != nil {
 					t.Fatal(err)
 				}
@@ -46,7 +46,7 @@ func TestMaildirInitializeRejectsExistingNonDirectories(t *testing.T) {
 }
 
 func TestMaildirInitializationRollbackPreservesExistingAndPopulatedDirectories(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "existing")
+	path := filepath.Join(physicalTempDir(t), "existing")
 	if err := os.Mkdir(path, 0750); err != nil {
 		t.Fatal(err)
 	}

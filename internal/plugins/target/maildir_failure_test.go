@@ -26,7 +26,7 @@ func TestMaildirPreservesWriteAndCleanupErrors(t *testing.T) {
 		}
 		return
 	}
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
 	if err != nil {
 		t.Fatal(err)

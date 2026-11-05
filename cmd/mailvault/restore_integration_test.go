@@ -35,7 +35,7 @@ func (r *recordingMailbox) AppendMessage(_ context.Context, _ string, msg *plugi
 
 func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T) {
 	ctx := context.Background()
-	maildirPath := t.TempDir() + "/backup"
+	maildirPath := physicalTempDir(t) + "/backup"
 	backup, err := target.NewMaildirTarget(map[string]interface{}{"path": maildirPath, "max_listing_entries": 64, "max_listing_locator_bytes": 4096})
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 	}
 	digest := sha256.Sum256(raw)
 	entry := plugins.BackupMessage{Source: "account", Target: backupStateKey, Scope: "scope", Folder: "INBOX", UID: "42", Locator: currentLocator, RawSHA256: hex.EncodeToString(digest[:]), Flags: []string{"\\Seen", "$Label1"}, InternalDate: "2026-10-20T12:00:00Z"}
-	store, err := state.NewStore(t.TempDir() + "/state.db")
+	store, err := state.NewStore(physicalTempDir(t) + "/state.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRestoreReadsManifestBackedMaildirOnceAndPreservesMetadata(t *testing.T)
 
 func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "backup.mbox")
+	path := filepath.Join(physicalTempDir(t), "backup.mbox")
 	backup, err := target.NewMboxTarget(map[string]interface{}{"path": path})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestRestoreMboxManifestAfterEscapingPreservesExactBytes(t *testing.T) {
 	}
 	digest := sha256.Sum256(raw)
 	entry := plugins.BackupMessage{Source: "account", Target: backupStateKey, Scope: "scope", Folder: "INBOX", UID: "77", Locator: locator, RawSHA256: hex.EncodeToString(digest[:])}
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

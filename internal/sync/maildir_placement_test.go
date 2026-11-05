@@ -14,8 +14,8 @@ import (
 )
 
 func TestMaildirPreservedPlacementsAfterFlatBackup(t *testing.T) {
-	root := t.TempDir()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	root := physicalTempDir(t)
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

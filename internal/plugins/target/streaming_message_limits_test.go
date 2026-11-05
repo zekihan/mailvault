@@ -20,7 +20,7 @@ func TestStreamingLocalBackupsRetainMessageAndListingLimits(t *testing.T) {
 	oversized := append(bytes.Clone(raw), 'x', '\n')
 	for _, kind := range []string{"maildir", "mbox"} {
 		t.Run(kind, func(t *testing.T) {
-			values := map[string]any{"path": filepath.Join(t.TempDir(), "backup"), "max_message_bytes": len(oversized), "max_listing_entries": 10, "max_listing_locator_bytes": 4096}
+			values := map[string]any{"path": filepath.Join(physicalTempDir(t), "backup"), "max_message_bytes": len(oversized), "max_listing_entries": 10, "max_listing_locator_bytes": 4096}
 			var value plugins.Target
 			var err error
 			if kind == "maildir" {

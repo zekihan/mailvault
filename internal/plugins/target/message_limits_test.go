@@ -16,7 +16,7 @@ func TestTargetsApplySameLimitToWriteRepairAndRead(t *testing.T) {
 	raw := []byte("Subject: fixture\r\n\r\nFrom escaped\r\n>From escaped again\r\n")
 	for _, kind := range []string{"maildir", "mbox"} {
 		t.Run(kind, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "backup")
+			path := filepath.Join(physicalTempDir(t), "backup")
 			values := map[string]interface{}{"path": path, "max_message_bytes": int64(len(raw))}
 			var target plugins.Target
 			var err error
@@ -89,7 +89,7 @@ func TestS3RejectsOversizeBeforePublication(t *testing.T) {
 
 func TestMboxReservesFinalNewlineWithinReadLimit(t *testing.T) {
 	raw := []byte("body")
-	value, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox"), "max_message_bytes": len(raw)})
+	value, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox"), "max_message_bytes": len(raw)})
 	if err != nil {
 		t.Fatal(err)
 	}

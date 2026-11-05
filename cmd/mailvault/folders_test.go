@@ -50,7 +50,7 @@ func TestListFoldersDecodesNamesAndIgnoresUnrelatedCredentials(t *testing.T) {
 	}()
 	oldConfig, oldJSON := cfgFile, jsonOutput
 	defer func() { cfgFile = oldConfig; jsonOutput = oldJSON }()
-	cfgFile = filepath.Join(t.TempDir(), "config.yaml")
+	cfgFile = filepath.Join(physicalTempDir(t), "config.yaml")
 	content := fmt.Sprintf("sources:\n  - name: mailbox\n    type: imap\n    host: 127.0.0.1\n    port: %d\n    use_tls: false\n    username: test\n    password_ref: literal:synthetic\n  - name: unrelated\n    password_ref: file:/does-not-exist\n", listener.Addr().(*net.TCPAddr).Port)
 	if err := os.WriteFile(cfgFile, []byte(content), 0600); err != nil {
 		t.Fatal(err)

@@ -43,7 +43,7 @@ func TestBackupListingLimitConfiguration(t *testing.T) {
 func TestLocalBackupListingBudgetsAndEarlyStop(t *testing.T) {
 	for _, kind := range []string{"maildir", "mbox"} {
 		t.Run(kind, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "archive")
+			path := filepath.Join(physicalTempDir(t), "archive")
 			var reader plugins.TargetBackupReader
 			var limits *backupListingLimits
 			if kind == "maildir" {
@@ -271,8 +271,8 @@ func TestS3ListingTimeoutDoesNotIncludeConsumerWork(t *testing.T) {
 }
 
 func TestMaildirListingRejectsSymlinkedRoot(t *testing.T) {
-	root := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
+	root := physicalTempDir(t)
+	link := filepath.Join(physicalTempDir(t), "link")
 	if err := os.Symlink(root, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}

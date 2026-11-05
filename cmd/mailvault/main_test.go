@@ -14,7 +14,7 @@ import (
 
 func captureOutput(t *testing.T, run func() error) (string, error) {
 	t.Helper()
-	file, err := os.CreateTemp(t.TempDir(), "stdout")
+	file, err := os.CreateTemp(physicalTempDir(t), "stdout")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func configureCLI(t *testing.T) {
 		}},
 		"targets": []interface{}{map[string]interface{}{
 			"name": "local", "type": "maildir", "config": map[string]interface{}{
-				"path": filepath.Join(t.TempDir(), "mail"), "credentials_ref": "env:MAILVAULT_TEST_VALUE",
+				"path": filepath.Join(physicalTempDir(t), "mail"), "credentials_ref": "env:MAILVAULT_TEST_VALUE",
 			},
 		}},
 		"pairs": []interface{}{map[string]interface{}{"source": "test-account", "targets": []string{"local"}}},
@@ -68,11 +68,11 @@ func configureCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfgFile = filepath.Join(t.TempDir(), "config.yaml")
+	cfgFile = filepath.Join(physicalTempDir(t), "config.yaml")
 	if err := os.WriteFile(cfgFile, encoded, 0600); err != nil {
 		t.Fatal(err)
 	}
-	stateDir, dryRun, concurrency, maxRetries = t.TempDir(), false, 1, 0
+	stateDir, dryRun, concurrency, maxRetries = physicalTempDir(t), false, 1, 0
 	retryDelay, since, until = "0s", "", ""
 }
 

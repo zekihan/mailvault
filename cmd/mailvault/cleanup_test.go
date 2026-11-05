@@ -15,7 +15,7 @@ import (
 func TestStateCleanupPreviewsAndRetainsReceipts(t *testing.T) {
 	previousStateDir := stateDir
 	defer func() { stateDir = previousStateDir }()
-	stateDir = t.TempDir()
+	stateDir = physicalTempDir(t)
 	store, err := state.NewStore(filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
