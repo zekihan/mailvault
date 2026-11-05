@@ -2,9 +2,12 @@ name: Checks
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      publishing:
+        description: Run container and release validation before publication
+        type: boolean
+        default: false
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 permissions:
   contents: read
@@ -15,12 +18,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Validate release versions
+        run: ./scripts/release_version.sh
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: false
-      - uses: golangci/golangci-lint-action@v9.3.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
         with:
           version: v2.15.0
       - name: Validate modules and formatting
@@ -33,8 +41,11 @@ jobs:
   helm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: azure/setup-helm@v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
         with:
           version: v4.3.1
       - name: Validate Helm chart lifecycle

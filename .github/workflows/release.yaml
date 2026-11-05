@@ -1,0 +1,77 @@
+name: Publish
+'on':
+  push:
+    tags:
+      - v*
+  schedule:
+    - cron: 52 3 * * *
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild unchanged edge inputs
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  decide:
+    uses: zekihan/release-workflows/.github/workflows/decide.yaml@5fa11e0c1104623d17a191557a27e86a7715f778 # main
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    with:
+      mode: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'edge' }}
+      image: mailvault
+      force: ${{ inputs.force || false }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  checks:
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    uses: ./.github/workflows/pr.yaml
+    permissions:
+      contents: read
+    with:
+      publishing: true
+  publish:
+    needs:
+      - decide
+      - checks
+    uses: zekihan/release-workflows/.github/workflows/image.yaml@5fa11e0c1104623d17a191557a27e86a7715f778 # main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image: mailvault
+      mode: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'edge' }}
+      version: ${{ needs.decide.outputs.version }}
+      fingerprint: ${{ needs.decide.outputs.fingerprint }}
+      qemu: true
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  release:
+    needs:
+      - decide
+      - checks
+      - publish
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    uses: zekihan/release-workflows/.github/workflows/release.yaml@5fa11e0c1104623d17a191557a27e86a7715f778 # main
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: ${{ needs.decide.outputs.version }}
+      binaries: false
+      image: mailvault
+      image-digest: ${{ needs.publish.outputs.digest }}
+      chart-path: charts/mailvault
+      chart-name: mailvault
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
