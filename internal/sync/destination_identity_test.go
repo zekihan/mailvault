@@ -39,12 +39,12 @@ func (s *knownUIDFixtureSource) FetchMessages(ctx context.Context, _ []string, _
 
 func TestMaildirDestinationChangeDoesNotReuseReceiptsOrManifest(t *testing.T) {
 	ctx := context.Background()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	pathA := filepath.Join(root, "a")
 	pathB := filepath.Join(root, "b")
 	pathC := filepath.Join(root, "c")

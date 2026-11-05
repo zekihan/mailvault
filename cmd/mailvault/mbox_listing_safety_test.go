@@ -15,7 +15,7 @@ import (
 
 func TestVerifyRejectsMalformedMboxWithoutManifest(t *testing.T) {
 	configureCLI(t)
-	mboxPath := filepath.Join(t.TempDir(), "archive.mbox")
+	mboxPath := filepath.Join(physicalTempDir(t), "archive.mbox")
 	if err := os.WriteFile(mboxPath, []byte("Subject: damaged\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestVerifyRejectsMalformedMboxWithoutManifest(t *testing.T) {
 }
 
 func TestMboxListingHonorsCanceledContext(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "archive.mbox")
+	path := filepath.Join(physicalTempDir(t), "archive.mbox")
 	if err := os.WriteFile(path, []byte("From sender\nSubject: fixture\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

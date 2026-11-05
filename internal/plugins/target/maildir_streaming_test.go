@@ -17,7 +17,7 @@ import (
 
 func streamingMaildirFixture(t *testing.T) *MaildirTarget {
 	t.Helper()
-	value, err := NewMaildirTarget(map[string]any{"path": filepath.Join(t.TempDir(), "maildir"), "max_listing_entries": 64, "max_listing_locator_bytes": 4096})
+	value, err := NewMaildirTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "maildir"), "max_listing_entries": 64, "max_listing_locator_bytes": 4096})
 	if err != nil {
 		t.Fatal(err)
 	}

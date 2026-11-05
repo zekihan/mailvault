@@ -22,7 +22,7 @@ func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
 		{name: "preserved placement selects matching folder", target: &placementTarget{&fixtureTarget{name: "first"}}, folder: "Starred", want: "z-starred"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			storePath := filepath.Join(t.TempDir(), "state.db")
+			storePath := filepath.Join(physicalTempDir(t), "state.db")
 			store, err := state.NewStore(storePath)
 			if err != nil {
 				t.Fatal(err)

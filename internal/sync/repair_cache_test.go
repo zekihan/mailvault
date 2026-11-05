@@ -15,8 +15,8 @@ import (
 
 func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	root := physicalTempDir(t)
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func (t *repairWriteFailureTarget) WriteRepairMessage(context.Context, *plugins.
 }
 
 func TestRepairWriteFailuresDoNotPopulateCache(t *testing.T) {
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestRememberRepairBackupDoesNotCreatePartialIndex(t *testing.T) {
 }
 
 func TestRepairCacheKeepsPreservedFoldersDistinct(t *testing.T) {
-	maildir, err := target.NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_folders": true})
+	maildir, err := target.NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +222,8 @@ func TestRepairCacheKeepsPreservedFoldersDistinct(t *testing.T) {
 
 func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	root := physicalTempDir(t)
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

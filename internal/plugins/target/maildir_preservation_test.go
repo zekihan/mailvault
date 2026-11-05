@@ -12,7 +12,7 @@ import (
 )
 
 func TestMaildirPreservesFoldersAndFlagsWhenEnabled(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{
 		"path": root, "preserve_folders": true, "preserve_flags": true,
 	})
@@ -52,7 +52,7 @@ func TestMaildirPreservesFoldersAndFlagsWhenEnabled(t *testing.T) {
 }
 
 func TestMaildirFolderEncodingIsSafeAndDistinct(t *testing.T) {
-	target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_folders": true})
+	target, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestMaildirFolderEncodingIsSafeAndDistinct(t *testing.T) {
 	if first == second {
 		t.Fatal("distinct folder labels collided")
 	}
-	if _, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_flags": "yes"}); err == nil {
+	if _, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_flags": "yes"}); err == nil {
 		t.Fatal("invalid preserve_flags type was accepted")
 	}
 }
@@ -81,7 +81,7 @@ func TestMaildirBackupReaderPreservesFolderNames(t *testing.T) {
 	for _, folder := range []string{"Archive/2026", "/INBOX", "Archive/", "a//b", "/", "~", "../outside", "受信/保存"} {
 		t.Run(folder, func(t *testing.T) {
 			ctx := context.Background()
-			target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_folders": true})
+			target, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_folders": true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestMaildirBackupReaderPreservesFolderNames(t *testing.T) {
 }
 
 func TestMaildirPreservationDefaultsRemainFlat(t *testing.T) {
-	target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir()})
+	target, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestMaildirPreservationDefaultsRemainFlat(t *testing.T) {
 }
 
 func TestMaildirDeliveryIdentityPreservesDuplicateFolderPlacement(t *testing.T) {
-	target, err := NewMaildirTarget(map[string]interface{}{"path": t.TempDir(), "preserve_folders": true})
+	target, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestMaildirDeliveryIdentityPreservesDuplicateFolderPlacement(t *testing.T) 
 }
 
 func TestMaildirWritesDuplicateContentToEachPreservedFolder(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": root, "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestMaildirWritesDuplicateContentToEachPreservedFolder(t *testing.T) {
 }
 
 func TestMaildirOversizedFolderComponentFailsBeforeCreatingFolders(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": root, "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestMaildirOversizedFolderComponentFailsBeforeCreatingFolders(t *testing.T)
 }
 
 func TestMaildirPreserveFoldersHonorsCreateIfMissingFalse(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "mail")
+	root := filepath.Join(physicalTempDir(t), "mail")
 	for _, name := range []string{"cur", "new", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0750); err != nil {
 			t.Fatal(err)

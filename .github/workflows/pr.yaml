@@ -38,6 +38,19 @@ jobs:
           git diff --exit-code -- go.mod
       - run: CGO_ENABLED=0 make test build
       - run: make test/race
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -count=1 ./...
+      - run: go test -race -count=1 ./...
   helm:
     runs-on: ubuntu-latest
     steps:

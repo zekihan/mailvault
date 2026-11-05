@@ -46,7 +46,7 @@ func (t *runLockTarget) WriteMessage(ctx context.Context, message *plugins.Messa
 }
 
 func TestOverlappingRunWaitsWithoutFetchingAndCanCancel(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	database := filepath.Join(root, "state.db")
 	mailbox := filepath.Join(root, "archive.mbox")
 	entered, release := make(chan struct{}), make(chan struct{})

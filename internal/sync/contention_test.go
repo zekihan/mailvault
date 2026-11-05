@@ -44,7 +44,7 @@ func TestConcurrentSourcesWithSQLiteContention(t *testing.T) {
 		t.Run(fmt.Sprintf("permanent=%v", permanent), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			path := filepath.Join(t.TempDir(), "state.db")
+			path := filepath.Join(physicalTempDir(t), "state.db")
 			store, err := state.NewStore(path)
 			if err != nil {
 				t.Fatal(err)

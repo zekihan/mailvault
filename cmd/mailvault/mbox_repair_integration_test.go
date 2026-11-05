@@ -42,7 +42,7 @@ func TestRepairedTruncatedMboxVerifiesAndRestores(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			configureCLI(t)
 			ctx := context.Background()
-			path := filepath.Join(t.TempDir(), "archive.mbox")
+			path := filepath.Join(physicalTempDir(t), "archive.mbox")
 			store, err := state.NewStore(filepath.Join(stateDir, "state.db"))
 			if err != nil {
 				t.Fatal(err)

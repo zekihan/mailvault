@@ -8,7 +8,7 @@ import (
 )
 
 func TestReleaseBinaryReportsLinkedVersion(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "mailvault")
+	binary := filepath.Join(physicalTempDir(t), "mailvault")
 	build := exec.Command("go", "build", "-ldflags", "-X main.version=v9.8.7-test", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build release binary: %v\n%s", err, output)

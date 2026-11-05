@@ -7,7 +7,7 @@ import (
 )
 
 func TestLocalDestinationIdentityUsesCanonicalAbsolutePath(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	first, err := NewMaildirTarget(map[string]interface{}{"path": filepath.Join(root, "mail")})
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestLocalDestinationIdentityUsesCanonicalAbsolutePath(t *testing.T) {
 }
 
 func TestLocalDestinationIdentityIsStableAcrossCreationAndSymlinkAliases(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	actual := filepath.Join(root, "actual")
 	if err := os.Mkdir(actual, 0750); err != nil {
 		t.Fatal(err)

@@ -13,9 +13,9 @@ import (
 )
 
 func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	ctx := context.Background()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +98,9 @@ func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
 }
 
 func TestRepairCacheRefreshesAcrossRuns(t *testing.T) {
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	ctx := context.Background()
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestRepairIgnoresLegacyReceiptWithoutDestinationIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Use a read-capable empty target so the legacy integrity check can run.
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	reader, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
 	if err != nil {
 		t.Fatal(err)

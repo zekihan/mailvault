@@ -17,7 +17,7 @@ import (
 
 func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": root})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
 
 func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestMboxMalformedHeadersListAsOneMessage(t *testing.T) {
 	for name, newline := range map[string]string{"LF": "\n", "CRLF": "\r\n"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			mbox := &MboxTarget{path: filepath.Join(t.TempDir(), "archive.mbox"), create: true}
+			mbox := &MboxTarget{path: filepath.Join(physicalTempDir(t), "archive.mbox"), create: true}
 			if err := mbox.Initialize(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +113,7 @@ func TestMboxMalformedHeadersListAsOneMessage(t *testing.T) {
 
 func TestMboxListingStreamsLongLinesAndMboxrdEscapes(t *testing.T) {
 	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestMboxRecordLengthStreamingMatchesMboxrdUnescape(t *testing.T) {
 			encoded = append(encoded, []byte("\n>FromX\n")...)
 			record := append([]byte("From sender\n"), encoded...)
 			record = append(record, '\n')
-			path := filepath.Join(t.TempDir(), "record.mbox")
+			path := filepath.Join(physicalTempDir(t), "record.mbox")
 			if err := os.WriteFile(path, record, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -179,7 +179,7 @@ func TestMboxRecordLengthStreamingMatchesMboxrdUnescape(t *testing.T) {
 
 func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testing.T) {
 	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testin
 }
 
 func TestMboxListingRejectsMissingInitialSeparator(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "archive.mbox")
+	path := filepath.Join(physicalTempDir(t), "archive.mbox")
 	if err := os.WriteFile(path, []byte("Subject: damaged\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestMboxListingRejectsMissingInitialSeparator(t *testing.T) {
 }
 
 func TestMboxListingBoundsOversizedRecordBeforeAllocation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "archive.mbox")
+	path := filepath.Join(physicalTempDir(t), "archive.mbox")
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)

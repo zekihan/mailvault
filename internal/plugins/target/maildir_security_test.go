@@ -19,7 +19,7 @@ func TestMaildirRejectsSymlinkedStructure(t *testing.T) {
 	for _, component := range []string{"root", "ancestor", "tmp", "new", "cur"} {
 		for _, create := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/create=%v", component, create), func(t *testing.T) {
-				base, outside := t.TempDir(), t.TempDir()
+				base, outside := physicalTempDir(t), physicalTempDir(t)
 				root := filepath.Join(base, "maildir")
 				if err := os.Mkdir(root, 0700); err != nil {
 					t.Fatal(err)
@@ -81,7 +81,7 @@ func TestMaildirRejectsSymlinkedPreservedFolderComponents(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(components[level]), 0700); err != nil {
 				t.Fatal(err)
 			}
-			outside := t.TempDir()
+			outside := physicalTempDir(t)
 			if err := os.Symlink(outside, components[level]); err != nil {
 				t.Fatal(err)
 			}
@@ -119,7 +119,7 @@ func TestMaildirDirectoryReplacementDuringPublicationStaysOnDescriptors(t *testi
 				}
 				replaced = filepath.Dir(path)
 			}
-			outside := t.TempDir()
+			outside := physicalTempDir(t)
 			target.link = func(from *maildirDirectory, oldName string, to *maildirDirectory, newName string) error {
 				if err := os.Rename(replaced, replaced+"-old"); err != nil {
 					return err
@@ -163,7 +163,7 @@ func TestMaildirReadsNeverFollowContinuouslySwappedSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outside := filepath.Join(t.TempDir(), "outside")
+	outside := filepath.Join(physicalTempDir(t), "outside")
 	if err := os.WriteFile(outside, []byte("out-of-root fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestMaildirReaderPinsInodeAndBoundsOversizedReplacement(t *testing.T) {
 func TestMaildirRejectsRootReplacementDuringPublicationSync(t *testing.T) {
 	target := durableMaildirFixture(t)
 	defer target.Close()
-	outside := t.TempDir()
+	outside := physicalTempDir(t)
 	replaced := false
 	target.syncDir = func(string) error {
 		if !replaced {

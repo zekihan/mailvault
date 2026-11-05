@@ -16,9 +16,9 @@ import (
 func TestMboxMalformedHeadersVerifyAndRestore(t *testing.T) {
 	ctx := context.Background()
 	previousStateDir := stateDir
-	stateDir = t.TempDir()
+	stateDir = physicalTempDir(t)
 	t.Cleanup(func() { stateDir = previousStateDir })
-	backup, err := target.NewMboxTarget(map[string]interface{}{"path": filepath.Join(t.TempDir(), "archive.mbox")})
+	backup, err := target.NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}

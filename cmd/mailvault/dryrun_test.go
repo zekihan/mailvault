@@ -14,7 +14,7 @@ func TestDryRunCreatesNeitherTargetNorState(t *testing.T) {
 	configureCLI(t)
 	dryRun = true
 	jsonOutput = false
-	stateDir = filepath.Join(t.TempDir(), "missing", "state")
+	stateDir = filepath.Join(physicalTempDir(t), "missing", "state")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)

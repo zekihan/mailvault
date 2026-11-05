@@ -14,7 +14,7 @@ import (
 )
 
 func TestMaildirUniqueNamesWithFrozenClock(t *testing.T) {
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestMaildirUniqueNamesWithFrozenClock(t *testing.T) {
 func TestFilesystemTargetsHonorCreateIfMissing(t *testing.T) {
 	for _, kind := range []string{"maildir", "mbox"} {
 		t.Run(kind, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "missing", "mail")
+			path := filepath.Join(physicalTempDir(t), "missing", "mail")
 			factory := NewMaildirTarget
 			if kind == "mbox" {
 				factory = NewMboxTarget
@@ -89,7 +89,7 @@ func TestFilesystemTargetsHonorCreateIfMissing(t *testing.T) {
 }
 
 func TestMaildirConcurrentInstances(t *testing.T) {
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		target, err := NewMaildirTarget(map[string]interface{}{"path": path})
@@ -121,7 +121,7 @@ func TestMaildirConcurrentInstances(t *testing.T) {
 }
 
 func TestMaildirCleanupFailureAfterPublicationDoesNotReturnError(t *testing.T) {
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestMaildirCleanupFailureAfterPublicationDoesNotReturnError(t *testing.T) {
 }
 
 func TestMaildirDefaultFilesystemHooks(t *testing.T) {
-	target := &MaildirTarget{path: t.TempDir(), create: true}
+	target := &MaildirTarget{path: physicalTempDir(t), create: true}
 	if err := target.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestMaildirDefaultFilesystemHooks(t *testing.T) {
 }
 
 func TestMaildirPrePublicationErrorIncludesCleanupFailure(t *testing.T) {
-	path := t.TempDir()
+	path := physicalTempDir(t)
 	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
 	if err != nil {
 		t.Fatal(err)
