@@ -420,3 +420,5 @@ kubectl -n mailvault exec deployment/mailvault-mailvault-setup -- \
 ```
 
 The container image must include this command; previously released images do not gain it automatically.
+
+Publishing and manual recovery: [Publishing](docs/publishing.md).
