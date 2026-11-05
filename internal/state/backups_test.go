@@ -163,3 +163,60 @@ func TestLegacyCandidatesRecognizeContentKeyedPOPManifest(t *testing.T) {
 		t.Fatalf("content manifest treated as legacy: %+v %v", candidates, err)
 	}
 }
+
+func TestBackupManifestListingAndSupersededObjects(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, item := range []plugins.BackupMessage{
+		{Source: "z", Target: "archive", UID: "2", Locator: "second", Flags: []string{"seen"}},
+		{Source: "a", Target: "archive", UID: "1", Locator: "first"},
+		{Source: "a", Target: "other", UID: "1", Locator: "hidden"},
+	} {
+		if err := store.RecordBackupMessage(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.BackupMessages(ctx, "archive")
+	if err != nil || len(items) != 2 || items[0].Locator != "first" || items[1].Locator != "second" || len(items[1].Flags) != 1 {
+		t.Fatalf("manifest: %+v, %v", items, err)
+	}
+	if err := store.MarkBackupObjectSuperseded(ctx, "archive", "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkBackupObjectSuperseded(ctx, "other", "hidden", "new"); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := store.SupersededBackupObjects(ctx, "archive")
+	if err != nil || len(objects) != 1 || !objects["old"] {
+		t.Fatalf("superseded: %v, %v", objects, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE backup_messages SET flags_json='invalid' WHERE target_name='archive'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BackupMessages(ctx, "archive"); err == nil {
+		t.Fatal("invalid flags accepted")
+	}
+}
+
+func TestKnownUIDsAreScoped(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.MarkUIDDelivered(ctx, "source", "target", "scope", "folder", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkUIDDelivered(ctx, "source", "target", "scope", "other", "2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.KnownUIDs(ctx, "source", "target", "scope", "folder")
+	if err != nil || len(got) != 1 || !got["1"] {
+		t.Fatalf("known UIDs: %v, %v", got, err)
+	}
+}

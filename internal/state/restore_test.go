@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -285,4 +286,122 @@ func insertLegacyRestoreReceipts(ctx context.Context, store *Store, job RestoreR
 		}
 	}
 	return nil
+}
+
+func TestRestoreJobAbandonAndSetupResolution(t *testing.T) {
+	ctx := context.Background()
+	for _, action := range []string{"abandon", "resolve-delete"} {
+		t.Run(action, func(t *testing.T) {
+			store, err := NewStore(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			for _, folder := range []string{"empty", "receipt", "active", "other"} {
+				if _, _, err := store.BeginRestoreJob(ctx, "account", folder, "archive"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.ActivateRestoreJob(ctx, "account", "active", "archive", "7"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.MarkRestoreReceipt(ctx, RestoreReceipt{DestinationSource: "account", DestinationFolder: "receipt", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "object", RawSHA256: "digest"}); err != nil {
+				t.Fatal(err)
+			}
+			remove := func(folder string) error {
+				if action == "abandon" {
+					return store.AbandonRestoreJob(ctx, "account", folder, "archive")
+				}
+				return store.ResolveRestoreJobSetup(ctx, "account", folder, "archive", false)
+			}
+			for _, folder := range []string{"empty", "receipt", "active", "missing"} {
+				if err := remove(folder); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for folder, want := range map[string]int{"empty": 0, "receipt": 1, "active": 1, "other": 1} {
+				var got int
+				if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM restore_jobs WHERE destination_source='account' AND destination_folder=? AND backup_target='archive'`, folder).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got != want {
+					t.Errorf("folder %s: got %d jobs, want %d", folder, got, want)
+				}
+			}
+		})
+	}
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err := store.BeginRestoreJob(ctx, "account", "restore", "archive"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveRestoreJobSetup(ctx, "account", "restore", "archive", true); err != nil {
+		t.Fatal(err)
+	}
+	if resuming, _, err := store.BeginRestoreJob(ctx, "account", "restore", "archive"); err != nil || !resuming {
+		t.Fatalf("resolved job: resuming=%t err=%v", resuming, err)
+	}
+	if err := store.ResolveRestoreJobSetup(ctx, "account", "missing", "archive", true); err == nil {
+		t.Fatal("missing job accepted")
+	}
+	if err := store.ActivateRestoreJob(ctx, "account", "restore", "archive", "7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveRestoreJobSetup(ctx, "account", "restore", "archive", true); err == nil {
+		t.Fatal("active job accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.AbandonRestoreJob(cancelled, "account", "restore", "archive"); err == nil {
+		t.Fatal("abandon accepted cancelled context")
+	}
+	if err := store.ResolveRestoreJobSetup(cancelled, "account", "restore", "archive", true); err == nil {
+		t.Fatal("resolution accepted cancelled context")
+	}
+}
+
+func TestPendingRestoreLocators(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, receipt := range []RestoreReceipt{
+		{DestinationSource: "account", DestinationFolder: "restore", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "z", Source: "src", Scope: "scope", Folder: "inbox", UID: "2"},
+		{DestinationSource: "account", DestinationFolder: "restore", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "a", Source: "src", Scope: "scope", Folder: "inbox", UID: "1"},
+		{DestinationSource: "other", DestinationFolder: "restore", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "hidden"},
+		{DestinationSource: "account", DestinationFolder: "other", BackupTarget: "archive", DestinationUIDValidity: "7", Locator: "hidden"},
+		{DestinationSource: "account", DestinationFolder: "restore", BackupTarget: "other", DestinationUIDValidity: "7", Locator: "hidden"},
+	} {
+		if err := store.BeginRestoreReceipt(ctx, receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.PendingRestoreLocators(ctx, "account", "restore", "archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`"a" [source="src" scope="scope" folder="inbox" uid="1"]`, `"z" [source="src" scope="scope" folder="inbox" uid="2"]`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	got, err = store.PendingRestoreLocators(ctx, "missing", "restore", "archive")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty result: %v, %v", got, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.PendingRestoreLocators(cancelled, "account", "restore", "archive"); err == nil {
+		t.Fatal("cancelled context accepted")
+	}
+	if _, err := store.db.ExecContext(ctx, `ALTER TABLE restore_pending RENAME TO old_pending; CREATE TABLE restore_pending (destination_source TEXT, destination_folder TEXT, backup_target TEXT, locator TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PendingRestoreLocators(ctx, "account", "restore", "archive"); err == nil {
+		t.Fatal("invalid pending schema accepted")
+	}
 }

@@ -104,29 +104,6 @@ func (s *Store) FindBackupMessage(ctx context.Context, source, target, scope, fo
 	return item, true, nil
 }
 
-func (s *Store) FindBackupByHash(ctx context.Context, target, rawSHA256 string) (plugins.BackupMessage, bool, error) {
-	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
-		return plugins.BackupMessage{}, false, err
-	}
-	if !exists {
-		return plugins.BackupMessage{}, false, nil
-	}
-	var item plugins.BackupMessage
-	var flags string
-	err := s.db.QueryRowContext(ctx, `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE target_name=? AND raw_sha256=? ORDER BY recorded_at LIMIT 1`, target, rawSHA256).Scan(&item.Source, &item.Target, &item.Scope, &item.Folder, &item.UID, &item.Locator, &item.RawSHA256, &flags, &item.InternalDate)
-	if errors.Is(err, sql.ErrNoRows) {
-		return plugins.BackupMessage{}, false, nil
-	}
-	if err != nil {
-		return plugins.BackupMessage{}, false, err
-	}
-	if err := json.Unmarshal([]byte(flags), &item.Flags); err != nil {
-		return plugins.BackupMessage{}, false, err
-	}
-	return item, true, nil
-}
-
 func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]plugins.BackupMessage, error) {
 	var deliveries, messages bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries')`).Scan(&deliveries); err != nil {
