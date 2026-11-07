@@ -184,6 +184,16 @@
           "type": "string",
           "minLength": 1
         },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
         "persistence": {
           "type": "object",
           "properties": {
