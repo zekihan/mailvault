@@ -228,6 +228,9 @@ func Validate(cfg *Config) error {
 		if s.MaxConnections <= 0 {
 			return fmt.Errorf("source %q: max_connections must be > 0", s.Name)
 		}
+		if s.ConnectRetryTimeout < 0 {
+			return fmt.Errorf("source %q: connect_retry_timeout must be >= 0 (zero disables retries)", s.Name)
+		}
 	}
 
 	targetNames := make(map[string]bool)
@@ -416,6 +419,13 @@ func applyIndexedEnvironment(cfg *Config, v *viper.Viper) error {
 				return fmt.Errorf("environment override for %sread_timeout: %w", p, err)
 			}
 			cfg.Sources[i].ReadTimeout = parsed
+		}
+		if set, value := bind("connect_retry_timeout"); set {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				return fmt.Errorf("environment override for %sconnect_retry_timeout: %w", p, err)
+			}
+			cfg.Sources[i].ConnectRetryTimeout = parsed
 		}
 		if set, value := bind("max_connections"); set {
 			parsed, err := strconv.Atoi(value)

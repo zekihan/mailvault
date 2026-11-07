@@ -26,6 +26,8 @@ type SourceConfig struct {
 	ConnectionTimeout time.Duration `mapstructure:"connection_timeout" yaml:"connection_timeout"`
 	ReadTimeout       time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
 	MaxConnections    int           `mapstructure:"max_connections" yaml:"max_connections"`
+	// ConnectRetryTimeout bounds IMAP initial connection retries; zero disables them.
+	ConnectRetryTimeout time.Duration `mapstructure:"connect_retry_timeout" yaml:"connect_retry_timeout"`
 
 	MaxListingItems int `mapstructure:"max_listing_items" yaml:"max_listing_items"`
 	MaxListingBytes int `mapstructure:"max_listing_bytes" yaml:"max_listing_bytes"`

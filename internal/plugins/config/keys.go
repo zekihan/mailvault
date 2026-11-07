@@ -2,19 +2,20 @@ package config
 
 // Config keys for source factories
 const (
-	SourceConfigHost              = "host"
-	SourceConfigPort              = "port"
-	SourceConfigUsername          = "username"
-	SourceConfigPasswordRef       = "password_ref"
-	SourceConfigUseTLS            = "use_tls"
-	SourceConfigStartTLS          = "start_tls"
-	SourceConfigFolders           = "folders"
-	SourceConfigConnectionTimeout = "connection_timeout"
-	SourceConfigReadTimeout       = "read_timeout"
-	SourceConfigMaxConnections    = "max_connections"
-	SourceConfigMaxListingItems   = "max_listing_items"
-	SourceConfigMaxListingBytes   = "max_listing_bytes"
-	SourceConfigOAuth2            = "oauth2"
+	SourceConfigHost                = "host"
+	SourceConfigPort                = "port"
+	SourceConfigUsername            = "username"
+	SourceConfigPasswordRef         = "password_ref"
+	SourceConfigUseTLS              = "use_tls"
+	SourceConfigStartTLS            = "start_tls"
+	SourceConfigFolders             = "folders"
+	SourceConfigConnectionTimeout   = "connection_timeout"
+	SourceConfigReadTimeout         = "read_timeout"
+	SourceConfigMaxConnections      = "max_connections"
+	SourceConfigConnectRetryTimeout = "connect_retry_timeout"
+	SourceConfigMaxListingItems     = "max_listing_items"
+	SourceConfigMaxListingBytes     = "max_listing_bytes"
+	SourceConfigOAuth2              = "oauth2"
 )
 
 // Config keys for target factories

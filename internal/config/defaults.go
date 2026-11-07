@@ -24,5 +24,8 @@ func applySourceDefaults(cfg *Config, values *viper.Viper) {
 		if !values.InConfig(prefix+"read_timeout") && !values.IsSet(prefix+"read_timeout") {
 			src.ReadTimeout = 60 * time.Second
 		}
+		if !values.InConfig(prefix+"connect_retry_timeout") && !values.IsSet(prefix+"connect_retry_timeout") {
+			src.ConnectRetryTimeout = 3 * time.Minute
+		}
 	}
 }

@@ -35,6 +35,7 @@ func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
     use_tls: false
     connection_timeout: 0s
     read_timeout: 0s
+    connect_retry_timeout: 0s
     max_connections: 1
   - name: starttls
     type: imap
@@ -53,6 +54,7 @@ func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
     use_tls: true
     connection_timeout: 7s
     read_timeout: 11s
+    connect_retry_timeout: 45s
     max_connections: 1
 `)
 	if err := os.WriteFile(path, data, 0600); err != nil {
@@ -63,11 +65,11 @@ func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	defaults := cfg.Sources[0]
-	if !defaults.UseTLS || defaults.ConnectionTimeout != 30*time.Second || defaults.ReadTimeout != 60*time.Second {
+	if !defaults.UseTLS || defaults.ConnectionTimeout != 30*time.Second || defaults.ReadTimeout != 60*time.Second || defaults.ConnectRetryTimeout != 3*time.Minute {
 		t.Fatalf("unsafe or missing defaults: TLS=%v dial=%v read=%v", defaults.UseTLS, defaults.ConnectionTimeout, defaults.ReadTimeout)
 	}
 	explicit := cfg.Sources[1]
-	if explicit.UseTLS || explicit.ConnectionTimeout != 0 || explicit.ReadTimeout != 0 {
+	if explicit.UseTLS || explicit.ConnectionTimeout != 0 || explicit.ReadTimeout != 0 || explicit.ConnectRetryTimeout != 0 {
 		t.Fatal("explicit false/zero settings were overridden")
 	}
 	starttls := cfg.Sources[2]
@@ -75,7 +77,7 @@ func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
 		t.Fatal("STARTTLS defaults selected implicit TLS or lost timeouts")
 	}
 	custom := cfg.Sources[3]
-	if !custom.UseTLS || custom.ConnectionTimeout != 7*time.Second || custom.ReadTimeout != 11*time.Second {
+	if !custom.UseTLS || custom.ConnectionTimeout != 7*time.Second || custom.ReadTimeout != 11*time.Second || custom.ConnectRetryTimeout != 45*time.Second {
 		t.Fatal("explicit TLS/timeouts were changed")
 	}
 }

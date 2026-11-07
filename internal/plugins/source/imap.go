@@ -36,6 +36,7 @@ type IMAPSource struct {
 	readTimeout     time.Duration
 	maxMessageBytes int64
 	maxConns        int
+	connectRetry    connectBackoff
 	tokenSource     func(context.Context) (string, error)
 	client          *imapclient.Client
 	wire            *deadlineConn
@@ -68,6 +69,13 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
 	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
 	maxConns, _ := config.ParseInt(configMap, config.SourceConfigMaxConnections, 5)
+	connectRetryTimeout, err := config.ParseDuration(configMap, config.SourceConfigConnectRetryTimeout, DefaultConnectRetryTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.SourceConfigConnectRetryTimeout, err)
+	}
+	if connectRetryTimeout < 0 {
+		return nil, fmt.Errorf("%s must be >= 0", config.SourceConfigConnectRetryTimeout)
+	}
 	tokenSource, _ := configMap["oauth2_token_provider"].(func(context.Context) (string, error))
 
 	if host == "" {
@@ -107,6 +115,7 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 		connTimeout:     connTimeout,
 		readTimeout:     readTimeout,
 		maxConns:        maxConns,
+		connectRetry:    connectBackoff{budget: connectRetryTimeout},
 		maxMessageBytes: maxMessageBytes,
 		tokenSource:     tokenSource,
 	}, nil
@@ -144,7 +153,12 @@ func (s *IMAPSource) connectLocked(ctx context.Context) error {
 		}
 	}
 
-	session, err := s.openSession(ctx)
+	var session *imapSession
+	err := retryConnect(ctx, s.connectRetry, s.name, func(ctx context.Context) error {
+		var err error
+		session, err = s.openSession(ctx)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -177,27 +191,47 @@ func (s *IMAPSource) openSession(ctx context.Context) (*imapSession, error) {
 		client = imapclient.New(secure, opts)
 	} else if s.startTLS {
 		client, err = imapclient.NewStartTLS(listing, opts)
+		if err != nil {
+			err = joinTransportError(err, wire)
+		}
 	} else {
 		client = imapclient.New(listing, opts)
 	}
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("establish TLS: %w", err), raw.Close())
 	}
+	// The client library reports EOF/reset before the greeting as plain text;
+	// joining the recorded transport error keeps it classifiable as transient.
 	if err := client.WaitGreeting(); err != nil {
+		err = joinTransportError(err, wire)
 		return nil, errors.Join(fmt.Errorf("greeting: %w", err), client.Close())
 	}
 	if s.tokenSource != nil {
 		token, err := s.tokenSource(ctx)
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("get OAuth2 access token: %w", err), client.Close())
+			return nil, permanentConnectError(errors.Join(fmt.Errorf("get OAuth2 access token: %w", err), client.Close()))
 		}
 		if err := client.Authenticate(auth.NewXOAUTH2(s.username, token)); err != nil {
-			return nil, errors.Join(fmt.Errorf("IMAP OAuth2 authentication failed for mailbox %q; the server rejected access but did not establish the cause. Check that device/browser login used the account owning this mailbox, IMAP is enabled, and delegated IMAP permission was granted; then run mailvault auth login --source %q again", s.username, s.name), client.Close())
+			if err = joinTransportError(err, wire); !isIMAPRejection(err) {
+				return nil, errors.Join(fmt.Errorf("IMAP OAuth2 authentication: %w", err), client.Close())
+			}
+			return nil, permanentConnectError(errors.Join(fmt.Errorf("IMAP OAuth2 authentication failed for mailbox %q; the server rejected access but did not establish the cause. Check that device/browser login used the account owning this mailbox, IMAP is enabled, and delegated IMAP permission was granted; then run mailvault auth login --source %q again", s.username, s.name), client.Close()))
 		}
 	} else if err := client.Login(s.username, s.password).Wait(); err != nil {
-		return nil, errors.Join(fmt.Errorf("login: %w", err), client.Close())
+		err = errors.Join(fmt.Errorf("login: %w", joinTransportError(err, wire)), client.Close())
+		if isIMAPRejection(err) {
+			err = permanentConnectError(err)
+		}
+		return nil, err
 	}
 	return &imapSession{client: client, wire: wire, listing: listing}, nil
+}
+
+// isIMAPRejection reports a tagged NO/BAD response, which reconnecting cannot fix.
+func isIMAPRejection(err error) bool {
+	var statusErr *imap.Error
+	return errors.As(err, &statusErr) && !temporaryIMAPFailure(err) &&
+		(statusErr.Type == imap.StatusResponseTypeNo || statusErr.Type == imap.StatusResponseTypeBad)
 }
 
 func (s *IMAPSource) ListFolders(ctx context.Context) ([]string, error) {
