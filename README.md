@@ -51,6 +51,16 @@ messages may need to be retrieved again on later filtered runs.
 IMAP folder UIDVALIDITY, UIDNEXT, and available MODSEQ values are recorded as
 server observations. Download decisions use per-target receipts, not a global
 high-water mark that could skip failed deliveries or holes left by date filters.
+IMAP sources retry the initial connection when the server is not yet reachable:
+dial failures, refused or reset connections, TLS/STARTTLS handshakes, greetings
+and logins that fail at the transport level or with `NO [UNAVAILABLE]` back off
+from 1s, doubling up to 30s, for up to `connect_retry_timeout` (default `3m`;
+`0s` makes a single attempt). Each retry is logged to stderr. Credential
+rejections and certificate errors fail immediately. Once the budget is spent the
+sync fails and exits non-zero. This covers cold Proton Bridge starts and
+NetworkPolicy controllers that drop a new Pod's first packets, so Kubernetes
+deployments do not need a wait-for-network init container.
+
 `max_connections` bounds the IMAP connection pool; downloads stream through
 bounded batches and unbuffered channels. Compact sets of delivered UIDs are excluded by the
 server search, preserving holes from failures and date filters. If the exclusion

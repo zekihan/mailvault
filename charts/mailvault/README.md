@@ -287,7 +287,14 @@ PVC metadata labels can be set independently with `persistence.state.labels`, `p
 
 PVC metadata annotations can likewise be set with `persistence.state.annotations`, `persistence.backups.annotations`, and `proton.persistence.annotations`. Values are rendered as quoted strings. `helm.sh/resource-policy: keep` is always set and cannot be overridden. Annotations apply only to chart-created claims.
 
-Optional `initContainers` run before scheduled backups, for example to wait for
-IMAP TCP connectivity with a bounded timeout. They do not run in the interactive
+Mailvault retries the initial IMAP connection itself (exponential backoff up to
+`connect_retry_timeout`, default `3m`, per source), which covers a cold Proton
+Bridge and CNIs such as kube-router that drop a new Pod's first packets before its
+NetworkPolicy rules are programmed. No init container is needed to wait for the
+network; raise `connect_retry_timeout` in the source configuration if startup
+regularly takes longer. If the budget is exhausted the Job fails normally.
+
+Optional `initContainers` run before scheduled backups for other preparation
+steps. They do not run in the interactive
 OAuth or Proton setup Deployments. Configure their images, resources and security
 contexts explicitly; no credentials or backup volumes are mounted automatically.
