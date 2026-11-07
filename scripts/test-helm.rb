@@ -126,6 +126,19 @@ Dir.mktmpdir do |dir|
   check(!claims.find { |d| d['metadata']['name'].end_with?('-backups') }['metadata'].key?('labels'), 'labels must not leak into backup claim')
 end
 
+Dir.mktmpdir do |dir|
+  path = File.join(dir, 'annotations.yaml')
+  annotations = {'hornkeeper.noqer.com/backup-target'=>'nas', 'hornkeeper.noqer.com/replicas'=>'2'}
+  File.write(path, {'persistence'=>{'state'=>{'annotations'=>annotations.merge('helm.sh/resource-policy'=>'delete')}}, 'proton'=>{'enabled'=>true, 'persistence'=>{'annotations'=>annotations}}}.to_yaml)
+  docs = render('-f', path, '--set', 'persistence.backups.annotations.example\\.com/count=3')
+  claims = docs.select { |d| d['kind'] == 'PersistentVolumeClaim' }
+  expected = annotations.merge('helm.sh/resource-policy'=>'keep')
+  %w[state bridge].each do |name|
+    check(claims.find { |d| d['metadata']['name'] == "test-mailvault-#{name}" }.dig('metadata', 'annotations') == expected, "#{name} PVC annotations must merge with keep and preserve string values")
+  end
+  check(claims.find { |d| d['metadata']['name'].end_with?('-backups') }.dig('metadata', 'annotations') == {'example.com/count'=>'3', 'helm.sh/resource-policy'=>'keep'}, 'backup PVC annotations must render numbers as strings')
+end
+
 Dir.mktmpdir('mailvault-init-') do |directory|
   waiter = {'name'=>'wait-for-network', 'image'=>'example.invalid/waiter:1', 'command'=>['timeout', '150', '/bin/sh', '-ec'], 'args'=>['exit 0']}
   values = File.join(directory, 'values.yaml')

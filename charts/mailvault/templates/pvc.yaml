@@ -13,6 +13,9 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   annotations:
+    {{- range $k, $v := omit ($settings.annotations | default dict) "helm.sh/resource-policy" }}
+    {{ $k }}: {{ $v | toString | quote }}
+    {{- end }}
     helm.sh/resource-policy: keep
 spec:
   accessModes: {{ $settings.accessModes | toJson }}

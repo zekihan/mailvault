@@ -282,6 +282,8 @@ suspended; follow the setup instructions above before enabling it.
 
 PVC metadata labels can be set independently with `persistence.state.labels`, `persistence.backups.labels`, and `proton.persistence.labels`. Values must be strings. Labels apply only to chart-created claims; existing claims must be labeled by their owner.
 
+PVC metadata annotations can likewise be set with `persistence.state.annotations`, `persistence.backups.annotations`, and `proton.persistence.annotations`. Values are rendered as quoted strings. `helm.sh/resource-policy: keep` is always set and cannot be overridden. Annotations apply only to chart-created claims.
+
 Optional `initContainers` run before scheduled backups, for example to wait for
 IMAP TCP connectivity with a bounded timeout. They do not run in the interactive
 OAuth or Proton setup Deployments. Configure their images, resources and security

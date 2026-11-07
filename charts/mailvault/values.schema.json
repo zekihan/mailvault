@@ -65,6 +65,16 @@
         "state": {
           "type": "object",
           "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
             "existingClaim": {
               "type": "string"
             },
@@ -95,6 +105,16 @@
         "backups": {
           "type": "object",
           "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
             "existingClaim": {
               "type": "string"
             },
@@ -167,6 +187,16 @@
         "persistence": {
           "type": "object",
           "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
             "existingClaim": {
               "type": "string"
             },

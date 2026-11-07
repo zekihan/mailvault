@@ -47,12 +47,14 @@ resources:
 persistence:
   state:
     labels: {}
+    annotations: {}
     existingClaim: ""
     size: 1Gi
     storageClass: null
     accessModes: [ReadWriteOnce]
   backups:
     labels: {}
+    annotations: {}
     existingClaim: ""
     size: 20Gi
     storageClass: null
@@ -70,6 +72,7 @@ proton:
   tlsSecret: mailvault-proton-tls
   persistence:
     labels: {}
+    annotations: {}
     existingClaim: ""
     size: 20Gi
     storageClass: null
