@@ -139,6 +139,19 @@ Dir.mktmpdir do |dir|
   check(claims.find { |d| d['metadata']['name'].end_with?('-backups') }.dig('metadata', 'annotations') == {'example.com/count'=>'3', 'helm.sh/resource-policy'=>'keep'}, 'backup PVC annotations must render numbers as strings')
 end
 
+bridge = render('--set', 'proton.enabled=true,proton.setup=false').find { |d| d['kind'] == 'Deployment' && d['metadata']['name'] == 'test-mailvault-bridge' }
+check(!bridge['metadata'].key?('annotations'), 'Bridge Deployment must not render empty annotations')
+Dir.mktmpdir do |dir|
+  path = File.join(dir, 'bridge-annotations.yaml')
+  File.write(path, {'proton'=>{'enabled'=>true, 'setup'=>false, 'annotations'=>{'secret.reloader.stakater.com/reload'=>'mailvault-proton-tls', 'example.com/revision'=>2}}}.to_yaml)
+  docs = render('-f', path)
+  bridge = docs.find { |d| d['kind'] == 'Deployment' && d['metadata']['name'] == 'test-mailvault-bridge' }
+  check(bridge.dig('metadata', 'annotations') == {'secret.reloader.stakater.com/reload'=>'mailvault-proton-tls', 'example.com/revision'=>'2'}, 'Bridge Deployment annotations must render as strings')
+  check(!bridge.dig('spec', 'template', 'metadata').key?('annotations'), 'Bridge annotations must not change the Pod template')
+  setup = render('-f', path, '--set', 'proton.setup=true').find { |d| d['kind'] == 'Deployment' && d['metadata']['name'] == 'test-mailvault-bridge-setup' }
+  check(!setup['metadata'].key?('annotations'), 'Bridge annotations must not apply to the setup Deployment')
+end
+
 Dir.mktmpdir('mailvault-init-') do |directory|
   waiter = {'name'=>'wait-for-network', 'image'=>'example.invalid/waiter:1', 'command'=>['timeout', '150', '/bin/sh', '-ec'], 'args'=>['exit 0']}
   values = File.join(directory, 'values.yaml')

@@ -70,6 +70,9 @@ proton:
     pullPolicy: IfNotPresent
   # Secret keys: tls.crt, tls.key, ca.crt. Certificate SAN must match the Service.
   tlsSecret: mailvault-proton-tls
+  # Metadata annotations for the persistent Bridge Deployment, for example a
+  # reload controller that restarts Bridge when tlsSecret changes.
+  annotations: {}
   persistence:
     labels: {}
     annotations: {}

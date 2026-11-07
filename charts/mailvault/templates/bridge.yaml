@@ -4,6 +4,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}-bridge
+  {{- with .Values.proton.annotations }}
+  annotations:
+    {{- range $k, $v := . }}
+    {{ $k }}: {{ $v | toString | quote }}
+    {{- end }}
+  {{- end }}
 spec:
   replicas: {{ ternary 0 1 .Values.proton.setup }}
   strategy:

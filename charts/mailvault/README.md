@@ -252,7 +252,10 @@ For certificate renewal, replace the certificate Secret with a matching key and
 certificate for the same DNS name. If the issuing CA changes, replace `ca.crt`
 too. Keep `/tls/tls.crt` and `/tls/tls.key` paths unchanged and restart Bridge;
 new Jobs mount the updated CA. If re-import is needed, use setup mode and the
-same CLI steps. Disable setup, verify a manual backup, then resume scheduling.
+same CLI steps. `proton.annotations` sets metadata annotations on the persistent
+Bridge Deployment (values are rendered as quoted strings), for example
+`secret.reloader.stakater.com/reload: mailvault-proton-tls` so a reload
+controller performs that restart after an in-place renewal. Disable setup, verify a manual backup, then resume scheduling.
 No certificate is trusted by fetching it from the network, and TLS verification
 is never disabled. Protect both the Kubernetes Secrets and the Bridge PVC:
 the unattended GPG key inside that volume permits decrypting its credentials.
