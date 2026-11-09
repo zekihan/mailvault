@@ -78,15 +78,15 @@ to keep an old image set `proton.podSecurityContext.runAsNonRoot=null,proton.pod
 
 The backup CronJob and the Mailvault setup Deployment use `podSecurityContext`
 (UID/GID 65532, `runAsNonRoot`, `RuntimeDefault` seccomp) and `securityContext`
-(no privilege escalation, all capabilities dropped). The image has no user of
-its own, so the UID is set here. Before upgrading, `/state` and `/backups` must be
+(no privilege escalation, all capabilities dropped), matching the image user.
+Before upgrading, `/state` and `/backups` must be
 writable by that UID: chown the state volume once (keep modes, token files must
 stay 0600 and the directory must not be group or world writable) and grant the
 UID write access in the backup volume's mount options (for CIFS, `uid=`, `gid=`
 and modes). Do not use `fsGroup`; it makes `/state` group-writable and token files
 0660, which the OAuth token store rejects. Init containers inherit the pod-level
 settings unless they set their own. To keep running as root while migrating, set
-`podSecurityContext.runAsNonRoot=null,podSecurityContext.runAsUser=null,podSecurityContext.runAsGroup=null`.
+`podSecurityContext.runAsNonRoot=null,podSecurityContext.runAsUser=0,podSecurityContext.runAsGroup=0`.
 
 ## OAuth initialization (Mailvault)
 
