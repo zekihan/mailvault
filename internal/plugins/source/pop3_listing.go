@@ -22,7 +22,7 @@ func (c *pop3Protocol) readListingLine(remaining *int) ([]byte, error) {
 			return nil, errors.New("invalid POP3 response line exceeds 512 bytes")
 		}
 		line = append(line, part...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		if err != nil {

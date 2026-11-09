@@ -30,7 +30,7 @@ func TestPOP3StatLargeMailboxSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("STAT rejected a 4 GiB mailbox containing two messages: %v", err)
 	}
-	if count != 2 || int64(size) != 4294967296 {
+	if count != 2 || size != 4294967296 {
 		t.Fatalf("STAT = (%d, %d), want (2, 4294967296)", count, size)
 	}
 }

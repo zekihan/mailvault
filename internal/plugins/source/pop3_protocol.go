@@ -93,7 +93,7 @@ func (c *pop3Protocol) readBody(limit int64) ([]byte, error) {
 	previousCR := false
 	for {
 		fragment, err := c.reader.ReadSlice('\n')
-		if err != nil && err != bufio.ErrBufferFull {
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
 			return nil, err
 		}
 		if lineStart {

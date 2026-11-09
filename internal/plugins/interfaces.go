@@ -276,7 +276,7 @@ func CopyMessages(ctx context.Context, reader MessageReader, writer MessageWrite
 		}
 
 		msg, err := reader.ReadMessage(ctx)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return writer.Close()
 		}
 		if err != nil {

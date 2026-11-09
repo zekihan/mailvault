@@ -353,13 +353,13 @@ func TestRestoreJobAbandonAndSetupResolution(t *testing.T) {
 	if err := store.ResolveRestoreJobSetup(ctx, "account", "restore", "archive", true); err == nil {
 		t.Fatal("active job accepted")
 	}
-	cancelled, cancel := context.WithCancel(ctx)
+	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := store.AbandonRestoreJob(cancelled, "account", "restore", "archive"); err == nil {
-		t.Fatal("abandon accepted cancelled context")
+	if err := store.AbandonRestoreJob(canceled, "account", "restore", "archive"); err == nil {
+		t.Fatal("abandon accepted canceled context")
 	}
-	if err := store.ResolveRestoreJobSetup(cancelled, "account", "restore", "archive", true); err == nil {
-		t.Fatal("resolution accepted cancelled context")
+	if err := store.ResolveRestoreJobSetup(canceled, "account", "restore", "archive", true); err == nil {
+		t.Fatal("resolution accepted canceled context")
 	}
 }
 
@@ -393,10 +393,10 @@ func TestPendingRestoreLocators(t *testing.T) {
 	if err != nil || len(got) != 0 {
 		t.Fatalf("empty result: %v, %v", got, err)
 	}
-	cancelled, cancel := context.WithCancel(ctx)
+	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := store.PendingRestoreLocators(cancelled, "account", "restore", "archive"); err == nil {
-		t.Fatal("cancelled context accepted")
+	if _, err := store.PendingRestoreLocators(canceled, "account", "restore", "archive"); err == nil {
+		t.Fatal("canceled context accepted")
 	}
 	if _, err := store.db.ExecContext(ctx, `ALTER TABLE restore_pending RENAME TO old_pending; CREATE TABLE restore_pending (destination_source TEXT, destination_folder TEXT, backup_target TEXT, locator TEXT)`); err != nil {
 		t.Fatal(err)

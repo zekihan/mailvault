@@ -246,9 +246,9 @@ func (t *MboxTarget) walkBackupMessages(ctx context.Context, maxRecordBytes int6
 			}
 			lineStart = false
 		}
-		switch readErr {
-		case bufio.ErrBufferFull:
-		case nil, io.EOF:
+		switch {
+		case errors.Is(readErr, bufio.ErrBufferFull):
+		case readErr == nil, errors.Is(readErr, io.EOF):
 			lineStart = true
 		default:
 			return readErr
@@ -472,7 +472,7 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 	file, err := openMboxFile(t.path, os.O_RDONLY, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %v", plugins.ErrBackupMessageMissing, err)
+			return nil, fmt.Errorf("%w: %w", plugins.ErrBackupMessageMissing, err)
 		}
 		return nil, err
 	}
@@ -492,7 +492,7 @@ func (t *MboxTarget) ReadBackupMessage(ctx context.Context, locator string) (*pl
 	}
 	data := make([]byte, length)
 	n, err := file.ReadAt(data, offset)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	data = data[:n]
@@ -607,7 +607,7 @@ func (t *S3Target) ReadBackupMessage(ctx context.Context, locator string) (*plug
 	if err != nil {
 		var apiErr smithy.APIError
 		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound") {
-			return nil, fmt.Errorf("%w: %v", plugins.ErrBackupMessageMissing, err)
+			return nil, fmt.Errorf("%w: %w", plugins.ErrBackupMessageMissing, err)
 		}
 		return nil, err
 	}

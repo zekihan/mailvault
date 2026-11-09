@@ -324,7 +324,7 @@ func TestRunResumesAfterMailboxCreationAndCancellation(t *testing.T) {
 	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
 	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
 	if _, err := Run(ctx, reader, appender, receipts, options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled after mailbox creation: %v", err)
+		t.Fatalf("canceled after mailbox creation: %v", err)
 	}
 	if !receipts.jobs[fixtureJobKey("account", "restore", "archive")] || appender.appended != 0 {
 		t.Fatalf("restore job was not durable after mailbox creation: jobs=%v appends=%d", receipts.jobs, appender.appended)

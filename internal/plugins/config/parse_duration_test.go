@@ -8,8 +8,8 @@ import (
 )
 
 func TestParseDurationNumericRange(t *testing.T) {
-	maxSeconds := int64(math.MaxInt64 / int64(time.Second))
-	minSeconds := int64(math.MinInt64 / int64(time.Second))
+	maxSeconds := math.MaxInt64 / int64(time.Second)
+	minSeconds := math.MinInt64 / int64(time.Second)
 	tests := []struct {
 		name    string
 		value   interface{}
