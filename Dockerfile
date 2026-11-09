@@ -11,7 +11,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=${TARGETO
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 65532 nonroot \
+    && useradd --uid 65532 --gid 65532 --no-log-init --create-home --home-dir /home/nonroot --shell /usr/sbin/nologin nonroot \
+    && install -d -m 0700 -o 65532 -g 65532 /state /backups
 COPY --from=build /mailvault /usr/local/bin/mailvault
+USER 65532:65532
 ENTRYPOINT ["mailvault"]
 CMD ["--help"]
