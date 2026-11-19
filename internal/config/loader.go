@@ -223,6 +223,9 @@ func Validate(cfg *Config) error {
 			if s.OAuth2.TokenFile != "" && s.OAuth2.TokenKey != "" {
 				return fmt.Errorf("source %q: configure either oauth2.token_file or oauth2.token_key", s.Name)
 			}
+			if _, err := NewOAuthTokenProvider(s); err != nil {
+				return fmt.Errorf("source %q OAuth2: %w", s.Name, err)
+			}
 		}
 		if s.MaxListingItems < 0 || s.MaxListingBytes < 0 {
 			return fmt.Errorf("source %q: max_listing_items and max_listing_bytes must be >= 0 (zero uses defaults)", s.Name)

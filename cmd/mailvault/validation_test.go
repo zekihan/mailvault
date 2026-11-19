@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,6 +80,49 @@ func TestValidateConfigJSONStructuralFailure(t *testing.T) {
 	}
 	if report.Valid || len(report.Errors) == 0 {
 		t.Fatalf("missing structural error: %s", output)
+	}
+}
+
+func TestValidateConfigRejectsInvalidOAuthEndpointBeforeConnectivity(t *testing.T) {
+	configureCLI(t)
+	jsonOutput = true
+	targetPath := filepath.Join(physicalTempDir(t), "mail")
+	config := fmt.Sprintf(`sources:
+  - name: oauth-account
+    type: imap
+    host: mail.example.invalid
+    port: 993
+    username: fixture@example.invalid
+    max_connections: 1
+    oauth2:
+      client_id: fixture-client
+      token_url: http://oauth.example.invalid/token
+targets:
+  - name: local
+    type: maildir
+    config:
+      path: %q
+      create_if_missing: true
+pairs:
+  - source: oauth-account
+    targets: [local]
+`, targetPath)
+	if err := os.WriteFile(cfgFile, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureOutput(t, func() error { return runValidateConfig(nil, nil) })
+	if err == nil || !strings.Contains(err.Error(), "OAuth2 endpoints must use HTTPS") {
+		t.Fatalf("expected an OAuth endpoint error, got %v", err)
+	}
+	var report validationReport
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatalf("invalid validation JSON: %v", err)
+	}
+	if report.Valid || report.ConfigurationValid || report.ConnectivityTested {
+		t.Errorf("expected structural validation failure before connectivity, got %s", output)
+	}
+	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("target path stat after invalid configuration: %v, want not exist", err)
 	}
 }
 
