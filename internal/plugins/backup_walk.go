@@ -21,7 +21,10 @@ func WalkBackupMessages(ctx context.Context, reader interface {
 		return err
 	}
 	if walker, ok := reader.(TargetBackupWalker); ok {
-		return walker.WalkBackupMessages(ctx, visit)
+		if err := walker.WalkBackupMessages(ctx, visit); err != nil {
+			return err
+		}
+		return ctx.Err()
 	}
 	entries, err := reader.ListBackupMessages(ctx)
 	if err != nil {
