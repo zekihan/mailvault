@@ -48,6 +48,10 @@ func (s *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExi
 	err = s.client.Create(mailbox, nil).Wait()
 	finish()
 	if err != nil {
+		var response *imap.Error
+		if errors.As(err, &response) && response.Type == imap.StatusResponseTypeNo && response.Code == imap.ResponseCodeAlreadyExists {
+			return false, fmt.Errorf("create destination mailbox %q: %w: %w", mailbox, plugins.ErrMailboxExists, err)
+		}
 		return false, fmt.Errorf("create destination mailbox %q: %w", mailbox, err)
 	}
 	return true, nil

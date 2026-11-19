@@ -237,7 +237,11 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 
 	stats, err := engine.Run(ctx)
 	if err != nil {
-		return fmt.Errorf("sync failed: %w", err)
+		syncErr := fmt.Errorf("sync failed: %w", err)
+		if stats != nil && jsonOutput {
+			return errors.Join(syncErr, printStats(stats))
+		}
+		return syncErr
 	}
 
 	if err := printStats(stats); err != nil {
