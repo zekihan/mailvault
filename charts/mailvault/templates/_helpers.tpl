@@ -6,5 +6,5 @@
 {{- .repository -}}:{{- default $defaultTag .tag -}}{{- if .digest -}}@{{ .digest }}{{- end -}}
 {{- end -}}
 {{- define "mailvault.claim" -}}
-{{- if .settings.existingClaim -}}{{ .settings.existingClaim }}{{- else -}}{{ .name }}{{- end -}}
+{{- default .name .settings.existingClaim | quote -}}
 {{- end -}}
