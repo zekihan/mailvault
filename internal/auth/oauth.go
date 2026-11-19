@@ -418,8 +418,8 @@ func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var result deviceCodeResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return deviceCodeResponse{}, errors.New("invalid device authorization response")
+	if err := decodeOAuthResponse(ctx, resp.Body, &result, "device authorization"); err != nil {
+		return deviceCodeResponse{}, err
 	}
 	if resp.StatusCode/100 != 2 || result.Error != "" {
 		return deviceCodeResponse{}, &protocolError{Code: safeCode(result.Error, resp.StatusCode)}
@@ -449,8 +449,8 @@ func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState,
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var result tokenResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return tokenState{}, errors.New("invalid OAuth token response")
+	if err := decodeOAuthResponse(ctx, resp.Body, &result, "OAuth token"); err != nil {
+		return tokenState{}, err
 	}
 	if resp.StatusCode/100 != 2 || result.Error != "" {
 		return tokenState{}, &protocolError{Code: safeCode(result.Error, resp.StatusCode)}
@@ -459,6 +459,20 @@ func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState,
 		return tokenState{}, errors.New("incomplete OAuth token response")
 	}
 	return tokenState{AccessToken: result.AccessToken, RefreshToken: result.RefreshToken, Expiry: time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)}, nil
+}
+
+func decodeOAuthResponse(ctx context.Context, body io.Reader, result any, kind string) error {
+	err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(result)
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("read %s response: %w", kind, err)
+	}
+	return fmt.Errorf("invalid %s response", kind)
 }
 
 func safeCode(code string, status int) string {
