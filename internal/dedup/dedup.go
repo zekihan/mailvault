@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 	"sync"
 
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -28,11 +27,15 @@ func ExtractMessageID(raw []byte) string {
 		}
 		key, value, found := bytes.Cut(line, []byte{':'})
 		if found && bytes.EqualFold(key, []byte("Message-ID")) {
-			text := strings.TrimSpace(string(value))
-			if strings.HasPrefix(text, "<") && strings.HasSuffix(text, ">") {
-				return text[1 : len(text)-1]
+			value = bytes.TrimSpace(value)
+			for len(value) == 0 && len(raw) > 0 && (raw[0] == ' ' || raw[0] == '\t') {
+				value, raw, _ = bytes.Cut(raw, []byte{'\n'})
+				value = bytes.TrimSpace(value)
 			}
-			return text
+			if len(value) >= 2 && value[0] == '<' && value[len(value)-1] == '>' {
+				value = value[1 : len(value)-1]
+			}
+			return string(value)
 		}
 	}
 	return ""

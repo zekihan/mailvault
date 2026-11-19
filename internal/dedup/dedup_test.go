@@ -49,7 +49,22 @@ func TestExtractMessageID(t *testing.T) {
 			expected: "no-brackets@example.com",
 		},
 		{
-			name:     "folded header",
+			name:     "folded before identifier",
+			raw:      []byte("Message-ID:\r\n\t<folded@example.invalid>\r\nSubject: Test\r\n\r\nBody"),
+			expected: "folded@example.invalid",
+		},
+		{
+			name:     "folded after whitespace",
+			raw:      []byte("Message-ID: \n <folded@example.invalid>\n\nBody"),
+			expected: "folded@example.invalid",
+		},
+		{
+			name:     "empty value followed by body",
+			raw:      []byte("Message-ID:\r\n\r\n <body@example.invalid>"),
+			expected: "",
+		},
+		{
+			name:     "malformed folded identifier",
 			raw:      []byte("Message-ID: <folded\n	example.com>\n\nBody"),
 			expected: "<folded",
 		},
