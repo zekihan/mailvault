@@ -2,10 +2,60 @@ package sync
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/plugins"
 )
+
+func TestIncrementalResumesAfterDeliveryReceiptFailure(t *testing.T) {
+	ctx := context.Background()
+	root := physicalTempDir(t)
+	statePath := filepath.Join(physicalTempDir(t), "state.db")
+	msg := &plugins.Message{
+		UID: "42", UIDScope: "generation-1", Folder: "Archive",
+		Raw: []byte("Subject: delivery checkpoint\r\n\r\nsynthetic body\r\n"),
+	}
+	source := &fixtureSource{name: "account", messages: []*plugins.Message{msg}}
+	var registeredSource plugins.Source = &incrementalFixtureSource{source}
+	cfg, registry := repairReceiptFixture(root, &registeredSource)
+	store := openReceiptTestStore(t, statePath)
+	addDeliveryFailureTrigger(t, statePath)
+
+	stats := runReceiptTestEngine(t, ctx, cfg, store, registry)
+	assertStats(t, stats, 1, 0, 1)
+	if err := stats.Results[0].Errors[0]; !strings.Contains(err.Error(), "forced delivery receipt failure") {
+		t.Fatalf("delivery error = %v", err)
+	}
+	assertMaildirObjectCount(t, ctx, root, 1)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dropErr := db.ExecContext(ctx, "DROP TRIGGER fail_delivery_receipt")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if dropErr != nil {
+		t.Fatal(dropErr)
+	}
+
+	store = openReceiptTestStore(t, statePath)
+	stats = runReceiptTestEngine(t, ctx, cfg, store, registry)
+	assertStats(t, stats, 0, 1, 0)
+	assertMaildirObjectCount(t, ctx, root, 1)
+	assertRepairReceipts(t, ctx, store, root, msg)
+
+	stats = runReceiptTestEngine(t, ctx, cfg, store, registry)
+	if stats.TotalFetched != 0 || stats.TotalErrors != 0 {
+		t.Fatalf("resumed delivery did not persist its UID receipt: %+v", stats)
+	}
+}
 
 func TestIMAPReceiptsRequireSuccessfulDelivery(t *testing.T) {
 	for _, mode := range []string{"success", "failure", "dry-run"} {

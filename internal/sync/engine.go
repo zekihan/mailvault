@@ -472,13 +472,26 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 		result.MessagesSkipped++
 		return
 	}
+	entry, found, err := e.stateStore.FindBackupMessage(ctx, src.Name(), stateTarget, targetReceiptScope(tgt, msg.UIDScope), msg.Folder, backupMessageUID(msg, contentHash))
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("find backup manifest entry: %w", err))
+		return
+	}
+	// The manifest commits after the target write and before the receipts.
+	// Resume a matching delivery from that checkpoint rather than writing it again.
+	if !e.repair && found && entry.Locator != "" && entry.RawSHA256 == contentHash {
+		if !e.dryRun {
+			if err := e.recordDelivery(ctx, src.Name(), stateTarget, identity, msg, contentHash); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("persist resumed delivery: %w", err))
+				return
+			}
+		}
+		delivery.seen[identity] = true
+		result.MessagesSkipped++
+		return
+	}
 	supersededLocator := ""
 	if e.repair {
-		entry, found, findErr := e.stateStore.FindBackupMessage(ctx, src.Name(), stateTarget, targetReceiptScope(tgt, msg.UIDScope), msg.Folder, backupMessageUID(msg, contentHash))
-		if findErr != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("find backup manifest entry: %w", findErr))
-			return
-		}
 		if found {
 			reader, ok := tgt.(plugins.TargetBackupReader)
 			if !ok {
@@ -492,7 +505,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 			}
 			if readErr == nil && dedup.ComputeContentHash(stored.Raw) == entry.RawSHA256 && entry.RawSHA256 == contentHash {
 				if !e.dryRun {
-					if err := e.recordRepairedDelivery(ctx, src, tgt, msg, contentHash); err != nil {
+					if err := e.recordDelivery(ctx, src.Name(), stateTarget, identity, msg, contentHash); err != nil {
 						result.Errors = append(result.Errors, fmt.Errorf("persist repaired delivery: %w", err))
 						return
 					}
@@ -520,7 +533,7 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 					result.Errors = append(result.Errors, fmt.Errorf("persist recovered backup manifest: %w", err))
 					return
 				}
-				if err := e.recordRepairedDelivery(ctx, src, tgt, msg, contentHash); err != nil {
+				if err := e.recordDelivery(ctx, src.Name(), stateTarget, identity, msg, contentHash); err != nil {
 					result.Errors = append(result.Errors, fmt.Errorf("persist repaired delivery: %w", err))
 					return
 				}
@@ -548,7 +561,6 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 			}
 		}
 	}
-	delivery.seen[identity] = true
 	result.MessagesWritten++
 	if !e.dryRun {
 		if locator != "" {
@@ -557,20 +569,18 @@ func (e *SyncEngine) syncMessage(ctx context.Context, src plugins.Source, tgt pl
 				return
 			}
 		}
-		err := errors.Join(
-			e.stateStore.MarkDelivered(ctx, stateTarget, identity, src.Name(), msg.Folder, msg.UID),
-			e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
-		)
-		if err != nil {
+		if err := e.recordDelivery(ctx, src.Name(), stateTarget, identity, msg, contentHash); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("persist delivery: %w", err))
+			return
 		}
 	}
+	delivery.seen[identity] = true
 }
 
-func (e *SyncEngine) recordRepairedDelivery(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message, contentHash string) error {
+func (e *SyncEngine) recordDelivery(ctx context.Context, sourceName, stateTarget, identity string, msg *plugins.Message, contentHash string) error {
 	return errors.Join(
-		e.stateStore.MarkDelivered(ctx, plugins.TargetStateKey(tgt), targetDeliveryIdentity(tgt, msg, "hash:"+contentHash), src.Name(), msg.Folder, msg.UID),
-		e.stateStore.MarkMessageFetched(ctx, src.Name(), msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
+		e.stateStore.MarkDelivered(ctx, stateTarget, identity, sourceName, msg.Folder, msg.UID),
+		e.stateStore.MarkMessageFetched(ctx, sourceName, msg.Folder, msg.UID, msg.MessageID, contentHash, msg.Size, msg.InternalDate),
 	)
 }
 

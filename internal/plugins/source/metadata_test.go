@@ -6,12 +6,95 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/zekihan/mailvault/internal/plugins"
 )
+
+func TestIMAPReconnectRefreshesOnlyDeliveredUIDs(t *testing.T) {
+	const raw = "Subject: synthetic fixture\r\n\r\nbody\r\n"
+	var connections atomic.Int32
+	host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
+		attempt := connections.Add(1)
+		_, _ = fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			parts := strings.Fields(scanner.Text())
+			tag := parts[0]
+			switch parts[1] {
+			case "LOGIN":
+				_, _ = fmt.Fprintf(conn, "%s OK authenticated\r\n", tag)
+			case "EXAMINE":
+				_, _ = fmt.Fprintf(conn, "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\n%s OK selected\r\n", tag)
+			case "UID":
+				switch parts[2] {
+				case "SEARCH":
+					search := "2 3"
+					if attempt == 2 {
+						if !strings.HasSuffix(scanner.Text(), "NOT (UID 1:2)") {
+							t.Errorf("retry search failed to exclude delivered and streamed UIDs: %s", scanner.Text())
+						}
+						search = "3"
+					}
+					_, _ = fmt.Fprintf(conn, "* SEARCH %s\r\n%s OK searched\r\n", search, tag)
+				case "FETCH":
+					if !strings.Contains(scanner.Text(), "BODY[") {
+						ids, err := parseUIDSet(parts[3])
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						for _, uid := range ids {
+							_, _ = fmt.Fprintf(conn, "* %d FETCH (UID %d FLAGS (\\Seen))\r\n", uid, uid)
+						}
+						_, _ = fmt.Fprintf(conn, "%s OK flags sent\r\n", tag)
+						continue
+					}
+					if attempt == 1 {
+						_, _ = fmt.Fprintf(conn, "* 2 FETCH (UID 2 BODY[] {%d}\r\n%s)\r\n", len(raw), raw)
+						return
+					}
+					if parts[3] != "3" {
+						t.Errorf("retry body fetch = %q, want only UID 3", parts[3])
+					}
+					_, _ = fmt.Fprintf(conn, "* 3 FETCH (UID 3 BODY[] {%d}\r\n%s)\r\n%s OK fetched\r\n", len(raw), raw, tag)
+				}
+			default:
+				_, _ = fmt.Fprintf(conn, "%s BAD unexpected\r\n", tag)
+			}
+		}
+	})
+	src := &IMAPSource{host: host, port: port, username: "fixture", password: "fixture", connTimeout: time.Second, readTimeout: time.Second, maxConns: 1}
+	defer src.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = plugins.WithKnownUIDs(ctx, func(string, string) (map[string]bool, error) {
+		return map[string]bool{"1": true}, nil
+	})
+	var refreshed []string
+	ctx = plugins.WithMetadataObserver(ctx, func(msg *plugins.Message) error {
+		if msg.UID != "1" {
+			return fmt.Errorf("UID %s has no delivery receipt", msg.UID)
+		}
+		refreshed = append(refreshed, msg.UID)
+		return nil
+	})
+	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	var fetched []string
+	for msg := range messages {
+		fetched = append(fetched, msg.UID)
+	}
+	for err := range failures {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fetched, []string{"2", "3"}) || !slices.Equal(refreshed, []string{"1", "1"}) || connections.Load() != 2 {
+		t.Fatalf("fetched %v, refreshed %v, connections %d", fetched, refreshed, connections.Load())
+	}
+}
 
 func TestMetadataRefreshDoesNotFetchBody(t *testing.T) {
 	commands := make(chan string, 10)
