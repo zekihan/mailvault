@@ -59,3 +59,36 @@ func TestMaildirRefreshFlagsKeepsBytesAndResolvesOldLocator(t *testing.T) {
 		t.Fatal("corrupt message accepted")
 	}
 }
+
+func TestMaildirKeywordsDoNotSetSystemFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Maildir flag filenames are unsupported on Windows")
+	}
+	value, err := NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_flags": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := value.(*MaildirTarget)
+	t.Cleanup(func() { _ = target.Close() })
+	ctx := context.Background()
+	if err := target.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keywords := []string{"seen", "Answered", "flagged", "DELETED", "draft"}
+	msg := &plugins.Message{Raw: []byte("Subject: fixture\r\n\r\nbody\r\n"), Flags: keywords}
+	locator, err := target.WriteBackupMessage(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(filepath.ToSlash(locator), "new/") || strings.Contains(locator, ":2,") {
+		t.Errorf("keyword-only message locator = %q, want unflagged file in new/", locator)
+	}
+	entry := plugins.BackupMessage{Locator: locator, RawSHA256: dedup.ComputeContentHash(msg.Raw)}
+	updated, err := target.UpdateBackupMetadata(ctx, entry, append(keywords, `\sEeN`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(updated, ":2,S") {
+		t.Errorf("refreshed locator = %q, want only the Seen flag", updated)
+	}
+}

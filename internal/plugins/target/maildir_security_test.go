@@ -108,7 +108,7 @@ func TestMaildirDirectoryReplacementDuringPublicationStaysOnDescriptors(t *testi
 			}
 			if component == "cur" {
 				target.preserveFlags = true
-				message.Flags = []string{"seen"}
+				message.Flags = []string{"\\Seen"}
 			}
 			if component == "folder" {
 				target.preserveFolders = true
