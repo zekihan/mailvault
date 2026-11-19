@@ -211,7 +211,7 @@ func TestPOP3ListingBudgets(t *testing.T) {
 		{"UIDL items", "+OK\r\n1 one\r\n2 two\r\n3 three\r\n", 2, listingLimits{items: 2, bytes: 1024}, "item budget"},
 		{"UIDL bytes", "+OK\r\n1 " + strings.Repeat("x", 4096), 2, listingLimits{items: 2, bytes: 64}, "byte budget"},
 		{"status bytes", "+OK " + strings.Repeat("x", 4096), 2, listingLimits{items: 2, bytes: 64}, "byte budget"},
-		{"duplicate UID", "+OK\r\n1 same\r\n2 same\r\n", 2, listingLimits{items: 2, bytes: 1024}, "duplicate UIDL"},
+		{"duplicate message number", "+OK\r\n1 one\r\n1 two\r\n.\r\n", 2, listingLimits{items: 2, bytes: 1024}, "duplicate UIDL message number"},
 		{"invalid ID", "+OK\r\n0 bad\r\n", 2, listingLimits{items: 2, bytes: 1024}, "invalid or duplicate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

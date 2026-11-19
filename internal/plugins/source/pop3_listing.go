@@ -48,7 +48,7 @@ func readPOP3UIDLs(conn *pop3Protocol, count int, limits listingLimits) ([]pop3I
 	default:
 		return nil, errors.New("unknown response: invalid UIDL status")
 	}
-	seen := make(map[string]bool)
+	firstByUID := make(map[string]int)
 	seenIDs := make(map[int]bool)
 	var identities []pop3Identity
 	for {
@@ -71,8 +71,8 @@ func readPOP3UIDLs(conn *pop3Protocol, count int, limits listingLimits) ([]pop3I
 			return nil, fmt.Errorf("parse UIDL message number: %w", err)
 		}
 		uid := string(fields[1])
-		if id <= 0 || id > count || seenIDs[id] || seen[uid] {
-			return nil, fmt.Errorf("invalid or duplicate UIDL result for message %d", id)
+		if id <= 0 || id > count || seenIDs[id] {
+			return nil, fmt.Errorf("invalid or duplicate UIDL message number %d", id)
 		}
 		// RFC 1939 unique-id: 1 to 70 visible ASCII characters.
 		if len(uid) == 0 || len(uid) > 70 {
@@ -83,7 +83,16 @@ func readPOP3UIDLs(conn *pop3Protocol, count int, limits listingLimits) ([]pop3I
 				return nil, fmt.Errorf("invalid UIDL unique-id character")
 			}
 		}
-		seenIDs[id], seen[uid] = true, true
-		identities = append(identities, pop3Identity{ID: id, UID: uid})
+		item := pop3Identity{ID: id, UID: uid}
+		// RFC 1939 allows identical copies to share a UIDL. Mark every
+		// occurrence so the caller can deduplicate using the retrieved bytes.
+		if first, ok := firstByUID[uid]; ok {
+			identities[first].sharedUID = true
+			item.sharedUID = true
+		} else {
+			firstByUID[uid] = len(identities)
+		}
+		seenIDs[id] = true
+		identities = append(identities, item)
 	}
 }
