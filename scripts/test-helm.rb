@@ -64,8 +64,21 @@ ca = pod['volumes'].find { |v| v['name'] == 'bridge-ca' }
 check(ca['secret']['items'] == [{'key'=>'ca.crt', 'path'=>'ca.crt'}], 'Mailvault must never mount the private TLS key')
 check(running.find { |d| d['kind'] == 'Service' }['spec']['ports'].map { |p| p['port'] } == [1143], 'only IMAP is exposed')
 check(running.any? { |d| d['kind'] == 'NetworkPolicy' }, 'Bridge ingress policy missing')
-existing = render('--set', 'proton.enabled=true,persistence.state.existingClaim=state,persistence.backups.existingClaim=backups,proton.persistence.existingClaim=bridge')
+existing = render('--set', 'proton.enabled=true,setup.enabled=true', '--set-string', 'persistence.state.existingClaim=123,persistence.backups.existingClaim=true,proton.persistence.existingClaim=456')
 check(existing.none? { |d| d['kind'] == 'PersistentVolumeClaim' }, 'existing claims must not be recreated')
+existing_pods = {'test-mailvault' => cron(existing)['jobTemplate']['spec']['template']['spec']}
+existing.select { |d| d['kind'] == 'Deployment' }.each do |d|
+  existing_pods[d['metadata']['name']] = d['spec']['template']['spec']
+end
+{
+  'test-mailvault' => %w[123 true],
+  'test-mailvault-setup' => %w[123 true],
+  'test-mailvault-bridge' => %w[456],
+  'test-mailvault-bridge-setup' => %w[456]
+}.each do |name, expected|
+  claims = existing_pods.fetch(name)['volumes'].filter_map { |v| v.dig('persistentVolumeClaim', 'claimName') }
+  check(claims == expected, "#{name} must preserve existing claim names as strings, got #{claims.inspect}")
+end
 ['setup.enabled=true,initialized=true,suspend=false', 'suspend=false', 'proton.enabled=true,proton.setup=true,initialized=true,suspend=false'].each do |values|
   _, _, status = Open3.capture3('helm', 'template', 'test', 'charts/mailvault', '--set', values)
   check(!status.success?, "unsafe configuration accepted: #{values}")
