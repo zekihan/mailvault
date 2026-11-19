@@ -3,10 +3,11 @@ package config
 import (
 	"errors"
 	"math"
+	"strconv"
 	"time"
 )
 
-// ParseDuration parses a duration from config (supports string or int seconds).
+// ParseDuration accepts duration values, duration strings, and numeric seconds.
 func ParseDuration(config map[string]interface{}, key string, defaultVal time.Duration) (time.Duration, error) {
 	val, ok := config[key]
 	if !ok {
@@ -33,14 +34,13 @@ func ParseDuration(config map[string]interface{}, key string, defaultVal time.Du
 		}
 		return time.Duration(v) * time.Second, nil
 	case float64:
-		// Check after scaling: float64(MaxInt64) rounds up to 2^63, so
-		// comparing seconds against a rounded MaxInt64/second is unsafe.
-		nanos := v * float64(time.Second)
-		const int64Limit = 9223372036854775808.0 // 2^63
-		if math.IsNaN(v) || math.IsInf(v, 0) || nanos >= int64Limit || nanos < -int64Limit {
+		// Parse decimal seconds like a duration string to avoid rounding the
+		// whole duration before truncating it to nanoseconds.
+		d, err := time.ParseDuration(strconv.FormatFloat(v, 'f', -1, 64) + "s")
+		if err != nil {
 			return 0, errors.New("duration out of range")
 		}
-		return time.Duration(nanos), nil
+		return d, nil
 	default:
 		return 0, errors.New("invalid duration format")
 	}

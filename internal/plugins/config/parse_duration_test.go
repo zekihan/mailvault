@@ -32,6 +32,9 @@ func TestParseDurationNumericRange(t *testing.T) {
 		{"float positive overflow", float64(9223372037), 0, true},
 		{"float negative overflow", float64(-9223372037), 0, true},
 		{"float fraction seconds", 1.5, 1500 * time.Millisecond, false},
+		{"float millisecond precision", 1.001, 1001 * time.Millisecond, false},
+		{"float near maximum", 9_223_372_036.854774, 9_223_372_036_854_774_000, false},
+		{"float just below minimum", -9_223_372_036.854776, 0, true},
 	}
 	if strconv.IntSize == 64 {
 		for _, seconds := range []int64{maxSeconds, maxSeconds + 1, minSeconds, minSeconds - 1} {
