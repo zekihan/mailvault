@@ -117,8 +117,14 @@ func TestStore_Basic(t *testing.T) {
 
 func TestStore_CleanOldMessages(t *testing.T) {
 	local := time.Local
-	time.Local = time.FixedZone("UTC+3", 3*60*60)
-	t.Cleanup(func() { time.Local = local })
+	zone := time.FixedZone("UTC+3", 3*60*60)
+	// A timer can read the process time zone while the fixture sets up its clock.
+	readLocal := make(chan *time.Location, 1)
+	time.AfterFunc(0, func() { readLocal <- time.Now().Location() })
+	now := time.Date(2024, time.January, 2, 0, 30, 0, 0, zone)
+	if got := <-readLocal; got != local {
+		t.Fatal("setting up the cleanup clock changed the process time zone")
+	}
 
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -130,38 +136,26 @@ func TestStore_CleanOldMessages(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert a recent message.
 	if err := store.UpsertSource(ctx, "src", "imap", "host", "user"); err != nil {
 		t.Fatalf("UpsertSource() = %v", err)
 	}
-	if err := store.MarkMessageFetched(ctx, "src", "INBOX", "1", "<msg1>", "hash1", 100, "2024-01-01T00:00:00Z"); err != nil {
-		t.Fatalf("MarkMessageFetched() = %v", err)
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO messages (source_name, folder, uid, fetched_at) VALUES
+			('src', 'INBOX', '1', '2024-01-01 21:30:00'),
+			('src', 'INBOX', '2', '2024-01-01 20:29:59'),
+			('src', 'INBOX', '3', '2024-01-01 20:30:00')
+	`); err != nil {
+		t.Fatalf("insert message metadata: %v", err)
 	}
 
-	// Clean messages older than 1 hour (should not delete recent)
-	deleted, err := store.CleanOldMessages(ctx, time.Hour)
-	if err != nil {
-		t.Fatalf("CleanOldMessages() = %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("CleanOldMessages() = %d, want 0", deleted)
-	}
-
-	if err := store.MarkMessageFetched(ctx, "src", "INBOX", "2", "<msg2>", "hash2", 100, "2024-01-01T00:00:00Z"); err != nil {
-		t.Fatalf("MarkMessageFetched() = %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, "UPDATE messages SET fetched_at = datetime('now', '-2 hours') WHERE uid = ?", "2"); err != nil {
-		t.Fatalf("set old fetched_at: %v", err)
-	}
-
-	deleted, err = store.CleanOldMessages(ctx, time.Hour)
+	deleted, err := store.cleanOldMessages(ctx, now, time.Hour)
 	if err != nil {
 		t.Fatalf("CleanOldMessages() = %v", err)
 	}
 	if deleted != 1 {
 		t.Fatalf("CleanOldMessages() = %d, want 1", deleted)
 	}
-	for uid, want := range map[string]bool{"1": true, "2": false} {
+	for uid, want := range map[string]bool{"1": true, "2": false, "3": true} {
 		exists, err := store.MessageExists(ctx, "src", "INBOX", uid)
 		if err != nil {
 			t.Fatalf("MessageExists(%q) = %v", uid, err)
