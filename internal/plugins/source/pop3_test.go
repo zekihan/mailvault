@@ -152,6 +152,57 @@ func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
 	}
 }
 
+func TestPOP3SharedUIDLUsesSequenceIdentities(t *testing.T) {
+	const duplicate = "Subject: identical copy\r\n\r\nfixture\r\n"
+	messages := []pop3FixtureMessage{
+		{uid: "shared-id", raw: duplicate},
+		{uid: "known-id"},
+		{uid: "shared-id", raw: duplicate},
+		{uid: "new-id", raw: "Subject: new message\r\n\r\nfixture\r\n"},
+	}
+	retrieved := make(chan int, len(messages))
+	host, port := pop3Fixture(t, messages, retrieved, 2, 1, 0, 3)
+	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", connTimeout: time.Second, readTimeout: time.Second}
+	defer src.Close()
+	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", host, port, src.username)))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ctx = plugins.WithKnownUIDs(ctx, func(string, string) (map[string]bool, error) {
+		return map[string]bool{"shared-id": true, "known-id": true}, nil
+	})
+
+	out, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	var got []*plugins.Message
+	for msg := range out {
+		got = append(got, msg)
+	}
+	for err := range failures {
+		t.Fatal(err)
+	}
+	want := []struct {
+		id    int
+		uid   string
+		scope string
+	}{
+		{3, "sequence:3", ""},
+		{1, "sequence:1", ""},
+		{4, "new-id", scope},
+	}
+	if len(got) != len(want) || len(retrieved) != len(want) {
+		t.Fatalf("got %d messages and %d RETRs, want %d of each", len(got), len(retrieved), len(want))
+	}
+	for i, expected := range want {
+		msg := got[i]
+		if id := <-retrieved; id != expected.id || msg.UID != expected.uid || msg.UIDScope != expected.scope {
+			t.Errorf("message %d: RETR %d, UID %q, scope %q, want RETR %d, UID %q, scope %q",
+				i, id, msg.UID, msg.UIDScope, expected.id, expected.uid, expected.scope)
+		}
+	}
+	if string(got[0].Raw) != duplicate || string(got[1].Raw) != duplicate {
+		t.Error("both copies should reach content deduplication")
+	}
+}
+
 func TestPOP3FilteredFetchFailsOnInvalidDateHeader(t *testing.T) {
 	host, port := pop3Fixture(t, []pop3FixtureMessage{{uid: "bad-date", raw: "Subject: missing date\r\n\r\nbody\r\n"}}, nil)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, connTimeout: time.Second, readTimeout: time.Second}

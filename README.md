@@ -44,6 +44,8 @@ still apply, including with `--force-fetch-all`. Folder progress totals count th
 pending server-search candidates, before exact date filtering and deduplication.
 POP3 uses stable UIDL identifiers to skip successful deliveries. Servers that
 explicitly reject UIDL fall back to full downloads and content deduplication.
+When several messages share a UIDL, Mailvault downloads those messages on each
+sync and deduplicates by content. Other UIDLs still use delivery receipts.
 Malformed UIDL responses fail the sync rather than guessing message identities.
 POP3 date filtering uses the sender's Date header after retrieval, so excluded
 messages may need to be retrieved again on later filtered runs.
@@ -93,8 +95,8 @@ The item limit applies to all IMAP LIST entries (including non-selectable parent
 IMAP SEARCH candidate UIDs per folder, and the POP3 STAT count and UIDL rows.
 The byte limit bounds each LIST, SEARCH, STAT or UIDL response, including protocol
 framing; IMAP over TLS also counts TLS framing. Small fixed protocol/TLS read
-buffers can be retained across commands. POP3 UIDLs must contain unique message
-numbers and unique visible ASCII identifiers of at most 70 characters.
+buffers can be retained across commands. POP3 UIDL listings must contain unique
+message numbers and visible ASCII identifiers of at most 70 characters.
 An invalid or oversized listing closes the session and fails the operation without
 using partial results. Restore destination checks use the same limits before
 creating or appending to a mailbox. Large accounts that exceed a limit need an
@@ -102,9 +104,9 @@ explicit increase; listings are not silently truncated or paginated.
 
 Downloads retry transient connection failures up to two times with a short
 backoff. Stable IMAP UIDs and POP3 UIDLs already streamed in the current run are
-excluded on reconnect. POP3 without UIDL does not retry after streaming a message,
-because sequence numbers cannot safely identify it after reconnecting. Authentication
-and protocol errors fail immediately; Ctrl+C cancels retries.
+excluded on reconnect. POP3 stops retrying after streaming a message that has no
+stable UIDL because sequence numbers can change on reconnect. Authentication
+and protocol errors fail immediately. Ctrl+C cancels retries.
 
 ## verification and restore
 

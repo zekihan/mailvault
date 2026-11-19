@@ -22,8 +22,9 @@ import (
 )
 
 type pop3Identity struct {
-	ID  int
-	UID string
+	ID        int
+	UID       string
+	sharedUID bool
 }
 
 // POP3Source implements the Source interface for POP3.
@@ -275,7 +276,7 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 	}
 	pending := identities[:0]
 	for _, item := range identities {
-		if !known[item.UID] {
+		if item.sharedUID || !known[item.UID] {
 			pending = append(pending, item)
 		}
 	}
@@ -293,11 +294,14 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 
 	// Fetch each message
 	for i := 0; i < progress.Total; i++ {
-		var item pop3Identity
-		if scope == "" {
-			item = pop3Identity{ID: i + 1, UID: fmt.Sprintf("sequence:%d", i+1)}
-		} else {
+		item := pop3Identity{ID: i + 1}
+		if scope != "" {
 			item = pending[i]
+		}
+		messageScope := scope
+		if item.sharedUID || scope == "" {
+			messageScope = ""
+			item.UID = fmt.Sprintf("sequence:%d", item.ID)
 		}
 		select {
 		case <-ctx.Done():
@@ -344,7 +348,7 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		}
 
 		pluginsMsg := &plugins.Message{
-			UIDScope:     scope,
+			UIDScope:     messageScope,
 			UID:          item.UID,
 			Folder:       folder,
 			Raw:          raw,
