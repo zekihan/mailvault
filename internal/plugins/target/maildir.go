@@ -307,15 +307,15 @@ func (t *MaildirTarget) maildirFlags(flags []string) string {
 	letters := make(map[rune]bool)
 	for _, flag := range flags {
 		switch strings.ToLower(flag) {
-		case "\\seen", "seen":
+		case "\\seen":
 			letters['S'] = true
-		case "\\answered", "answered":
+		case "\\answered":
 			letters['R'] = true
-		case "\\flagged", "flagged":
+		case "\\flagged":
 			letters['F'] = true
-		case "\\deleted", "deleted":
+		case "\\deleted":
 			letters['T'] = true
-		case "\\draft", "draft":
+		case "\\draft":
 			letters['D'] = true
 		}
 	}
