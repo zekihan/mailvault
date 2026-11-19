@@ -92,3 +92,36 @@ func TestMaildirKeywordsDoNotSetSystemFlags(t *testing.T) {
 		t.Errorf("refreshed locator = %q, want only the Seen flag", updated)
 	}
 }
+
+func TestMaildirRefreshKeepsUnflaggedMessagesInNew(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Maildir flag filenames are unsupported on Windows")
+	}
+	root := physicalTempDir(t)
+	value, err := NewMaildirTarget(map[string]interface{}{"path": root, "preserve_flags": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := value.(*MaildirTarget)
+	t.Cleanup(func() { _ = target.Close() })
+	ctx := context.Background()
+	if err := target.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	msg := &plugins.Message{Raw: []byte("Subject: fixture\r\n\r\nbody\r\n")}
+	locator, err := target.WriteBackupMessage(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(locator) != "new" {
+		t.Fatalf("unflagged message locator = %q, want file in new/", locator)
+	}
+	entry := plugins.BackupMessage{Locator: locator, RawSHA256: dedup.ComputeContentHash(msg.Raw)}
+	updated, err := target.UpdateBackupMetadata(ctx, entry, []string{"project"})
+	if err != nil || updated != filepath.ToSlash(locator) {
+		t.Fatalf("refreshed locator = %q, err = %v, want %q", updated, err, locator)
+	}
+	if _, err := os.Stat(filepath.Join(root, locator)); err != nil {
+		t.Fatalf("message disappeared from new/: %v", err)
+	}
+}

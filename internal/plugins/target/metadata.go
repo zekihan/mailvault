@@ -42,18 +42,22 @@ func (t *MaildirTarget) UpdateBackupMetadata(ctx context.Context, entry plugins.
 	if err != nil {
 		return "", err
 	}
+	oldDirPath := filepath.Dir(relative)
 	oldName := filepath.Base(relative)
 	base := strings.SplitN(oldName, ":2,", 2)[0]
 	suffix := t.maildirFlags(flags)
 	if suffix == "" {
+		if filepath.Base(oldDirPath) == "new" && base == oldName {
+			return filepath.ToSlash(relative), nil
+		}
 		suffix = ":2,"
 	}
 	newName := base + suffix
-	newRelative := filepath.Join(filepath.Dir(filepath.Dir(relative)), "cur", newName)
+	newRelative := filepath.Join(filepath.Dir(oldDirPath), "cur", newName)
 	if newRelative == relative {
 		return filepath.ToSlash(relative), nil
 	}
-	oldDir, err := root.walk(filepath.Dir(relative), false, nil)
+	oldDir, err := root.walk(oldDirPath, false, nil)
 	if err != nil {
 		return "", err
 	}
