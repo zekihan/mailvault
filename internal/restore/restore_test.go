@@ -339,13 +339,25 @@ func TestRunResumesAfterMailboxCreationAndCancellation(t *testing.T) {
 }
 
 func TestRunRefusesExistingMailboxForNewJob(t *testing.T) {
+	ctx := context.Background()
 	raw := []byte("content")
 	digest := sha256.Sum256(raw)
 	entry := plugins.BackupMessage{Locator: "one", RawSHA256: hex.EncodeToString(digest[:])}
-	appender := &fixtureAppender{err: errors.Join(errors.New("destination mailbox already exists"), plugins.ErrMailboxExists)}
-	_, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
-	if err == nil || appender.appended != 0 {
-		t.Fatalf("existing destination accepted for a new job: err=%v appends=%d", err, appender.appended)
+	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
+	receipts, err := state.NewStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receipts.Close()
+	appender := &fixtureAppender{err: plugins.ErrMailboxExists}
+	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := Run(ctx, reader, appender, receipts, options); !errors.Is(err, plugins.ErrMailboxExists) {
+			t.Fatalf("attempt %d: restore error = %v, want mailbox conflict", attempt, err)
+		}
+	}
+	if appender.appended != 0 {
+		t.Fatalf("restore appended %d messages to an existing mailbox", appender.appended)
 	}
 }
 

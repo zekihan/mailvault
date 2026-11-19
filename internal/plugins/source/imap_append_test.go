@@ -3,6 +3,7 @@ package source
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,59 @@ func TestAppendFlagsPreserveSafeFlagsAndExcludeRecent(t *testing.T) {
 	want := []imap.Flag{imap.FlagSeen, "$Label1", "Project-Blue"}
 	if !reflect.DeepEqual(flags, want) {
 		t.Fatalf("flags = %#v, want %#v", flags, want)
+	}
+}
+
+func TestEnsureMailboxDistinguishesCreateConflictFromDisconnect(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		response string
+		conflict bool
+	}{
+		{name: "already exists", response: "NO [ALREADYEXISTS] Mailbox already exists", conflict: true},
+		{name: "connection lost"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var createReceived atomic.Bool
+			host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
+				_, _ = fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1] fixture ready\r\n")
+				scanner := bufio.NewScanner(conn)
+				for scanner.Scan() {
+					parts := strings.Fields(scanner.Text())
+					if len(parts) < 2 {
+						return
+					}
+					tag := parts[0]
+					switch parts[1] {
+					case "LOGIN":
+						_, _ = fmt.Fprintf(conn, "%s OK logged in\r\n", tag)
+					case "CAPABILITY":
+						_, _ = fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1\r\n%s OK capabilities\r\n", tag)
+					case "LIST":
+						_, _ = fmt.Fprintf(conn, "%s OK listed\r\n", tag)
+					case "CREATE":
+						createReceived.Store(true)
+						if tt.response == "" {
+							return
+						}
+						_, _ = fmt.Fprintf(conn, "%s %s\r\n", tag, tt.response)
+					default:
+						_, _ = fmt.Fprintf(conn, "%s BAD unexpected\r\n", tag)
+					}
+				}
+			})
+			source := &IMAPSource{host: host, port: port, username: "test-user", password: "test-value", connTimeout: time.Second, readTimeout: time.Second}
+			defer source.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			created, err := source.EnsureMailbox(ctx, "Restored", false)
+			if !createReceived.Load() || created || err == nil {
+				t.Fatalf("expected a failed CREATE, got received=%t created=%t err=%v", createReceived.Load(), created, err)
+			}
+			if errors.Is(err, plugins.ErrMailboxExists) != tt.conflict || errors.Is(err, plugins.ErrMailboxUnchanged) {
+				t.Fatalf("CREATE conflict classification, want conflict=%t, got %v", tt.conflict, err)
+			}
+		})
 	}
 }
 
