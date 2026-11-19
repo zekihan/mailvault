@@ -361,6 +361,8 @@ Delivery and source/target finalization failures increment `TotalErrors`, and
 the CLI exits non-zero after printing the report. JSON `Results[].Errors` contains
 error strings, while `FinalizationErrors` contains resource-specific close errors.
 The engine does not print close warnings to stdout, keeping `--json` parseable.
+An interrupted sync in JSON mode prints the available statistics before exiting
+nonzero.
 For Go callers, `Run` returns setup failures directly; delivery and finalization
 failures are recorded in the returned statistics.
 Resources are closed on setup failures too, including partially initialized

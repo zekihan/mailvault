@@ -34,14 +34,6 @@ func captureOutput(t *testing.T, run func() error) (string, error) {
 
 func configureCLI(t *testing.T) {
 	t.Helper()
-	oldFile, oldState, oldJSON := cfgFile, stateDir, jsonOutput
-	oldDry, oldConcurrency, oldRetries := dryRun, concurrency, maxRetries
-	oldDelay, oldSince, oldUntil := retryDelay, since, until
-	t.Cleanup(func() {
-		cfgFile, stateDir, jsonOutput = oldFile, oldState, oldJSON
-		dryRun, concurrency, maxRetries = oldDry, oldConcurrency, oldRetries
-		retryDelay, since, until = oldDelay, oldSince, oldUntil
-	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -50,12 +42,25 @@ func configureCLI(t *testing.T) {
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
+	configureCLIOnPort(t, port, "200ms")
+}
+
+func configureCLIOnPort(t *testing.T, port int, timeout string) {
+	t.Helper()
+	oldFile, oldState, oldJSON := cfgFile, stateDir, jsonOutput
+	oldDry, oldConcurrency, oldRetries := dryRun, concurrency, maxRetries
+	oldDelay, oldSince, oldUntil := retryDelay, since, until
+	t.Cleanup(func() {
+		cfgFile, stateDir, jsonOutput = oldFile, oldState, oldJSON
+		dryRun, concurrency, maxRetries = oldDry, oldConcurrency, oldRetries
+		retryDelay, since, until = oldDelay, oldSince, oldUntil
+	})
 	t.Setenv("MAILVAULT_TEST_VALUE", "synthetic-sensitive-value")
 	data := map[string]interface{}{
 		"sources": []interface{}{map[string]interface{}{
 			"name": "test-account", "type": "pop3", "host": "127.0.0.1", "port": port,
 			"username": "test-user", "password_ref": "env:MAILVAULT_TEST_VALUE", "use_tls": false,
-			"max_connections": 1, "connection_timeout": "200ms", "read_timeout": "200ms",
+			"max_connections": 1, "connection_timeout": timeout, "read_timeout": timeout,
 		}},
 		"targets": []interface{}{map[string]interface{}{
 			"name": "local", "type": "maildir", "config": map[string]interface{}{
