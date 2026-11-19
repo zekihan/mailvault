@@ -271,6 +271,7 @@ func (s *POP3Source) fetchFolder(ctx context.Context, folder string, msgChan cha
 		if err != nil {
 			return fmt.Errorf("load incremental state: %w", err)
 		}
+		known = skipStreamedUIDs(ctx, scope, folder, known)
 	}
 	pending := identities[:0]
 	for _, item := range identities {

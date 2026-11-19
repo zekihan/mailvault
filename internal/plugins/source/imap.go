@@ -329,6 +329,7 @@ func (s *IMAPSource) fetchFolder(ctx context.Context, folder string, msgChan cha
 	if err := s.refreshMetadata(ctx, sessions[0], scope, folder, known); err != nil {
 		return fmt.Errorf("refresh metadata: %w", err)
 	}
+	known = skipStreamedUIDs(ctx, scope, folder, known)
 
 	// Build search criteria
 	criteria := timestampSearchCriteria(since, until)

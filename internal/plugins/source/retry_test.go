@@ -69,15 +69,12 @@ func TestRetryFetchCancellation(t *testing.T) {
 	}
 }
 
-func TestRetryFetchPublishesKnownUIDs(t *testing.T) {
+func TestRetryFetchPublishesStreamedUIDs(t *testing.T) {
 	attempts := 0
 	out := make(chan *plugins.Message, 2)
 	err := retryFetch(context.Background(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
 		attempts++
-		known, err := plugins.KnownUIDs(ctx, "scope", "INBOX")
-		if err != nil {
-			return err
-		}
+		known := skipStreamedUIDs(ctx, "scope", "INBOX", nil)
 		if attempts == 2 && !known["42"] {
 			return errors.New("retry lost streamed identity")
 		}

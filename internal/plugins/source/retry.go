@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"time"
 
@@ -32,37 +33,41 @@ func joinTransportError(err error, wire *deadlineConn) error {
 	return err
 }
 
+type streamedUID struct{ scope, folder, uid string }
+type streamedUIDsKey struct{}
+
+// Include streamed UIDs when selecting bodies for a retry. They are separate
+// from delivery receipts because the consumer may have failed to store them.
+func skipStreamedUIDs(ctx context.Context, scope, folder string, known map[string]bool) map[string]bool {
+	streamed, _ := ctx.Value(streamedUIDsKey{}).(map[streamedUID]bool)
+	var merged map[string]bool
+	for key := range streamed {
+		if key.scope != scope || key.folder != folder {
+			continue
+		}
+		if merged == nil {
+			merged = make(map[string]bool, len(known))
+			maps.Copy(merged, known)
+		}
+		merged[key.uid] = true
+	}
+	if merged == nil {
+		return known
+	}
+	return merged
+}
+
 // Retry transport failures without re-emitting stable identities already streamed.
 func retryFetch(ctx context.Context, out chan<- *plugins.Message, fetch func(context.Context, chan<- *plugins.Message) error) error {
-	type identity struct{ scope, folder, uid string }
-	emitted := make(map[identity]bool)
+	emitted := make(map[streamedUID]bool)
 	unstable := false
 	for attempt := 0; ; attempt++ {
 		messages := make(chan *plugins.Message)
 		result := make(chan error, 1)
-		snapshot := make(map[identity]bool, len(emitted))
-		for key := range emitted {
-			snapshot[key] = true
-		}
-		attemptCtx := plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {
-			known, err := plugins.KnownUIDs(ctx, scope, folder)
-			if err != nil {
-				return nil, err
-			}
-			merged := make(map[string]bool, len(known))
-			for uid, delivered := range known {
-				merged[uid] = delivered
-			}
-			for key := range snapshot {
-				if key.scope == scope && key.folder == folder {
-					merged[key.uid] = true
-				}
-			}
-			return merged, nil
-		})
+		attemptCtx := context.WithValue(ctx, streamedUIDsKey{}, maps.Clone(emitted))
 		go func() { result <- fetch(attemptCtx, messages); close(messages) }()
 		for msg := range messages {
-			key := identity{msg.UIDScope, msg.Folder, msg.UID}
+			key := streamedUID{msg.UIDScope, msg.Folder, msg.UID}
 			if msg.UIDScope != "" && emitted[key] {
 				continue
 			}
