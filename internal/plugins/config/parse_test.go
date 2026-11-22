@@ -67,14 +67,14 @@ func TestParseMessageLimit(t *testing.T) {
 	}
 	for value, want := range map[interface{}]int64{
 		int(1024): 1024, int64(2048): 2048, float64(4096): 4096, "8192": 8192,
-		int64(plugins.MaxMessageBytes): plugins.MaxMessageBytes,
+		plugins.MaxMessageBytes: plugins.MaxMessageBytes,
 	} {
 		if got, err := ParseMessageLimit(map[string]interface{}{"max_message_bytes": value}); err != nil || got != want {
 			t.Fatalf("ParseMessageLimit(%T %v) = %d, %v; want %d", value, value, got, err, want)
 		}
 	}
 	for _, value := range []interface{}{
-		0, -1, int64(plugins.MaxMessageBytes) + 1, 1.5, math.NaN(), math.Inf(1),
+		0, -1, plugins.MaxMessageBytes + 1, 1.5, math.NaN(), math.Inf(1),
 		"invalid", "1.5", true, nil,
 	} {
 		if _, err := ParseMessageLimit(map[string]interface{}{"max_message_bytes": value}); err == nil {
