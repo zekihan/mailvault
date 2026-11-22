@@ -60,7 +60,10 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 		return nil, err
 	}
 	host, _ := config.ParseString(configMap, config.SourceConfigHost, "")
-	port, _ := config.ParseInt(configMap, config.SourceConfigPort, 993)
+	port, err := config.ParseInt(configMap, config.SourceConfigPort, 993)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.SourceConfigPort, err)
+	}
 	username, _ := config.ParseString(configMap, config.SourceConfigUsername, "")
 	passwordRef, _ := config.ParseString(configMap, config.SourceConfigPasswordRef, "")
 	useTLS, _ := config.ParseBool(configMap, config.SourceConfigUseTLS, true)
@@ -68,7 +71,10 @@ func NewIMapSource(configMap map[string]interface{}) (plugins.Source, error) {
 	folders, _ := config.ParseStringSlice(configMap, config.SourceConfigFolders)
 	connTimeout, _ := config.ParseDuration(configMap, config.SourceConfigConnectionTimeout, 30*time.Second)
 	readTimeout, _ := config.ParseDuration(configMap, config.SourceConfigReadTimeout, 60*time.Second)
-	maxConns, _ := config.ParseInt(configMap, config.SourceConfigMaxConnections, 5)
+	maxConns, err := config.ParseInt(configMap, config.SourceConfigMaxConnections, 5)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.SourceConfigMaxConnections, err)
+	}
 	connectRetryTimeout, err := config.ParseDuration(configMap, config.SourceConfigConnectRetryTimeout, DefaultConnectRetryTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", config.SourceConfigConnectRetryTimeout, err)
