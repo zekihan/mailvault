@@ -49,10 +49,10 @@ type Message struct {
 	// Raw is the full RFC822 message bytes.
 	Raw []byte
 
-	// MessageID is the Message-ID header (for deduplication).
+	// MessageID is the Message-ID header, retained as backup metadata.
 	MessageID string
 
-	// ContentHash is SHA-256 of Raw (for deduplication fallback).
+	// ContentHash is the SHA-256 of Raw and the identity used for content deduplication.
 	ContentHash string
 
 	// Size is the message size in bytes.
