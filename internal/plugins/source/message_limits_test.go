@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
 func TestIMAPRejectsOversizedLiteralWithoutReadingBody(t *testing.T) {
@@ -152,11 +153,11 @@ func TestSourcesApplyBackpressureBehindBlockedTarget(t *testing.T) {
 				src = &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", maxConns: workers, maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}
 			} else {
 				workers = 1
-				fixture := make([]pop3FixtureMessage, 50)
+				fixture := make([]mailtest.POP3Message, 50)
 				for i := range fixture {
-					fixture[i] = pop3FixtureMessage{uid: fmt.Sprint(i), raw: strings.Repeat("x", int(limit)-2) + "\r\n"}
+					fixture[i] = mailtest.POP3Message{UID: fmt.Sprint(i), Raw: strings.Repeat("x", int(limit)-2) + "\r\n"}
 				}
-				host, port := pop3Fixture(t, fixture, nil)
+				host, port := mailtest.POP3Server(t, fixture, nil)
 				src = &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}
 			}
 			defer func() { cancel(); _ = src.Close() }()

@@ -12,44 +12,12 @@ import (
 	"time"
 
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
 func protocolServer(t *testing.T, serve func(net.Conn, <-chan struct{})) (string, int) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var connections []net.Conn
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			connections = append(connections, conn)
-			mu.Unlock()
-			wg.Add(1)
-			go func() { defer wg.Done(); defer conn.Close(); serve(conn, stop) }()
-		}
-	}()
-	t.Cleanup(func() {
-		close(stop)
-		_ = listener.Close()
-		mu.Lock()
-		for _, conn := range connections {
-			_ = conn.Close()
-		}
-		mu.Unlock()
-		wg.Wait()
-	})
-	return "127.0.0.1", listener.Addr().(*net.TCPAddr).Port
+	return mailtest.ProtocolServer(t, serve)
 }
 
 func TestIMAPFetchUsesUIDsAndInternalDate(t *testing.T) {

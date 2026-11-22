@@ -65,18 +65,23 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 	if !options.DryRun && (appender == nil || receipts == nil) {
 		return Result{}, errors.New("appender and restore receipt store are required")
 	}
-	// Complete preflight before touching the destination. Spool normalized
-	// metadata privately on disk instead of retaining every locator in memory.
-	spool, err := os.CreateTemp("", "mailvault-restore-*.json")
-	if err != nil {
-		return Result{}, fmt.Errorf("create restore plan: %w", err)
+	var spool *os.File
+	var writer *bufio.Writer
+	var encoder *json.Encoder
+	if !options.DryRun {
+		// Spool normalized metadata privately until preflight has verified every message.
+		var err error
+		spool, err = os.CreateTemp("", "mailvault-restore-*.json")
+		if err != nil {
+			return Result{}, fmt.Errorf("create restore plan: %w", err)
+		}
+		defer func() { _ = spool.Close(); _ = os.Remove(spool.Name()) }()
+		writer = bufio.NewWriter(spool)
+		encoder = json.NewEncoder(writer)
 	}
-	defer func() { _ = spool.Close(); _ = os.Remove(spool.Name()) }()
-	writer := bufio.NewWriter(spool)
-	encoder := json.NewEncoder(writer)
 	result := Result{}
 	seen := make(map[string]bool)
-	err = plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
+	err := plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
 		result.Messages++
 		_, normalized, unverified, err := readAndValidate(ctx, reader, entry, options.DryRun || options.AllowUnverified)
 		if err != nil {
@@ -100,11 +105,11 @@ func Run(ctx context.Context, reader BackupReader, appender MailboxAppender, rec
 	if err != nil {
 		return result, fmt.Errorf("preflight backup messages: %w", err)
 	}
-	if err := writer.Flush(); err != nil {
-		return result, fmt.Errorf("write restore plan: %w", err)
-	}
 	if options.DryRun || result.Messages == 0 {
 		return result, nil
+	}
+	if err := writer.Flush(); err != nil {
+		return result, fmt.Errorf("write restore plan: %w", err)
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
 		return result, err

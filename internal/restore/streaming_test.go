@@ -18,6 +18,7 @@ type streamingReader struct {
 	t        *testing.T
 	count    int
 	reads    int
+	dryRun   bool
 	failure  error
 	appender *fixtureAppender
 }
@@ -28,12 +29,18 @@ func (r *streamingReader) ListBackupMessages(context.Context) ([]plugins.BackupM
 }
 func (r *streamingReader) WalkBackupMessages(ctx context.Context, visit func(plugins.BackupMessage) error) error {
 	plans, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "mailvault-restore-*"))
-	if err != nil || len(plans) != 1 {
+	wantPlans := 1
+	if r.dryRun {
+		wantPlans = 0
+	}
+	if err != nil || len(plans) != wantPlans {
 		r.t.Fatalf("private plan files=%v, %v", plans, err)
 	}
-	info, err := os.Stat(plans[0])
-	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
-		r.t.Fatalf("restore plan permissions: %v, %v", info, err)
+	if len(plans) == 1 {
+		info, err := os.Stat(plans[0])
+		if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
+			r.t.Fatalf("restore plan permissions: %v, %v", info, err)
+		}
 	}
 	for i := 0; i < r.count; i++ {
 		if r.reads != i {
@@ -63,7 +70,7 @@ func TestRestoreStreamsPreflightAndCleansPrivatePlan(t *testing.T) {
 			t.Setenv("TMP", dir)
 			t.Setenv("TEMP", dir)
 			appender := &fixtureAppender{}
-			reader := &streamingReader{t: t, count: 300, appender: appender}
+			reader := &streamingReader{t: t, count: 300, appender: appender, dryRun: mode == "dry-run"}
 			if mode == "over-budget" {
 				reader.failure = plugins.ErrBackupListingLimit
 			}

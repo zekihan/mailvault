@@ -48,6 +48,8 @@ func TestStateCleanupPreviewsAndRetainsReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	path := filepath.Join(stateDir, "state.db")
+	before := readCommandFixture(t, path)
 	preview := newStateCleanupCommand()
 	preview.SetArgs([]string{"--older-than", "24h"})
 	var output bytes.Buffer
@@ -57,6 +59,9 @@ func TestStateCleanupPreviewsAndRetainsReceipts(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "1 old message metadata") || !strings.Contains(output.String(), "use --apply") {
 		t.Fatalf("preview output = %q", output.String())
+	}
+	if !bytes.Equal(before, readCommandFixture(t, path)) {
+		t.Fatal("cleanup preview changed the state database")
 	}
 
 	apply := newStateCleanupCommand()
