@@ -21,6 +21,24 @@ make lint    # gofmt check and golangci-lint
 make test    # unit tests
 ```
 
+## commands
+
+Every command accepts `--config <path>` (default: `./config.yaml`, then
+`~/.config/mailvault/config.yaml`, then `/etc/mailvault/config.yaml`) and
+`--state-dir <directory>` (default: `~/.local/share/mailvault`). Commands that
+produce reports also accept `--json`.
+
+- `sync [--dry-run] [--force-fetch-all] [--refresh-flags] [--since <RFC3339>] [--until <RFC3339>] [--concurrency <n>] [--max-retries <n>] [--retry-delay <duration>]`: back up the configured source-target pairs.
+- `verify <target>`: check one target against the recorded SHA-256 hashes.
+- `repair --source <source> --target <target> --apply`: rewrite missing or corrupt copies for one pair.
+- `restore --from <target> --source <imap-source> --folder <new-folder> [--dry-run] [--allow-unverified]`: restore a backup into a new IMAP mailbox; `restore resolve` settles an uncertain APPEND or mailbox setup.
+- `cleanup-state --older-than <duration> [--apply]`: preview or prune old fetched-message metadata.
+- `validate-config`: validate the configuration and test connectivity.
+- `list-sources` / `list-targets`: print the configured sources or targets.
+- `list-folders --source <source>`: print a source's selectable folders as YAML.
+- `auth login --source <source>`: authorize one configured OAuth2 source.
+- `version`: print the build version.
+
 ## incremental backups
 
 IMAP syncs search for message UIDs but download bodies only for UIDs without a
@@ -385,7 +403,7 @@ state, Maildir backups, and verified STARTTLS, see
 
 ## Container publishing
 
-The `Release` GitHub Actions workflow publishes Mailvault for
+The `Publish` GitHub Actions workflow publishes Mailvault for
 `linux/amd64` and `linux/arm64` to `ghcr.io/zekihan/mailvault` and
 `docker.io/<DOCKER_USERNAME>/mailvault` after the checks workflow passes.
 Bridge uses a separate GHCR image published from the `zekihan/dockerfiles` repository.
@@ -399,13 +417,12 @@ Create the Docker Hub repository first. GHCR authentication uses the automatic
 `GITHUB_TOKEN` with package write permission. Set the GHCR package visibility to
 public after its first publication if anonymous pulls are desired.
 
-Pushing a semantic version tag such as `v1.2.3` publishes `1.2.3`, `1.2`, `latest`,
-and `sha-<full commit SHA>` to both registries. Prerelease tags such as
-`v1.3.0-rc.1` do not update `latest`. Manual workflow runs on a branch publish only
-the commit SHA tag; they do not replace release tags. The image's `version`
-command includes the build version.
+Pushing a stable semantic version tag such as `v1.2.3` publishes the immutable
+`1.2.3` image to both registries and moves `latest` forward. Nightly and manual
+runs on `main` update the multi-architecture `edge` image instead and never
+replace a stable version. The image's `version` command includes the build version.
 
-The workflow follows Docker's [multiple-registry publishing guide](https://docs.docker.com/build/ci/github-actions/push-multi-registries/).
+See [Publishing](docs/publishing.md) for the full release process.
 
 ## Kubernetes
 
