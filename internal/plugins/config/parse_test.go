@@ -2,6 +2,7 @@ package config
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -11,15 +12,33 @@ func TestParseInt(t *testing.T) {
 	if got, err := ParseInt(map[string]interface{}{}, "n", 7); err != nil || got != 7 {
 		t.Fatalf("missing key = %d, %v; want default 7", got, err)
 	}
-	for value, want := range map[interface{}]int{int(3): 3, int64(-4): -4, float64(5): 5} {
-		if got, err := ParseInt(map[string]interface{}{"n": value}, "n", 0); err != nil || got != want {
-			t.Fatalf("ParseInt(%T %v) = %d, %v; want %d", value, value, got, err, want)
-		}
+	tests := []struct {
+		name    string
+		value   interface{}
+		want    int
+		wantErr bool
+	}{
+		{"int", int(3), 3, false},
+		{"int64", int64(-4), -4, false},
+		{"integral float", float64(5), 5, false},
+		{"fraction", 1.9, 0, true},
+		{"negative fraction", -1.9, 0, true},
+		{"string", "3", 0, true},
+		{"above int range", math.Ldexp(1, strconv.IntSize-1), 0, true},
+		{"below int range", -math.Ldexp(1, strconv.IntSize), 0, true},
+		{"minimum int float", -math.Ldexp(1, strconv.IntSize-1), -int(^uint(0)>>1) - 1, false},
+		{"nan", math.NaN(), 0, true},
+		{"infinity", math.Inf(1), 0, true},
+		{"bool", true, 0, true},
+		{"nil", nil, 0, true},
 	}
-	for _, value := range []interface{}{"3", true, nil} {
-		if _, err := ParseInt(map[string]interface{}{"n": value}, "n", 0); err == nil {
-			t.Fatalf("ParseInt(%T %v) accepted, want error", value, value)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseInt(map[string]interface{}{"n": tt.value}, "n", 0)
+			if (err != nil) != tt.wantErr || (!tt.wantErr && got != tt.want) {
+				t.Fatalf("ParseInt(%v) = %d, %v; want %d, error=%t", tt.value, got, err, tt.want, tt.wantErr)
+			}
+		})
 	}
 }
 

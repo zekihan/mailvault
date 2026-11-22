@@ -341,3 +341,25 @@ func TestSourceReadTimeoutAndCancellation(t *testing.T) {
 		}
 	}
 }
+
+func TestSourcesRejectFractionalIntegerSettings(t *testing.T) {
+	base := map[string]interface{}{
+		"host": "example.invalid", "username": "user", "password_ref": "synthetic-value",
+	}
+	for _, key := range []string{"port", "max_connections"} {
+		values := map[string]interface{}{key: 993.5}
+		for k, v := range base {
+			values[k] = v
+		}
+		if _, err := NewIMapSource(values); err == nil {
+			t.Errorf("IMAP accepted fractional %s", key)
+		}
+	}
+	values := map[string]interface{}{"port": 995.5}
+	for k, v := range base {
+		values[k] = v
+	}
+	if _, err := NewPOP3Source(values); err == nil {
+		t.Error("POP3 accepted fractional port")
+	}
+}
