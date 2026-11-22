@@ -62,4 +62,3 @@ type PairConfig struct {
 	Source  string   `mapstructure:"source" yaml:"source"`
 	Targets []string `mapstructure:"targets" yaml:"targets"`
 }
-

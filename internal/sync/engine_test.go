@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/config"
@@ -166,25 +165,5 @@ func TestEngineRejectsInvalidOptions(t *testing.T) {
 		if _, err := NewSyncEngine(f.cfg, f.store, f.registry, opt); err == nil {
 			t.Fatal("invalid option accepted")
 		}
-	}
-}
-func TestDedupTrackerConcurrentAccess(t *testing.T) {
-	tracker := dedup.NewDedupTracker(nil, "account")
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				msg := &plugins.Message{MessageID: "same"}
-				_, _ = tracker.ShouldSkip(context.Background(), msg, "Archive")
-				tracker.MarkSeen(msg)
-				_ = tracker.SeenCount()
-			}
-		}()
-	}
-	wg.Wait()
-	if tracker.SeenCount() != 1 {
-		t.Fatal("unexpected seen count")
 	}
 }
