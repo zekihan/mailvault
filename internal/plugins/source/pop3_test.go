@@ -18,95 +18,16 @@ import (
 
 	"github.com/zekihan/mailvault/internal/dedup"
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
-type pop3FixtureMessage struct {
-	uid    string
-	number int
-	raw    string
-}
-
-func pop3Fixture(t *testing.T, messages []pop3FixtureMessage, retr chan<- int, uidlOrder ...int) (string, int) {
-	t.Helper()
-	return protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
-		_, _ = fmt.Fprint(conn, "+OK fixture ready\r\n")
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			parts := strings.Fields(scanner.Text())
-			if len(parts) == 0 {
-				return
-			}
-			switch strings.ToUpper(parts[0]) {
-			case "USER", "PASS", "AUTH", "NOOP":
-				_, _ = fmt.Fprint(conn, "+OK accepted\r\n")
-			case "STAT":
-				_, _ = fmt.Fprintf(conn, "+OK %d 100\r\n", len(messages))
-			case "UIDL":
-				_, _ = fmt.Fprintf(conn, "+OK identifiers\r\n")
-				order := uidlOrder
-				if len(order) == 0 {
-					order = make([]int, len(messages))
-					for i := range order {
-						order[i] = i
-					}
-				}
-				for _, i := range order {
-					message := messages[i]
-					number := message.number
-					if number == 0 {
-						number = i + 1
-					}
-					_, _ = fmt.Fprintf(conn, "%d %s\r\n", number, message.uid)
-				}
-				_, _ = fmt.Fprint(conn, ".\r\n")
-			case "LIST":
-				var id int
-				if len(parts) != 2 {
-					return
-				}
-				if _, err := fmt.Sscanf(parts[1], "%d", &id); err != nil || id < 1 || id > len(messages) {
-					return
-				}
-				size := len(messages[id-1].raw)
-				if !strings.HasSuffix(messages[id-1].raw, "\r\n") {
-					size += 2
-				}
-				_, _ = fmt.Fprintf(conn, "+OK %d %d\r\n", id, size)
-			case "RETR":
-				if len(parts) != 2 {
-					return
-				}
-				var id int
-				if _, err := fmt.Sscanf(parts[1], "%d", &id); err != nil || id < 1 || id > len(messages) {
-					_, _ = fmt.Fprint(conn, "-ERR no such message\r\n")
-					continue
-				}
-				if retr != nil {
-					retr <- id
-				}
-				_, _ = fmt.Fprint(conn, "+OK message follows\r\n")
-				_, _ = fmt.Fprint(conn, messages[id-1].raw)
-				if !strings.HasSuffix(messages[id-1].raw, "\r\n") {
-					_, _ = fmt.Fprint(conn, "\r\n")
-				}
-				_, _ = fmt.Fprint(conn, ".\r\n")
-			case "QUIT":
-				_, _ = fmt.Fprint(conn, "+OK bye\r\n")
-				return
-			default:
-				_, _ = fmt.Fprint(conn, "-ERR unexpected command\r\n")
-			}
-		}
-	})
-}
-
 func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
-	messages := []pop3FixtureMessage{
-		{uid: "newer-id", number: 1, raw: "Message-ID: <new@example.invalid>\r\nDate: Mon, 01 Jan 2024 13:00:00 +0000\r\n\r\nnew\r\n"},
-		{uid: "older-id", number: 2, raw: "Message-ID: <old@example.invalid>\r\nDate: Mon, 01 Jan 2024 11:00:00 +0000\r\n\r\nold\r\n"},
+	messages := []mailtest.POP3Message{
+		{UID: "newer-id", Number: 1, Raw: "Message-ID: <new@example.invalid>\r\nDate: Mon, 01 Jan 2024 13:00:00 +0000\r\n\r\nnew\r\n"},
+		{UID: "older-id", Number: 2, Raw: "Message-ID: <old@example.invalid>\r\nDate: Mon, 01 Jan 2024 11:00:00 +0000\r\n\r\nold\r\n"},
 	}
 	retrieved := make(chan int, 4)
-	host, port := pop3Fixture(t, messages, retrieved, 1, 0)
+	host, port := mailtest.POP3Server(t, messages, retrieved, 1, 0)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, connTimeout: time.Second, readTimeout: time.Second}
 	defer src.Close()
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", host, port, src.username)))
@@ -154,14 +75,14 @@ func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
 
 func TestPOP3SharedUIDLUsesSequenceIdentities(t *testing.T) {
 	const duplicate = "Subject: identical copy\r\n\r\nfixture\r\n"
-	messages := []pop3FixtureMessage{
-		{uid: "shared-id", raw: duplicate},
-		{uid: "known-id"},
-		{uid: "shared-id", raw: duplicate},
-		{uid: "new-id", raw: "Subject: new message\r\n\r\nfixture\r\n"},
+	messages := []mailtest.POP3Message{
+		{UID: "shared-id", Raw: duplicate},
+		{UID: "known-id"},
+		{UID: "shared-id", Raw: duplicate},
+		{UID: "new-id", Raw: "Subject: new message\r\n\r\nfixture\r\n"},
 	}
 	retrieved := make(chan int, len(messages))
-	host, port := pop3Fixture(t, messages, retrieved, 2, 1, 0, 3)
+	host, port := mailtest.POP3Server(t, messages, retrieved, 2, 1, 0, 3)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", connTimeout: time.Second, readTimeout: time.Second}
 	defer src.Close()
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", host, port, src.username)))
@@ -204,7 +125,7 @@ func TestPOP3SharedUIDLUsesSequenceIdentities(t *testing.T) {
 }
 
 func TestPOP3FilteredFetchFailsOnInvalidDateHeader(t *testing.T) {
-	host, port := pop3Fixture(t, []pop3FixtureMessage{{uid: "bad-date", raw: "Subject: missing date\r\n\r\nbody\r\n"}}, nil)
+	host, port := mailtest.POP3Server(t, []mailtest.POP3Message{{UID: "bad-date", Raw: "Subject: missing date\r\n\r\nbody\r\n"}}, nil)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, connTimeout: time.Second, readTimeout: time.Second}
 	defer src.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

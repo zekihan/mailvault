@@ -105,12 +105,63 @@ func TestIndexedEnvironmentPreservesExplicitFalseAndZero(t *testing.T) {
 
 func TestIndexedEnvironmentRejectsMalformedTypedValues(t *testing.T) {
 	for _, test := range []struct{ key, value string }{
-		{"USE_TLS", "perhaps"}, {"PORT", "nine"}, {"CONNECTION_TIMEOUT", "soon"}, {"MAX_CONNECTIONS", "many"},
+		{"use_tls", "perhaps"}, {"start_tls", "perhaps"}, {"port", "nine"},
+		{"connection_timeout", "soon"}, {"read_timeout", "soon"}, {"connect_retry_timeout", "soon"},
+		{"max_connections", "many"}, {"max_listing_items", "many"}, {"max_listing_bytes", "1.5"},
 	} {
 		t.Run(test.key, func(t *testing.T) {
-			t.Setenv("MAILVAULT_SOURCES_0_"+test.key, test.value)
-			if _, err := Load(writeEnvironmentConfig(t)); err == nil {
-				t.Fatalf("malformed %s override was accepted", test.key)
+			t.Setenv("MAILVAULT_SOURCES_0_"+strings.ToUpper(test.key), test.value)
+			if _, err := Load(writeEnvironmentConfig(t)); err == nil || !strings.Contains(err.Error(), "environment override for sources.0."+test.key+":") {
+				t.Fatalf("malformed %s override returned %v", test.key, err)
+			}
+		})
+	}
+}
+
+func TestIndexedEnvironmentRejectsMalformedTargetOptions(t *testing.T) {
+	path := writeEnvironmentConfig(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := "    config:\n      create_if_missing: true\n      max_listing_entries: 100\n      operation_timeout: 1.5\n"
+	data = []byte(strings.Replace(string(data), "    config: {}\n", targets, 1))
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ kind, key, value string }{
+		{"mbox", "create_if_missing", "sometimes"},
+		{"maildir", "max_listing_entries", "1.5"},
+		{"s3", "operation_timeout", "soon"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Setenv("MAILVAULT_TARGETS_0_TYPE", tc.kind)
+			t.Setenv("MAILVAULT_TARGETS_0_CONFIG_"+strings.ToUpper(tc.key), tc.value)
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "environment override for targets.0.config."+tc.key+":") {
+				t.Fatalf("malformed %s override returned %v", tc.key, err)
+			}
+		})
+	}
+}
+
+func TestValidateSourceReportsMissingRequiredFields(t *testing.T) {
+	path := writeEnvironmentConfig(t)
+	for _, kind := range []string{"imap", "pop3"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("MAILVAULT_SOURCES_0_TYPE", kind)
+			for _, field := range []string{"host", "username", "password_ref"} {
+				t.Run(field, func(t *testing.T) {
+					t.Setenv("MAILVAULT_SOURCES_0_"+strings.ToUpper(field), "")
+					cfg, err := Load(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := "source \"account\": " + field + " is required"
+					if err := Validate(cfg); err == nil || err.Error() != want {
+						t.Fatalf("validation error = %v, want %q", err, want)
+					}
+				})
 			}
 		})
 	}

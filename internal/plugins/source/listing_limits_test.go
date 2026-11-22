@@ -16,6 +16,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/zekihan/mailvault/internal/plugins"
+	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
 func TestBoundedSearchUIDs(t *testing.T) {
@@ -245,16 +246,16 @@ func TestPOP3ListingBudgets(t *testing.T) {
 
 func TestPOP3BoundedUIDLAtLimitRetainsProtocolState(t *testing.T) {
 	const count = 1000
-	messages := make([]pop3FixtureMessage, count)
+	messages := make([]mailtest.POP3Message, count)
 	known := make(map[string]bool, count)
 	responseBytes := len("+OK identifiers\r\n.\r\n")
 	for i := range messages {
 		uid := fmt.Sprintf("fixture-%d", i+1)
-		messages[i] = pop3FixtureMessage{uid: uid}
+		messages[i] = mailtest.POP3Message{UID: uid}
 		known[uid] = true
 		responseBytes += len(fmt.Sprintf("%d %s\r\n", i+1, uid))
 	}
-	host, port := pop3Fixture(t, messages, nil)
+	host, port := mailtest.POP3Server(t, messages, nil)
 	src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: count, bytes: responseBytes}}
 	defer src.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
