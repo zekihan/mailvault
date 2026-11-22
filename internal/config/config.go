@@ -63,23 +63,3 @@ type PairConfig struct {
 	Targets []string `mapstructure:"targets" yaml:"targets"`
 }
 
-// MaildirTargetConfig holds configuration for a Maildir target.
-type MaildirTargetConfig struct {
-	Path            string `mapstructure:"path" yaml:"path"`
-	CreateIfMissing bool   `mapstructure:"create_if_missing" yaml:"create_if_missing"`
-}
-
-// MboxTargetConfig holds configuration for an mbox target.
-type MboxTargetConfig struct {
-	Path            string `mapstructure:"path" yaml:"path"`
-	CreateIfMissing bool   `mapstructure:"create_if_missing" yaml:"create_if_missing"`
-}
-
-// S3TargetConfig holds configuration for an S3-compatible target.
-type S3TargetConfig struct {
-	Bucket         string `mapstructure:"bucket" yaml:"bucket"`
-	Region         string `mapstructure:"region" yaml:"region"`
-	Endpoint       string `mapstructure:"endpoint" yaml:"endpoint"`
-	Prefix         string `mapstructure:"prefix" yaml:"prefix"`
-	CredentialsRef string `mapstructure:"credentials_ref" yaml:"credentials_ref"`
-}
