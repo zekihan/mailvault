@@ -57,8 +57,15 @@ func ParseInt(config map[string]interface{}, key string, defaultVal int) (int, e
 	case int:
 		return v, nil
 	case int64:
+		if int64(int(v)) != v {
+			return 0, errors.New("invalid int format")
+		}
 		return int(v), nil
 	case float64:
+		limit := math.Ldexp(1, strconv.IntSize-1)
+		if math.IsNaN(v) || v < -limit || v >= limit || math.Trunc(v) != v {
+			return 0, errors.New("invalid int format")
+		}
 		return int(v), nil
 	default:
 		return 0, errors.New("invalid int format")
