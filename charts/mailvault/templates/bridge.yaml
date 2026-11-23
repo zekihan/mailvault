@@ -38,6 +38,10 @@ spec:
           ports:
             - name: imap
               containerPort: 1143
+            {{- if .Values.proton.smtp.enabled }}
+            - name: smtp
+              containerPort: {{ .Values.proton.smtp.port }}
+            {{- end }}
           readinessProbe:
             tcpSocket:
               port: imap
@@ -79,6 +83,11 @@ spec:
     - name: imap
       port: 1143
       targetPort: imap
+    {{- if .Values.proton.smtp.enabled }}
+    - name: smtp
+      port: {{ .Values.proton.smtp.port }}
+      targetPort: {{ .Values.proton.smtp.port }}
+    {{- end }}
 {{- if .Values.proton.setup }}
 ---
 apiVersion: apps/v1
@@ -149,5 +158,9 @@ spec:
       ports:
         - protocol: TCP
           port: 1143
+        {{- if .Values.proton.smtp.enabled }}
+        - protocol: TCP
+          port: {{ .Values.proton.smtp.port }}
+        {{- end }}
 {{- end }}
 {{- end }}

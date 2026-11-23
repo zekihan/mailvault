@@ -204,8 +204,12 @@ sources:
 Select the actual folders you want, including archived mail if desired; this
 example covers Inbox only. Exclude Spam and Trash explicitly from your selection.
 Mailvault trusts `ca.crt` via `SSL_CERT_FILE` and verifies the Service hostname.
-The bind-address patch affects IMAP and SMTP; the Service and ingress policy
-expose only IMAP. A NetworkPolicy-capable CNI is required to enforce that policy.
+The bind-address patch affects IMAP and SMTP; by default the Service and ingress
+policy expose only IMAP. To also let in-cluster clients send through Bridge,
+set `proton.smtp.enabled=true` (optionally `proton.smtp.port`, default 1025);
+this exposes a `smtp` Service/container port and allows in-namespace Mailvault
+pods to it in the Bridge NetworkPolicy. Bridge SMTP uses STARTTLS like IMAP.
+A NetworkPolicy-capable CNI is required to enforce that policy.
 
 Finish setup while keeping scheduling suspended:
 

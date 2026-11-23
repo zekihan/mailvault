@@ -81,6 +81,12 @@ proton:
     storageClass: null
     accessModes: [ReadWriteOnce]
   networkPolicy: true
+  # Optional SMTP submission listener for in-cluster senders. When enabled,
+  # the Bridge Service exposes this port (named smtp, STARTTLS like IMAP)
+  # and the Bridge NetworkPolicy allows in-namespace Mailvault pods to it.
+  smtp:
+    enabled: false
+    port: 1025
   # Bridge runs as the image user (UID/GID 65532) with its state mounted at /root,
   # where its vault records absolute paths. The state volume must be owned by this
   # UID before upgrading. Do not set fsGroup: gpg-agent rejects a group-accessible

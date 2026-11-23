@@ -156,6 +156,19 @@
         "networkPolicy": {
           "type": "boolean"
         },
+        "smtp": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
         "image": {
           "type": "object",
           "properties": {

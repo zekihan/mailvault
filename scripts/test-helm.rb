@@ -64,6 +64,20 @@ ca = pod['volumes'].find { |v| v['name'] == 'bridge-ca' }
 check(ca['secret']['items'] == [{'key'=>'ca.crt', 'path'=>'ca.crt'}], 'Mailvault must never mount the private TLS key')
 check(running.find { |d| d['kind'] == 'Service' }['spec']['ports'].map { |p| p['port'] } == [1143], 'only IMAP is exposed')
 check(running.any? { |d| d['kind'] == 'NetworkPolicy' }, 'Bridge ingress policy missing')
+check(bridge['ports'] == [{'name'=>'imap', 'containerPort'=>1143}], 'SMTP must be opt-in: only IMAP is exposed by default')
+check(running.find { |d| d['kind'] == 'NetworkPolicy' }['spec']['ingress'][0]['ports'] == [{'protocol'=>'TCP', 'port'=>1143}], 'Bridge ingress policy must allow only IMAP by default')
+smtp = render('--set', 'proton.enabled=true,proton.setup=false,proton.smtp.enabled=true')
+smtp_bridge = smtp.find { |d| d['kind'] == 'Deployment' && d['metadata']['name'] == 'test-mailvault-bridge' }['spec']['template']['spec']['containers'][0]
+check(smtp_bridge['ports'].include?({'name'=>'smtp', 'containerPort'=>1025}), 'SMTP opt-in must add the container port')
+check(smtp_bridge['readinessProbe'] == {'tcpSocket'=>{'port'=>'imap'}, 'periodSeconds'=>5}, 'readiness probe must stay on IMAP')
+smtp_service = smtp.find { |d| d['kind'] == 'Service' }['spec']['ports']
+check(smtp_service.include?({'name'=>'smtp', 'port'=>1025, 'targetPort'=>1025}), 'SMTP opt-in must expose the Service port')
+check(smtp.find { |d| d['kind'] == 'NetworkPolicy' }['spec']['ingress'][0]['ports'].include?({'protocol'=>'TCP', 'port'=>1025}), 'SMTP opt-in must allow Mailvault pods to the SMTP port')
+smtp_custom = render('--set', 'proton.enabled=true,proton.setup=false,proton.smtp.enabled=true,proton.smtp.port=2525')
+smtp_custom_bridge = smtp_custom.find { |d| d['kind'] == 'Deployment' && d['metadata']['name'] == 'test-mailvault-bridge' }['spec']['template']['spec']['containers'][0]
+check(smtp_custom_bridge['ports'].include?({'name'=>'smtp', 'containerPort'=>2525}), 'custom SMTP port must reach the container')
+check(smtp_custom.find { |d| d['kind'] == 'Service' }['spec']['ports'].include?({'name'=>'smtp', 'port'=>2525, 'targetPort'=>2525}), 'custom SMTP port must reach the Service')
+check(smtp_custom.find { |d| d['kind'] == 'NetworkPolicy' }['spec']['ingress'][0]['ports'].include?({'protocol'=>'TCP', 'port'=>2525}), 'custom SMTP port must reach the ingress policy')
 existing = render('--set', 'proton.enabled=true,setup.enabled=true', '--set-string', 'persistence.state.existingClaim=123,persistence.backups.existingClaim=true,proton.persistence.existingClaim=456')
 check(existing.none? { |d| d['kind'] == 'PersistentVolumeClaim' }, 'existing claims must not be recreated')
 existing_pods = {'test-mailvault' => cron(existing)['jobTemplate']['spec']['template']['spec']}
