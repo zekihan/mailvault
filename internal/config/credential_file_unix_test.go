@@ -27,7 +27,11 @@ func TestCredentialFileRejectsUnsafeReferences(t *testing.T) {
 	if err := unix.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	socketDir := t.TempDir()
+	socketDir, err := os.MkdirTemp("/tmp", "mailvault-socket-") //nolint:usetesting // socket path must fit sockaddr_un; t.TempDir is too long on macOS
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
 	socket := filepath.Join(socketDir, "socket")
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
