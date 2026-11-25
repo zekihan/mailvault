@@ -18,37 +18,37 @@ type listingLimits struct {
 	bytes int
 }
 
-func (l listingLimits) defaults() listingLimits {
-	if l.items == 0 {
-		l.items = config.DefaultMaxListingItems
+func (limits listingLimits) defaults() listingLimits {
+	if limits.items == 0 {
+		limits.items = config.DefaultMaxListingItems
 	}
-	if l.bytes == 0 {
-		l.bytes = config.DefaultMaxListingBytes
+	if limits.bytes == 0 {
+		limits.bytes = config.DefaultMaxListingBytes
 	}
-	return l
+	return limits
 }
 
-func parseListingLimits(values map[string]interface{}) (listingLimits, error) {
-	var l listingLimits
+func parseListingLimits(values map[string]any) (listingLimits, error) {
+	var limits listingLimits
 	for key, dst := range map[string]*int{
-		config.SourceConfigMaxListingItems: &l.items,
-		config.SourceConfigMaxListingBytes: &l.bytes,
+		config.SourceConfigMaxListingItems: &limits.items,
+		config.SourceConfigMaxListingBytes: &limits.bytes,
 	} {
 		// ParseInt also accepts floats. Reject fractions and values that cannot
 		// be represented as an int instead of silently weakening the limit.
 		if v, ok := values[key].(float64); ok && (math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v >= float64(^uint(0)>>1) || math.Trunc(v) != v) {
-			return l, fmt.Errorf("%s must be a non-negative integer", key)
+			return limits, fmt.Errorf("%s must be a non-negative integer", key)
 		}
 		if v, ok := values[key].(int64); ok && (v < 0 || uint64(v) > uint64(^uint(0)>>1)) {
-			return l, fmt.Errorf("%s is out of range", key)
+			return limits, fmt.Errorf("%s is out of range", key)
 		}
 		v, err := config.ParseInt(values, key, 0)
 		if err != nil || v < 0 {
-			return l, fmt.Errorf("%s must be a non-negative integer", key)
+			return limits, fmt.Errorf("%s must be a non-negative integer", key)
 		}
 		*dst = v
 	}
-	return l.defaults(), nil
+	return limits.defaults(), nil
 }
 
 // boundedSearchUIDs validates the complete result before allocating any UID
@@ -79,6 +79,9 @@ func boundedSearchUIDs(data *imap.SearchData, maxItems int) ([]imap.UID, error) 
 	uids := make([]imap.UID, 0, int(total))
 	for _, r := range set {
 		for uid := uint64(r.Start); uid <= uint64(r.Stop); uid++ {
+			if uid > uint64(^uint32(0)) {
+				return nil, fmt.Errorf("%w: UID %d out of range", errListingLimit, uid)
+			}
 			uids = append(uids, imap.UID(uid))
 		}
 	}
@@ -91,46 +94,47 @@ func boundedSearchUIDs(data *imap.SearchData, maxItems int) ([]imap.UID, error) 
 // may retain one small read from the preceding command.
 type listingBudgetConn struct {
 	net.Conn
+
 	mu        sync.Mutex
 	active    bool
 	remaining int
 	err       error
 }
 
-func (c *listingBudgetConn) begin(maxBytes int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.active, c.remaining, c.err = true, maxBytes, nil
-}
-
-func (c *listingBudgetConn) end() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.active = false
-	return c.err
-}
-
-func (c *listingBudgetConn) Read(p []byte) (int, error) {
-	c.mu.Lock()
-	if c.active && len(p)-1 > c.remaining {
-		p = p[:c.remaining+1]
+func (conn *listingBudgetConn) Read(p []byte) (int, error) {
+	conn.mu.Lock()
+	if conn.active && len(p)-1 > conn.remaining {
+		p = p[:conn.remaining+1]
 	}
-	c.mu.Unlock()
-	n, err := c.Conn.Read(p)
-	c.mu.Lock()
-	if c.active {
-		if n > c.remaining {
-			c.err = fmt.Errorf("%w: response byte budget", errListingLimit)
-			err = c.err
-			n = c.remaining
-			c.remaining = 0
+	conn.mu.Unlock()
+	count, err := conn.Conn.Read(p)
+	conn.mu.Lock()
+	if conn.active {
+		if count > conn.remaining {
+			conn.err = fmt.Errorf("%w: response byte budget", errListingLimit)
+			err = conn.err
+			count = conn.remaining
+			conn.remaining = 0
 		} else {
-			c.remaining -= n
+			conn.remaining -= count
 		}
 	}
-	c.mu.Unlock()
+	conn.mu.Unlock()
 	if errors.Is(err, errListingLimit) {
-		_ = c.Close()
+		_ = conn.Close()
 	}
-	return n, err
+	return count, err
+}
+
+func (conn *listingBudgetConn) begin(maxBytes int) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.active, conn.remaining, conn.err = true, maxBytes, nil
+}
+
+func (conn *listingBudgetConn) end() error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.active = false
+	return conn.err
 }

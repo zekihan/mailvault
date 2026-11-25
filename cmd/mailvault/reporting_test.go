@@ -16,8 +16,10 @@ func TestJSONSyncFailureRetainsDetails(t *testing.T) {
 		t.Fatal("failed sync returned success")
 	}
 	var doc struct {
-		TotalErrors int
-		Results     []struct{ Errors []string }
+		TotalErrors int `json:"TotalErrors"`
+		Results     []struct {
+			Errors []string `json:"Errors"`
+		} `json:"Results"`
 	}
 	if err := json.Unmarshal([]byte(output), &doc); err != nil {
 		t.Fatalf("invalid or uninformative JSON: %v", err)

@@ -9,7 +9,7 @@ import (
 func TestValidate_Success(t *testing.T) {
 	cfg := &Config{
 		Sources: []SourceConfig{
-			{
+			{ // #nosec G101 -- synthetic test fixture value
 				Name:           "gmail",
 				Type:           "imap",
 				Host:           "imap.gmail.com",
@@ -24,7 +24,7 @@ func TestValidate_Success(t *testing.T) {
 			{
 				Name: "local",
 				Type: "maildir",
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"path": "/tmp/mail",
 				},
 			},
@@ -43,7 +43,7 @@ func TestValidate_MissingSource(t *testing.T) {
 	cfg := &Config{
 		Sources: []SourceConfig{},
 		Targets: []TargetConfig{
-			{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": "/tmp"}},
+			{Name: "local", Type: "maildir", Config: map[string]any{"path": "/tmp"}},
 		},
 		Pairs: []PairConfig{{Source: "gmail", Targets: []string{"local"}}},
 	}
@@ -59,7 +59,7 @@ func TestValidate_DuplicateSourceName(t *testing.T) {
 			{Name: "a", Type: "imap", Host: "h", Port: 993, Username: "u", PasswordRef: "p", MaxConnections: 1},
 			{Name: "a", Type: "imap", Host: "h", Port: 993, Username: "u", PasswordRef: "p", MaxConnections: 1},
 		},
-		Targets: []TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": "/tmp"}}},
+		Targets: []TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": "/tmp"}}},
 		Pairs:   []PairConfig{{Source: "a", Targets: []string{"local"}}},
 	}
 
@@ -73,7 +73,7 @@ func TestValidate_UnknownSourceType(t *testing.T) {
 		Sources: []SourceConfig{
 			{Name: "a", Type: "jmap", Host: "h", Port: 993, Username: "u", PasswordRef: "p", MaxConnections: 1},
 		},
-		Targets: []TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": "/tmp"}}},
+		Targets: []TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": "/tmp"}}},
 		Pairs:   []PairConfig{{Source: "a", Targets: []string{"local"}}},
 	}
 
@@ -83,8 +83,7 @@ func TestValidate_UnknownSourceType(t *testing.T) {
 }
 
 func TestResolveCredentialRef_Env(t *testing.T) {
-	os.Setenv("TEST_MAIL_PASS", "secret123")
-	defer os.Unsetenv("TEST_MAIL_PASS")
+	t.Setenv("TEST_MAIL_PASS", "secret123")
 
 	val, err := resolveCredentialRef("env:TEST_MAIL_PASS")
 	if err != nil {
@@ -98,7 +97,7 @@ func TestResolveCredentialRef_Env(t *testing.T) {
 func TestResolveCredentialRef_File(t *testing.T) {
 	tmpDir := t.TempDir()
 	secretFile := filepath.Join(tmpDir, "secret.txt")
-	if err := os.WriteFile(secretFile, []byte("file-secret\n"), 0600); err != nil {
+	if err := os.WriteFile(secretFile, []byte("file-secret\n"), 0o600); err != nil {
 		t.Fatalf("write secret file: %v", err)
 	}
 
@@ -144,7 +143,7 @@ pairs:
   - source: test
     targets: [local]
 `
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil { // #nosec G306 -- fixture file for negative-path validation; never a credential
 		t.Fatalf("write config: %v", err)
 	}
 

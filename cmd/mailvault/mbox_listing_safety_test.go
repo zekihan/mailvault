@@ -19,12 +19,12 @@ func TestVerifyRejectsMalformedMboxWithoutManifest(t *testing.T) {
 	if err := os.WriteFile(mboxPath, []byte("Subject: damaged\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configData, err := json.Marshal(map[string]interface{}{
-		"sources": []interface{}{},
-		"targets": []interface{}{map[string]interface{}{
-			"name": "local", "type": "mbox", "config": map[string]interface{}{"path": mboxPath},
+	configData, err := json.Marshal(map[string]any{
+		"sources": []any{},
+		"targets": []any{map[string]any{
+			"name": "local", "type": "mbox", "config": map[string]any{"path": mboxPath},
 		}},
-		"pairs": []interface{}{},
+		"pairs": []any{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestVerifyRejectsMalformedMboxWithoutManifest(t *testing.T) {
 	cmd := newVerifyCommand()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	cmd.SetContext(context.Background())
+	cmd.SetContext(t.Context())
 	err = cmd.RunE(cmd, []string{"local"})
 	if !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
 		t.Fatalf("verify error = %v, want malformed mbox corruption", err)
@@ -51,13 +51,13 @@ func TestMboxListingHonorsCanceledContext(t *testing.T) {
 	if err := os.WriteFile(path, []byte("From sender\nSubject: fixture\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mboxTarget, err := target.NewMboxTarget(map[string]interface{}{"path": path})
+	mboxTarget, err := target.NewMboxTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := mboxTarget.(*target.MboxTarget).ListBackupMessages(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := mustAssert[*target.MboxTarget](t, mboxTarget).ListBackupMessages(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("listing error = %v, want canceled context", err)
 	}
 }

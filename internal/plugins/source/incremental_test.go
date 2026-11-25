@@ -10,7 +10,7 @@ import (
 
 func TestIMAPSkipsKnownUIDsBeforeDownloading(t *testing.T) {
 	src, _ := datedIMAPSource(t, []string{"01-Jan-2024 00:00:00 +0000"})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	called := false
 	ctx = plugins.WithKnownUIDs(ctx, func(scope, folder string) (map[string]bool, error) {

@@ -34,11 +34,11 @@ func captureOutput(t *testing.T, run func() error) (string, error) {
 
 func configureCLI(t *testing.T) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	port := mustAssert[*net.TCPAddr](t, listener.Addr()).Port
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -56,25 +56,25 @@ func configureCLIOnPort(t *testing.T, port int, timeout string) {
 		retryDelay, since, until = oldDelay, oldSince, oldUntil
 	})
 	t.Setenv("MAILVAULT_TEST_VALUE", "synthetic-sensitive-value")
-	data := map[string]interface{}{
-		"sources": []interface{}{map[string]interface{}{
+	data := map[string]any{
+		"sources": []any{map[string]any{ // #nosec G101 -- synthetic test fixture value
 			"name": "test-account", "type": "pop3", "host": "127.0.0.1", "port": port,
 			"username": "test-user", "password_ref": "env:MAILVAULT_TEST_VALUE", "use_tls": false,
 			"max_connections": 1, "connection_timeout": timeout, "read_timeout": timeout,
 		}},
-		"targets": []interface{}{map[string]interface{}{
-			"name": "local", "type": "maildir", "config": map[string]interface{}{
+		"targets": []any{map[string]any{
+			"name": "local", "type": "maildir", "config": map[string]any{ // #nosec G101 -- synthetic test fixture value
 				"path": filepath.Join(physicalTempDir(t), "mail"), "credentials_ref": "env:MAILVAULT_TEST_VALUE",
 			},
 		}},
-		"pairs": []interface{}{map[string]interface{}{"source": "test-account", "targets": []string{"local"}}},
+		"pairs": []any{map[string]any{"source": "test-account", "targets": []string{"local"}}},
 	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfgFile = filepath.Join(physicalTempDir(t), "config.yaml")
-	if err := os.WriteFile(cfgFile, encoded, 0600); err != nil {
+	if err := os.WriteFile(cfgFile, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stateDir, dryRun, concurrency, maxRetries = physicalTempDir(t), false, 1, 0
@@ -116,7 +116,7 @@ func TestListingLeavesOperationalCredentialsIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Sources[0].OAuth2 = &config.OAuth2Config{ClientID: "visible-client", ClientSecret: "synthetic-oauth-value"}
+	cfg.Sources[0].OAuth2 = &config.OAuth2Config{ClientID: "visible-client", ClientSecret: "synthetic-oauth-value"} // #nosec G101 -- synthetic test fixture value
 	public := listingConfig(cfg)
 	public.Targets[0].Config["path"] = "changed"
 	if cfg.Sources[0].PasswordRef != "synthetic-sensitive-value" || cfg.Sources[0].OAuth2.ClientSecret != "synthetic-oauth-value" || cfg.Targets[0].Config["credentials_ref"] != "synthetic-sensitive-value" || cfg.Targets[0].Config["path"] == "changed" {

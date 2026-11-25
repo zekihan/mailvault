@@ -1,7 +1,7 @@
 package source
 
 import (
-	"sort"
+	"slices"
 	"strconv"
 
 	"github.com/emersion/go-imap/v2"
@@ -17,7 +17,7 @@ func excludeDelivered(criteria *imap.SearchCriteria, known map[string]bool) {
 			ids = append(ids, uint32(id))
 		}
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	var set imap.UIDSet
 	for _, id := range ids {
 		set.AddNum(imap.UID(id))

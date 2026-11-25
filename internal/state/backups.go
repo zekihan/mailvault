@@ -9,26 +9,26 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
-func (s *Store) RecordBackupMessage(ctx context.Context, item plugins.BackupMessage) error {
+func (store *Store) RecordBackupMessage(ctx context.Context, item *plugins.BackupMessage) error {
 	flags, err := json.Marshal(item.Flags)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO backup_messages(source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date) VALUES(?,?,?,?,?,?,?,?,?)
+	_, err = store.db.ExecContext(ctx, `INSERT INTO backup_messages(source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date) VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(source_name,target_name,scope,folder,uid) DO UPDATE SET locator=excluded.locator,raw_sha256=excluded.raw_sha256,flags_json=excluded.flags_json,internal_date=excluded.internal_date,recorded_at=CURRENT_TIMESTAMP`,
 		item.Source, item.Target, item.Scope, item.Folder, item.UID, item.Locator, item.RawSHA256, string(flags), item.InternalDate)
 	return err
 }
 
-func (s *Store) BackupMessages(ctx context.Context, target string) ([]plugins.BackupMessage, error) {
+func (store *Store) BackupMessages(ctx context.Context, target string) ([]plugins.BackupMessage, error) {
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE target_name=? ORDER BY source_name,scope,folder,uid`, target)
+	rows, err := store.db.QueryContext(ctx, `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE target_name=? ORDER BY source_name,scope,folder,uid`, target)
 	if err != nil {
 		return nil, err
 	}
@@ -52,15 +52,15 @@ const backupMessagesByHashQuery = `SELECT source_name,target_name,scope,folder,u
 
 // BackupMessagesByHash returns backup manifest entries for a target and raw
 // message hash in the same deterministic order as BackupMessages.
-func (s *Store) BackupMessagesByHash(ctx context.Context, target, rawSHA256 string) ([]plugins.BackupMessage, error) {
+func (store *Store) BackupMessagesByHash(ctx context.Context, target, rawSHA256 string) ([]plugins.BackupMessage, error) {
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, backupMessagesByHashQuery, target, rawSHA256)
+	rows, err := store.db.QueryContext(ctx, backupMessagesByHashQuery, target, rawSHA256)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +80,9 @@ func (s *Store) BackupMessagesByHash(ctx context.Context, target, rawSHA256 stri
 	return items, rows.Err()
 }
 
-func (s *Store) FindBackupMessage(ctx context.Context, source, target, scope, folder, uid string) (plugins.BackupMessage, bool, error) {
+func (store *Store) FindBackupMessage(ctx context.Context, source, target, scope, folder, uid string) (plugins.BackupMessage, bool, error) {
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&exists); err != nil {
 		return plugins.BackupMessage{}, false, err
 	}
 	if !exists {
@@ -90,7 +90,7 @@ func (s *Store) FindBackupMessage(ctx context.Context, source, target, scope, fo
 	}
 	var item plugins.BackupMessage
 	var flags string
-	err := s.db.QueryRowContext(ctx, `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE source_name=? AND target_name=? AND scope=? AND folder=? AND uid=?`, source, target, scope, folder, uid).
+	err := store.db.QueryRowContext(ctx, `SELECT source_name,target_name,scope,folder,uid,locator,raw_sha256,flags_json,internal_date FROM backup_messages WHERE source_name=? AND target_name=? AND scope=? AND folder=? AND uid=?`, source, target, scope, folder, uid).
 		Scan(&item.Source, &item.Target, &item.Scope, &item.Folder, &item.UID, &item.Locator, &item.RawSHA256, &flags, &item.InternalDate)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -104,12 +104,12 @@ func (s *Store) FindBackupMessage(ctx context.Context, source, target, scope, fo
 	return item, true, nil
 }
 
-func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]plugins.BackupMessage, error) {
+func (store *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]plugins.BackupMessage, error) {
 	var deliveries, messages bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries')`).Scan(&deliveries); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries')`).Scan(&deliveries); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')`).Scan(&messages); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')`).Scan(&messages); err != nil {
 		return nil, err
 	}
 	if !deliveries {
@@ -124,7 +124,7 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 	}
 	excludeManifest := ""
 	var manifestExists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&manifestExists); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_messages')`).Scan(&manifestExists); err != nil {
 		return nil, err
 	}
 	if manifestExists {
@@ -135,7 +135,7 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 		)`
 	}
 	query := `SELECT d.source_name,d.target_name,d.folder,d.uid,` + hashExpression + ` FROM deliveries d ` + joinMessages + ` WHERE d.target_name=? ` + excludeManifest
-	rows, err := s.db.QueryContext(ctx, query, target)
+	rows, err := store.db.QueryContext(ctx, query, target)
 	if err != nil {
 		return nil, err
 	}
@@ -151,21 +151,21 @@ func (s *Store) LegacyBackupCandidates(ctx context.Context, target string) ([]pl
 	return result, rows.Err()
 }
 
-func (s *Store) MarkBackupObjectSuperseded(ctx context.Context, target, locator, replacement string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO superseded_backup_objects(target_name,locator,replacement_locator) VALUES(?,?,?) ON CONFLICT(target_name,locator) DO UPDATE SET replacement_locator=excluded.replacement_locator,recorded_at=CURRENT_TIMESTAMP`, target, locator, replacement)
+func (store *Store) MarkBackupObjectSuperseded(ctx context.Context, target, locator, replacement string) error {
+	_, err := store.db.ExecContext(ctx, `INSERT INTO superseded_backup_objects(target_name,locator,replacement_locator) VALUES(?,?,?) ON CONFLICT(target_name,locator) DO UPDATE SET replacement_locator=excluded.replacement_locator,recorded_at=CURRENT_TIMESTAMP`, target, locator, replacement)
 	return err
 }
 
-func (s *Store) SupersededBackupObjects(ctx context.Context, target string) (map[string]bool, error) {
+func (store *Store) SupersededBackupObjects(ctx context.Context, target string) (map[string]bool, error) {
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='superseded_backup_objects')`).Scan(&exists); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='superseded_backup_objects')`).Scan(&exists); err != nil {
 		return nil, err
 	}
 	result := make(map[string]bool)
 	if !exists {
 		return result, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT locator FROM superseded_backup_objects WHERE target_name=?`, target)
+	rows, err := store.db.QueryContext(ctx, `SELECT locator FROM superseded_backup_objects WHERE target_name=?`, target)
 	if err != nil {
 		return nil, err
 	}

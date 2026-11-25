@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -20,51 +21,65 @@ type backupListingBudget struct {
 	entries, locatorBytes int64
 }
 
-func parseBackupListingLimits(configMap map[string]interface{}) (backupListingLimits, error) {
+func parseBackupListingLimits(configMap map[string]any) (backupListingLimits, error) {
 	limits := backupListingLimits{defaultMaxBackupEntries, defaultMaxBackupLocatorBytes}
 	for key, dest := range map[string]*int64{config.TargetConfigMaxListingEntries: &limits.entries, config.TargetConfigMaxListingLocatorBytes: &limits.locatorBytes} {
-		value, ok := configMap[key]
-		if !ok {
-			continue
-		}
-		var n int64
-		var err error
-		switch v := value.(type) {
-		case int:
-			n = int64(v)
-		case int64:
-			n = v
-		case string:
-			n, err = strconv.ParseInt(v, 10, 64)
-		case float64:
-			if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v >= 9223372036854775808.0 {
-				return limits, fmt.Errorf("%s: expected a nonnegative integer", key)
-			}
-			n = int64(v)
-			if float64(n) != v {
-				err = fmt.Errorf("fractional value")
-			}
-		default:
-			err = fmt.Errorf("invalid type")
-		}
-		if err != nil || n < 0 {
-			return limits, fmt.Errorf("%s: expected a nonnegative integer", key)
-		}
-		if n > 0 {
-			*dest = n
+		if err := applyBackupListingValue(configMap, key, dest); err != nil {
+			return limits, err
 		}
 	}
 	return limits, nil
 }
 
-func (l backupListingLimits) budget() *backupListingBudget {
-	if l.entries == 0 {
-		l.entries = defaultMaxBackupEntries
+func applyBackupListingValue(configMap map[string]any, key string, dest *int64) error {
+	value, ok := configMap[key]
+	if !ok {
+		return nil
 	}
-	if l.locatorBytes == 0 {
-		l.locatorBytes = defaultMaxBackupLocatorBytes
+	count, err := parseBackupListingValue(value)
+	if err != nil || count < 0 {
+		return fmt.Errorf("%s: expected a nonnegative integer", key)
 	}
-	return &backupListingBudget{limits: l}
+	if count > 0 {
+		*dest = count
+	}
+	return nil
+}
+
+func parseBackupListingValue(value any) (int64, error) {
+	switch parsed := value.(type) {
+	case int:
+		return int64(parsed), nil
+	case int64:
+		return parsed, nil
+	case string:
+		return strconv.ParseInt(parsed, 10, 64)
+	case float64:
+		return parseBackupListingFloat(parsed)
+	default:
+		return 0, errors.New("invalid type")
+	}
+}
+
+func parseBackupListingFloat(parsed float64) (int64, error) {
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed >= 9223372036854775808.0 {
+		return 0, errors.New("out of range")
+	}
+	count := int64(parsed)
+	if float64(count) != parsed {
+		return 0, errors.New("fractional value")
+	}
+	return count, nil
+}
+
+func (limits backupListingLimits) budget() *backupListingBudget {
+	if limits.entries == 0 {
+		limits.entries = defaultMaxBackupEntries
+	}
+	if limits.locatorBytes == 0 {
+		limits.locatorBytes = defaultMaxBackupLocatorBytes
+	}
+	return &backupListingBudget{limits: limits}
 }
 
 func (b *backupListingBudget) add(locator string) error {

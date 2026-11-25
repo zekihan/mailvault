@@ -8,7 +8,7 @@ import (
 func TestRegistryAppliesSourceNames(t *testing.T) {
 	for _, kind := range []string{"imap", "pop3"} {
 		t.Run(kind, func(t *testing.T) {
-			src, err := Registry().CreateSource(kind, map[string]interface{}{
+			src, err := Registry().CreateSource(kind, map[string]any{
 				"name": "configured-source", "host": "example.invalid",
 				"username": "test-user", "password_ref": "synthetic-value",
 			})
@@ -25,7 +25,7 @@ func TestRegistryAppliesSourceNames(t *testing.T) {
 func TestRegistryAppliesTargetNames(t *testing.T) {
 	for _, kind := range []string{"maildir", "mbox", "s3"} {
 		t.Run(kind, func(t *testing.T) {
-			tgt, err := Registry().CreateTarget(kind, map[string]interface{}{
+			tgt, err := Registry().CreateTarget(kind, map[string]any{
 				"name": "configured-target", "path": filepath.Join(t.TempDir(), "mail"),
 				"bucket": "test-bucket", "region": "us-east-1",
 			})
@@ -40,7 +40,7 @@ func TestRegistryAppliesTargetNames(t *testing.T) {
 }
 
 func TestRegistryPreservesDefaultName(t *testing.T) {
-	src, err := Registry().CreateSource("imap", map[string]interface{}{
+	src, err := Registry().CreateSource("imap", map[string]any{
 		"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value",
 	})
 	if err != nil {

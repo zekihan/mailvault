@@ -9,33 +9,36 @@ import (
 
 // WithRefreshFlags updates metadata for already delivered IMAP messages.
 func WithRefreshFlags(enabled bool) SyncOption {
-	return func(e *SyncEngine) { e.refreshFlags = enabled }
+	return func(engine *SyncEngine) { engine.refreshFlags = enabled }
 }
 
-func (e *SyncEngine) refreshMetadata(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message) error {
-	entry, found, err := e.stateStore.FindBackupMessage(ctx, src.Name(), plugins.TargetStateKey(tgt), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID)
+func (engine *SyncEngine) refreshMetadata(ctx context.Context, src plugins.Source, tgt plugins.Target, msg *plugins.Message) error {
+	entry, found, err := engine.stateStore.FindBackupMessage(ctx, src.Name(), plugins.TargetStateKey(tgt), targetReceiptScope(tgt, msg.UIDScope), msg.Folder, msg.UID)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return fmt.Errorf("no integrity manifest for UID %s in %q; run repair before refreshing flags", msg.UID, msg.Folder)
 	}
-	if e.dryRun {
+	if engine.dryRun {
 		return nil
 	}
-	value, _ := e.deliveryLocks.LoadOrStore(tgt.Name(), &targetDelivery{seen: make(map[string]bool)})
-	delivery := value.(*targetDelivery)
+	value, _ := engine.deliveryLocks.LoadOrStore(tgt.Name(), &targetDelivery{seen: make(map[string]bool)})
+	delivery, ok := value.(*targetDelivery)
+	if !ok {
+		return fmt.Errorf("delivery lock for %q has unexpected type %T", tgt.Name(), value)
+	}
 	delivery.mu.Lock()
 	defer delivery.mu.Unlock()
 	if updater, ok := tgt.(interface {
-		UpdateBackupMetadata(context.Context, plugins.BackupMessage, []string) (string, error)
+		UpdateBackupMetadata(ctx context.Context, entry *plugins.BackupMessage, flags []string) (string, error)
 	}); ok {
-		locator, err := updater.UpdateBackupMetadata(ctx, entry, msg.Flags)
+		locator, err := updater.UpdateBackupMetadata(ctx, &entry, msg.Flags)
 		if err != nil {
 			return err
 		}
 		entry.Locator = locator
 	}
 	entry.Flags = append([]string(nil), msg.Flags...)
-	return e.stateStore.RecordBackupMessage(ctx, entry)
+	return engine.stateStore.RecordBackupMessage(ctx, &entry)
 }

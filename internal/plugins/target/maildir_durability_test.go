@@ -3,7 +3,6 @@
 package target
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,12 +17,12 @@ var errMaildirSyncFixture = errors.New("synthetic directory sync failure")
 
 func durableMaildirFixture(t *testing.T) *MaildirTarget {
 	t.Helper()
-	plugin, err := NewMaildirTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "maildir"), "create_if_missing": true})
+	plugin, err := NewMaildirTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "maildir"), "create_if_missing": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := plugin.(*MaildirTarget)
-	if err := target.Initialize(context.Background()); err != nil {
+	target := mustAssert[*MaildirTarget](t, plugin)
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	return target
@@ -51,7 +50,7 @@ func TestMaildirSyncsPublicationBeforeSuccessAndCleanup(t *testing.T) {
 		events = append(events, "cleanup")
 		return removeMaildirFile(directory, name)
 	}
-	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")}); err != nil {
+	if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("fixture")}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(events, ","); got != "link,directory-sync,cleanup" {
@@ -69,7 +68,7 @@ func TestMaildirSyncFailureFailsAndRollsBackPublication(t *testing.T) {
 		}
 		return nil
 	}
-	err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")})
+	err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("fixture")})
 	if !errors.Is(err, errMaildirSyncFixture) {
 		t.Fatalf("directory sync failure lost: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestMaildirSyncFailureFailsAndRollsBackPublication(t *testing.T) {
 		}
 	}
 	target.syncDir = nil
-	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")}); err != nil {
+	if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("fixture")}); err != nil {
 		t.Fatalf("retry did not recover: %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(target.path, "new"))
@@ -94,14 +93,14 @@ func TestMaildirSyncFailureFailsAndRollsBackPublication(t *testing.T) {
 
 func TestMaildirInitializationSyncsCreatedDirectoriesAndParents(t *testing.T) {
 	path := filepath.Join(physicalTempDir(t), "new-parent", "maildir")
-	plugin, err := NewMaildirTarget(map[string]interface{}{"path": path, "create_if_missing": true})
+	plugin, err := NewMaildirTarget(map[string]any{"path": path, "create_if_missing": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := plugin.(*MaildirTarget)
+	target := mustAssert[*MaildirTarget](t, plugin)
 	synced := map[string]bool{}
 	target.syncDir = func(path string) error { synced[path] = true; return nil }
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{filepath.Join(path, "cur"), filepath.Join(path, "new"), filepath.Join(path, "tmp"), path, filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
@@ -120,26 +119,26 @@ func TestMaildirInitializeDoesNotReadSearchOnlyAncestors(t *testing.T) {
 			base := physicalTempDir(t)
 			ancestor := filepath.Join(base, "search-only")
 			path := filepath.Join(ancestor, "archive")
-			if err := os.Mkdir(ancestor, 0700); err != nil {
+			if err := os.Mkdir(ancestor, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(filepath.Join(path, "cur"), 0750); err != nil {
+			if err := os.MkdirAll(filepath.Join(path, "cur"), 0o750); err != nil {
 				t.Fatal(err)
 			}
 			for _, dir := range []string{"new", "tmp"} {
-				if err := os.Mkdir(filepath.Join(path, dir), 0750); err != nil {
+				if err := os.Mkdir(filepath.Join(path, dir), 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := os.Chmod(ancestor, 0111); err != nil {
+			if err := os.Chmod(ancestor, 0o111); err != nil { // #nosec G302 -- restricted perms are the test scenario: verifies confinement defenses
 				t.Fatal(err)
 			}
-			defer os.Chmod(ancestor, 0700)
-			plugin, err := NewMaildirTarget(map[string]interface{}{"path": path, "create_if_missing": create})
+			defer os.Chmod(ancestor, 0o700) // #nosec G302 -- restricted perms are the test scenario: verifies confinement defenses
+			plugin, err := NewMaildirTarget(map[string]any{"path": path, "create_if_missing": create})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := plugin.(*MaildirTarget).Initialize(context.Background()); err != nil {
+			if err := mustAssert[*MaildirTarget](t, plugin).Initialize(t.Context()); err != nil {
 				t.Fatalf("Initialize: %v", err)
 			}
 		})
@@ -148,24 +147,24 @@ func TestMaildirInitializeDoesNotReadSearchOnlyAncestors(t *testing.T) {
 
 func TestMaildirInitializationSyncFailureRollsBackOwnedDirectories(t *testing.T) {
 	parent := filepath.Join(physicalTempDir(t), "existing")
-	if err := os.Mkdir(parent, 0700); err != nil {
+	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(parent, "nested", "maildir")
-	plugin, err := NewMaildirTarget(map[string]interface{}{"path": path, "create_if_missing": true})
+	plugin, err := NewMaildirTarget(map[string]any{"path": path, "create_if_missing": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := plugin.(*MaildirTarget)
+	target := mustAssert[*MaildirTarget](t, plugin)
 	target.syncDir = func(string) error { return errMaildirSyncFixture }
-	if err := target.Initialize(context.Background()); !errors.Is(err, errMaildirSyncFixture) {
+	if err := target.Initialize(t.Context()); !errors.Is(err, errMaildirSyncFixture) {
 		t.Fatalf("primary sync error lost: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(parent, "nested")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("owned dirs not rolled back: %v", err)
 	}
 	target.syncDir = nil
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(path, "tmp")); err != nil {

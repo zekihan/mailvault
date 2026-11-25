@@ -10,6 +10,8 @@ func WithMetadataObserver(ctx context.Context, observe func(*Message) error) con
 }
 
 func MetadataObserver(ctx context.Context) func(*Message) error {
-	observe, _ := ctx.Value(metadataObserverKey{}).(func(*Message) error)
-	return observe
+	if observe, ok := ctx.Value(metadataObserverKey{}).(func(*Message) error); ok {
+		return observe
+	}
+	return nil
 }

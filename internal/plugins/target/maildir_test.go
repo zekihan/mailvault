@@ -1,7 +1,7 @@
 package target
 
 import (
-	"context"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -15,16 +15,16 @@ import (
 
 func TestMaildirUniqueNamesWithFrozenClock(t *testing.T) {
 	path := physicalTempDir(t)
-	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
+	target, err := NewMaildirTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	synctest.Test(t, func(t *testing.T) {
-		for i := 0; i < 10; i++ {
-			if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte(fmt.Sprintf("message-%d", i))}); err != nil {
+		for i := range 10 {
+			if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte(fmt.Sprintf("message-%d", i))}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -57,28 +57,28 @@ func TestFilesystemTargetsHonorCreateIfMissing(t *testing.T) {
 			if kind == "mbox" {
 				factory = NewMboxTarget
 			}
-			target, err := factory(map[string]interface{}{"path": path, "create_if_missing": false})
+			target, err := factory(map[string]any{"path": path, "create_if_missing": false})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := target.Initialize(context.Background()); err == nil {
+			if err := target.Initialize(t.Context()); err == nil {
 				_ = target.Close()
 				t.Fatal("missing path was created despite create_if_missing=false")
 			}
 			if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
 				t.Fatalf("initialization changed filesystem: %v", err)
 			}
-			created, err := factory(map[string]interface{}{"path": path})
+			created, err := factory(map[string]any{"path": path})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := created.Initialize(context.Background()); err != nil {
+			if err := created.Initialize(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			if err := created.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := target.Initialize(context.Background()); err != nil {
+			if err := target.Initialize(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			if err := target.Close(); err != nil {
@@ -91,24 +91,22 @@ func TestFilesystemTargetsHonorCreateIfMissing(t *testing.T) {
 func TestMaildirConcurrentInstances(t *testing.T) {
 	path := physicalTempDir(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		target, err := NewMaildirTarget(map[string]interface{}{"path": path})
+	for range 4 {
+		target, err := NewMaildirTarget(map[string]any{"path": path})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := target.Initialize(context.Background()); err != nil {
+		if err := target.Initialize(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("test")}); err != nil {
+		wg.Go(func() {
+			for range 100 {
+				if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("test")}); err != nil {
 					t.Error(err)
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	files, err := os.ReadDir(filepath.Join(path, "new"))
@@ -122,18 +120,18 @@ func TestMaildirConcurrentInstances(t *testing.T) {
 
 func TestMaildirCleanupFailureAfterPublicationDoesNotReturnError(t *testing.T) {
 	path := physicalTempDir(t)
-	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
+	target, err := NewMaildirTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	maildir := target.(*MaildirTarget)
-	if err := maildir.Initialize(context.Background()); err != nil {
+	maildir := mustAssert[*MaildirTarget](t, target)
+	if err := maildir.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	cleanupErr := errors.New("injected cleanup permission error")
 	maildir.removeTemp = func(*maildirDirectory, string) error { return cleanupErr }
 	message := []byte("complete message")
-	if err := maildir.WriteMessage(context.Background(), &plugins.Message{Raw: message}); err != nil {
+	if err := maildir.WriteMessage(t.Context(), &plugins.Message{Raw: message}); err != nil {
 		t.Fatalf("published message returned cleanup error: %v", err)
 	}
 	files, err := os.ReadDir(filepath.Join(path, "new"))
@@ -147,36 +145,36 @@ func TestMaildirCleanupFailureAfterPublicationDoesNotReturnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(message) {
+	if !bytes.Equal(got, message) {
 		t.Fatalf("published %q, want %q", got, message)
 	}
 }
 
 func TestMaildirDefaultFilesystemHooks(t *testing.T) {
 	target := &MaildirTarget{path: physicalTempDir(t), create: true}
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("test")}); err != nil {
+	if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("test")}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestMaildirPrePublicationErrorIncludesCleanupFailure(t *testing.T) {
 	path := physicalTempDir(t)
-	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
+	target, err := NewMaildirTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	maildir := target.(*MaildirTarget)
-	if err := maildir.Initialize(context.Background()); err != nil {
+	maildir := mustAssert[*MaildirTarget](t, target)
+	if err := maildir.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	primaryErr := errors.New("publication blocked")
 	cleanupErr := errors.New("injected cleanup permission error")
 	maildir.link = func(*maildirDirectory, string, *maildirDirectory, string) error { return primaryErr }
 	maildir.removeTemp = func(*maildirDirectory, string) error { return cleanupErr }
-	err = maildir.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("message")})
+	err = maildir.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("message")})
 	if !errors.Is(err, primaryErr) || !errors.Is(err, cleanupErr) {
 		t.Fatalf("error = %v, want primary and cleanup errors", err)
 	}

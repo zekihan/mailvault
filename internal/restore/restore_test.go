@@ -37,32 +37,32 @@ type fixtureAppender struct {
 	cancel        context.CancelFunc
 }
 
-func (a *fixtureAppender) EnsureMailbox(_ context.Context, mailbox string, allowExisting bool) (bool, error) {
-	a.mailbox = mailbox
-	a.ensured++
-	a.allowExisting = append(a.allowExisting, allowExisting)
-	if a.err != nil {
-		return false, a.err
+func (appender *fixtureAppender) EnsureMailbox(_ context.Context, mailbox string, allowExisting bool) (bool, error) {
+	appender.mailbox = mailbox
+	appender.ensured++
+	appender.allowExisting = append(appender.allowExisting, allowExisting)
+	if appender.err != nil {
+		return false, appender.err
 	}
-	if a.cancel != nil {
-		a.cancel()
-		a.cancel = nil
+	if appender.cancel != nil {
+		appender.cancel()
+		appender.cancel = nil
 	}
 	return !allowExisting, nil
 }
 
-func (a *fixtureAppender) MailboxUIDValidity(context.Context, string) (string, error) {
-	if a.uidValidity == "" {
+func (appender *fixtureAppender) MailboxUIDValidity(context.Context, string) (string, error) {
+	if appender.uidValidity == "" {
 		return "7", nil
 	}
-	return a.uidValidity, nil
+	return appender.uidValidity, nil
 }
 
-func (a *fixtureAppender) AppendMessage(_ context.Context, mailbox string, message *plugins.Message, _ string) error {
-	a.mailbox = mailbox
-	a.message = message
-	a.appended++
-	return a.appendErr
+func (appender *fixtureAppender) AppendMessage(_ context.Context, mailbox string, message *plugins.Message, _ string) error {
+	appender.mailbox = mailbox
+	appender.message = message
+	appender.appended++
+	return appender.appendErr
 }
 
 type fixtureReceipts struct {
@@ -73,22 +73,22 @@ type fixtureReceipts struct {
 	cancel    context.CancelFunc
 }
 
-func (r fixtureReceipts) HasRestoreReceipt(_ context.Context, receipt state.RestoreReceipt) (bool, error) {
-	for existing := range r.values {
-		if sameRestoreIdentity(existing, receipt) {
+func (receipts fixtureReceipts) HasRestoreReceipt(_ context.Context, receipt *state.RestoreReceipt) (bool, error) {
+	for existing := range receipts.values {
+		if sameRestoreIdentity(&existing, receipt) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func sameRestoreIdentity(a, b state.RestoreReceipt) bool {
+func sameRestoreIdentity(a, b *state.RestoreReceipt) bool {
 	return a.DestinationSource == b.DestinationSource && a.DestinationFolder == b.DestinationFolder &&
 		a.BackupTarget == b.BackupTarget && a.DestinationUIDValidity == b.DestinationUIDValidity && a.RawSHA256 == b.RawSHA256
 }
 
-func (r fixtureReceipts) HasPendingRestore(_ context.Context, source, folder, target string) (bool, error) {
-	for receipt := range r.pending {
+func (receipts fixtureReceipts) HasPendingRestore(_ context.Context, source, folder, target string) (bool, error) {
+	for receipt := range receipts.pending {
 		if receipt.DestinationSource == source && receipt.DestinationFolder == folder && receipt.BackupTarget == target {
 			return true, nil
 		}
@@ -96,9 +96,9 @@ func (r fixtureReceipts) HasPendingRestore(_ context.Context, source, folder, ta
 	return false, nil
 }
 
-func (r fixtureReceipts) PendingRestoreLocators(_ context.Context, source, folder, target string) ([]string, error) {
+func (receipts fixtureReceipts) PendingRestoreLocators(_ context.Context, source, folder, target string) ([]string, error) {
 	var locators []string
-	for receipt := range r.pending {
+	for receipt := range receipts.pending {
 		if receipt.DestinationSource == source && receipt.DestinationFolder == folder && receipt.BackupTarget == target {
 			locators = append(locators, receipt.Locator+" [source="+receipt.Source+"]")
 		}
@@ -106,8 +106,8 @@ func (r fixtureReceipts) PendingRestoreLocators(_ context.Context, source, folde
 	return locators, nil
 }
 
-func (r fixtureReceipts) BeginRestoreReceipt(_ context.Context, receipt state.RestoreReceipt) error {
-	r.pending[receipt] = true
+func (receipts fixtureReceipts) BeginRestoreReceipt(_ context.Context, receipt *state.RestoreReceipt) error {
+	receipts.pending[*receipt] = true
 	return nil
 }
 
@@ -115,40 +115,40 @@ func fixtureJobKey(source, folder, target string) string {
 	return source + "\x00" + folder + "\x00" + target
 }
 
-func (r fixtureReceipts) BeginRestoreJob(_ context.Context, source, folder, target string) (bool, string, error) {
+func (receipts fixtureReceipts) BeginRestoreJob(_ context.Context, source, folder, target string) (bool, string, error) {
 	key := fixtureJobKey(source, folder, target)
-	if r.preparing[key] {
+	if receipts.preparing[key] {
 		return false, "", state.ErrRestoreJobUncertain
 	}
-	if r.jobs[key] {
+	if receipts.jobs[key] {
 		return true, "7", nil
 	}
-	r.preparing[key] = true
+	receipts.preparing[key] = true
 	return false, "", nil
 }
 
-func (r fixtureReceipts) ActivateRestoreJob(_ context.Context, source, folder, target, _ string) error {
+func (receipts fixtureReceipts) ActivateRestoreJob(_ context.Context, source, folder, target, _ string) error {
 	key := fixtureJobKey(source, folder, target)
-	delete(r.preparing, key)
-	r.jobs[key] = true
+	delete(receipts.preparing, key)
+	receipts.jobs[key] = true
 	return nil
 }
 
-func (r fixtureReceipts) AbandonRestoreJob(_ context.Context, source, folder, target string) error {
-	delete(r.preparing, fixtureJobKey(source, folder, target))
+func (receipts fixtureReceipts) AbandonRestoreJob(_ context.Context, source, folder, target string) error {
+	delete(receipts.preparing, fixtureJobKey(source, folder, target))
 	return nil
 }
 
-func (r fixtureReceipts) MarkRestoreReceipt(_ context.Context, receipt state.RestoreReceipt) error {
-	for existing := range r.values {
-		if sameRestoreIdentity(existing, receipt) {
-			delete(r.values, existing)
+func (receipts fixtureReceipts) MarkRestoreReceipt(_ context.Context, receipt *state.RestoreReceipt) error {
+	for existing := range receipts.values {
+		if sameRestoreIdentity(&existing, receipt) {
+			delete(receipts.values, existing)
 		}
 	}
-	r.values[receipt] = true
-	delete(r.pending, receipt)
-	if r.cancel != nil {
-		r.cancel()
+	receipts.values[*receipt] = true
+	delete(receipts.pending, *receipt)
+	if receipts.cancel != nil {
+		receipts.cancel()
 	}
 	return nil
 }
@@ -168,7 +168,7 @@ func TestRunRestoresVerifiedMessageAndMetadata(t *testing.T) {
 	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
 	appender := &fixtureAppender{}
 	receipts := newFixtureReceipts()
-	result, err := Run(context.Background(), reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "Mailvault Restore"})
+	result, err := Run(t.Context(), reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "Mailvault Restore"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestRunRejectsChangedBackupBytesBeforeAppend(t *testing.T) {
 	digest := sha256.Sum256([]byte("original"))
 	entry := plugins.BackupMessage{Target: "archive", Locator: "object", RawSHA256: hex.EncodeToString(digest[:])}
 	appender := &fixtureAppender{}
-	_, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "Mailvault Restore"})
+	_, err := Run(t.Context(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "Mailvault Restore"})
 	if err == nil || appender.appended != 0 {
 		t.Fatalf("changed backup was not rejected before append: err=%v appends=%d", err, appender.appended)
 	}
@@ -201,7 +201,7 @@ func TestRunValidatesEveryMessageBeforeCreatingMailbox(t *testing.T) {
 	reader := sequenceReader{entries: entries, messages: []*plugins.Message{{Raw: raw}, {Raw: []byte("corrupt")}}}
 	appender := &fixtureAppender{}
 	receipts := newFixtureReceipts()
-	_, err := Run(context.Background(), &reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
+	_, err := Run(t.Context(), &reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err == nil || appender.ensured != 0 || appender.appended != 0 || len(receipts.jobs) != 0 {
 		t.Fatalf("corrupt backup caused destination or state mutation: err=%v appender=%+v jobs=%d", err, appender, len(receipts.jobs))
 	}
@@ -215,7 +215,7 @@ func TestRunReceiptSkipsCompletedMessage(t *testing.T) {
 	receipts := newFixtureReceipts()
 	receipts.values[receipt] = true
 	receipts.jobs[fixtureJobKey("account", "restore", "archive")] = true
-	result, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: []byte("content")}}, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
+	result, err := Run(t.Context(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: []byte("content")}}, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err != nil || result.Skipped != 1 || appender.appended != 0 {
 		t.Fatalf("receipt did not skip append: result=%+v err=%v", result, err)
 	}
@@ -228,11 +228,11 @@ func TestRunRejectsRecreatedMailboxBeforeSkippingReceipts(t *testing.T) {
 	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
 	receipts := newFixtureReceipts()
 	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
-	if _, err := Run(context.Background(), reader, &fixtureAppender{}, receipts, options); err != nil {
+	if _, err := Run(t.Context(), reader, &fixtureAppender{}, receipts, options); err != nil {
 		t.Fatal(err)
 	}
 	recreated := &fixtureAppender{uidValidity: "8"}
-	result, err := Run(context.Background(), reader, recreated, receipts, options)
+	result, err := Run(t.Context(), reader, recreated, receipts, options)
 	if err == nil || result.Skipped != 0 || recreated.appended != 0 {
 		t.Fatalf("recreated mailbox reused receipts: result=%+v appended=%d err=%v", result, recreated.appended, err)
 	}
@@ -250,13 +250,13 @@ func TestRunDeduplicatesContentAcrossAliasesAndRepairs(t *testing.T) {
 	receipts := newFixtureReceipts()
 	appender := &fixtureAppender{}
 	options := Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"}
-	result, err := Run(context.Background(), reader, appender, receipts, options)
+	result, err := Run(t.Context(), reader, appender, receipts, options)
 	if err != nil || result.Restored != 1 || result.Skipped != 1 || appender.appended != 1 {
 		t.Fatalf("alias restore: result=%+v appended=%d err=%v", result, appender.appended, err)
 	}
 	reader.entries = []plugins.BackupMessage{{Locator: "physical/repaired", RawSHA256: hash, Source: "renamed account", Scope: "new scope", Folder: "New folder", UID: "99"}}
 	resumed := &fixtureAppender{}
-	result, err = Run(context.Background(), reader, resumed, receipts, options)
+	result, err = Run(t.Context(), reader, resumed, receipts, options)
 	if err != nil || result.Restored != 0 || result.Skipped != 1 || resumed.appended != 0 {
 		t.Fatalf("repair rerun: result=%+v appended=%d err=%v", result, resumed.appended, err)
 	}
@@ -270,7 +270,7 @@ func TestDryRunPlansIdenticalContentOnce(t *testing.T) {
 		entries: []plugins.BackupMessage{{Locator: "one", RawSHA256: hash}, {Locator: "two", RawSHA256: hash}},
 		message: &plugins.Message{Raw: raw},
 	}
-	result, err := Run(context.Background(), reader, nil, nil, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: true})
+	result, err := Run(t.Context(), reader, nil, nil, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: true})
 	if err != nil || result.Messages != 2 || result.Planned != 1 {
 		t.Fatalf("dry run: result=%+v err=%v", result, err)
 	}
@@ -281,7 +281,7 @@ func TestRunDoesNotRecordReceiptWhenAppendFails(t *testing.T) {
 	entry := plugins.BackupMessage{Locator: "object", RawSHA256: hex.EncodeToString(digest[:])}
 	appender := &fixtureAppender{appendErr: errors.New("fixture append failed")}
 	receipts := newFixtureReceipts()
-	_, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: []byte("content")}}, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
+	_, err := Run(t.Context(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: []byte("content")}}, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err == nil || len(receipts.values) != 0 || len(receipts.pending) != 1 {
 		t.Fatalf("failed append did not preserve an uncertainty marker: err=%v completed=%d pending=%d", err, len(receipts.values), len(receipts.pending))
 	}
@@ -294,7 +294,7 @@ func TestRunResumesAfterCompletedMessage(t *testing.T) {
 		{Locator: "one", RawSHA256: hex.EncodeToString(digest[:])},
 		{Locator: "two", RawSHA256: hex.EncodeToString(digest[:])},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	receipts := newFixtureReceipts()
 	receipts.cancel = cancel
 	appender := &fixtureAppender{}
@@ -308,7 +308,7 @@ func TestRunResumesAfterCompletedMessage(t *testing.T) {
 	}
 
 	resumed := &fixtureAppender{}
-	result, err := Run(context.Background(), reader, resumed, receipts, options)
+	result, err := Run(t.Context(), reader, resumed, receipts, options)
 	if err != nil || result.Restored != 0 || result.Skipped != 2 || resumed.appended != 0 || len(resumed.allowExisting) != 1 || !resumed.allowExisting[0] {
 		t.Fatalf("resume result=%+v appender=%+v err=%v", result, resumed, err)
 	}
@@ -318,7 +318,7 @@ func TestRunResumesAfterMailboxCreationAndCancellation(t *testing.T) {
 	raw := []byte("content")
 	digest := sha256.Sum256(raw)
 	entry := plugins.BackupMessage{Locator: "one", RawSHA256: hex.EncodeToString(digest[:])}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	receipts := newFixtureReceipts()
 	appender := &fixtureAppender{cancel: cancel}
 	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
@@ -330,7 +330,7 @@ func TestRunResumesAfterMailboxCreationAndCancellation(t *testing.T) {
 		t.Fatalf("restore job was not durable after mailbox creation: jobs=%v appends=%d", receipts.jobs, appender.appended)
 	}
 	resumed := &fixtureAppender{}
-	if _, err := Run(context.Background(), reader, resumed, receipts, options); err != nil {
+	if _, err := Run(t.Context(), reader, resumed, receipts, options); err != nil {
 		t.Fatal(err)
 	}
 	if len(resumed.allowExisting) != 1 || !resumed.allowExisting[0] || resumed.appended != 1 {
@@ -339,12 +339,12 @@ func TestRunResumesAfterMailboxCreationAndCancellation(t *testing.T) {
 }
 
 func TestRunRefusesExistingMailboxForNewJob(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	raw := []byte("content")
 	digest := sha256.Sum256(raw)
 	entry := plugins.BackupMessage{Locator: "one", RawSHA256: hex.EncodeToString(digest[:])}
 	reader := fixtureReader{entries: []plugins.BackupMessage{entry}, message: &plugins.Message{Raw: raw}}
-	receipts, err := state.NewStore(":memory:")
+	receipts, err := state.NewStore(t.Context(), ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

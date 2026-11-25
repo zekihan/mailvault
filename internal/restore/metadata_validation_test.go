@@ -34,7 +34,7 @@ func TestRunRejectsInvalidArchiveMetadataBeforeDestinationMutation(t *testing.T)
 					reader := metadataReader{entries: entries, messages: messages}
 					appender := &fixtureAppender{}
 					receipts := newFixtureReceipts()
-					_, err := Run(context.Background(), reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: dryRun})
+					_, err := Run(t.Context(), reader, appender, receipts, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: dryRun})
 					if err == nil {
 						t.Fatal("invalid metadata passed preflight")
 					}
@@ -56,10 +56,11 @@ func (r metadataReader) ListBackupMessages(context.Context) ([]plugins.BackupMes
 	return r.entries, nil
 }
 func (r metadataReader) ReadBackupMessage(_ context.Context, locator string) (*plugins.Message, error) {
-	for i, entry := range r.entries {
+	for i := range r.entries {
+		entry := &r.entries[i]
 		if entry.Locator == locator {
-			copy := *r.messages[i]
-			return &copy, nil
+			cloned := *r.messages[i]
+			return &cloned, nil
 		}
 	}
 	return nil, fmt.Errorf("unknown fixture locator %q", locator)
@@ -70,7 +71,7 @@ func TestRunValidatesEffectiveMetadataAndPreservesReaderMessage(t *testing.T) {
 	entry := plugins.BackupMessage{Locator: "object", RawSHA256: fmt.Sprintf("%x", sha256.Sum256(raw)), Flags: []string{"invalid flag"}, InternalDate: "invalid-date", UID: "17"}
 	message := &plugins.Message{Raw: raw, Flags: []string{`\sEeN`, `\Recent`, "$Label1"}, InternalDate: "2026-01-02T03:04:05Z"}
 	appender := &fixtureAppender{}
-	result, err := Run(context.Background(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: message}, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
+	result, err := Run(t.Context(), fixtureReader{entries: []plugins.BackupMessage{entry}, message: message}, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err != nil || result.Restored != 1 {
 		t.Fatalf("valid reader metadata should override manifest: result=%+v err=%v", result, err)
 	}

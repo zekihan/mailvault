@@ -3,7 +3,6 @@
 package target
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -18,7 +17,7 @@ import (
 
 func TestMaildirPreservesWriteAndCleanupErrors(t *testing.T) {
 	if os.Getenv("MAILVAULT_WRITE_FAILURE_CHILD") != "1" {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestMaildirPreservesWriteAndCleanupErrors$", "-test.v")
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestMaildirPreservesWriteAndCleanupErrors$", "-test.v") // #nosec G204,G702 -- self-spawned test binary; argv fully controlled
 		cmd.Env = append(os.Environ(), "MAILVAULT_WRITE_FAILURE_CHILD=1")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -27,12 +26,12 @@ func TestMaildirPreservesWriteAndCleanupErrors(t *testing.T) {
 		return
 	}
 	path := physicalTempDir(t)
-	target, err := NewMaildirTarget(map[string]interface{}{"path": path})
+	target, err := NewMaildirTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	maildir := target.(*MaildirTarget)
-	if err := maildir.Initialize(context.Background()); err != nil {
+	maildir := mustAssert[*MaildirTarget](t, target)
+	if err := maildir.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	maildir.removeTemp = func(*maildirDirectory, string) error { return os.ErrPermission }
@@ -45,7 +44,7 @@ func TestMaildirPreservesWriteAndCleanupErrors(t *testing.T) {
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 256, Max: original.Max}); err != nil {
 		t.Fatal(err)
 	}
-	writeErr := maildir.WriteMessage(context.Background(), &plugins.Message{Raw: []byte(strings.Repeat("x", 1500))})
+	writeErr := maildir.WriteMessage(t.Context(), &plugins.Message{Raw: []byte(strings.Repeat("x", 1500))})
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 		t.Fatal(err)
 	}

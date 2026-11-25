@@ -11,7 +11,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maildirReadFlags = os.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK
+const (
+	maildirReadFlags    = os.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK
+	maildirUnixDirPerms = 0o750
+)
 
 func linkMaildirFile(from *maildirDirectory, oldName string, to *maildirDirectory, newName string) error {
 	oldDir, err := from.root.Open(".")
@@ -24,7 +27,7 @@ func linkMaildirFile(from *maildirDirectory, oldName string, to *maildirDirector
 		return err
 	}
 	defer func() { _ = newDir.Close() }()
-	// flags=0 links the entry itself, never the target of a replaced symlink.
+	// Flags=0 links the entry itself, never the target of a replaced symlink.
 	if err := unix.Linkat(int(oldDir.Fd()), oldName, int(newDir.Fd()), newName, 0); err != nil {
 		return err
 	}
@@ -48,14 +51,14 @@ func openAbsoluteMaildir(path string, create bool, created *[]maildirCreation) (
 	current := os.NewFile(uintptr(fd), "/")
 	defer func() { _ = current.Close() }()
 	prefix := "/"
-	for _, part := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+	for part := range strings.SplitSeq(strings.TrimPrefix(path, "/"), "/") {
 		if part == "" {
 			continue
 		}
 		nextFD, err := unix.Openat(int(current.Fd()), part, maildirSearchFlags|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		owned := false
 		if errors.Is(err, unix.ENOENT) && create {
-			err = unix.Mkdirat(int(current.Fd()), part, 0750)
+			err = unix.Mkdirat(int(current.Fd()), part, maildirUnixDirPerms)
 			owned = err == nil
 			if err == nil || errors.Is(err, unix.EEXIST) {
 				nextFD, err = unix.Openat(int(current.Fd()), part, maildirSearchFlags|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -91,8 +94,6 @@ func rootForMaildirDescriptor(file *os.File, path string) (*maildirDirectory, er
 	if err != nil {
 		return nil, err
 	}
-	// OpenRoot has no descriptor constructor. Compare the reopened directory to
-	// the inode acquired by the no-follow walk before allowing any operations.
 	root, err := os.OpenRoot(path)
 	if err != nil {
 		return nil, err

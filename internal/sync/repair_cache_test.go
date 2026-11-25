@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -13,14 +14,22 @@ import (
 	"github.com/zekihan/mailvault/internal/state"
 )
 
-func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
-	ctx := context.Background()
+type aliasFixture struct {
+	root     string
+	store    *state.Store
+	cfg      *config.Config
+	registry *plugins.Registry
+	stateKey string
+}
+
+func setupAliasFixture(t *testing.T) *aliasFixture {
+	t.Helper()
 	root := physicalTempDir(t)
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	raw := []byte("Subject: duplicate\r\n\r\none message\r\n")
 	sources := map[string]*fixtureSource{
 		"account-a": {name: "account-a", messages: []*plugins.Message{{UID: "1", UIDScope: "generation-a", Folder: "INBOX", Raw: raw}}},
@@ -28,79 +37,99 @@ func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Sources: []config.SourceConfig{{Name: "account-a", Type: "fixture", Folders: []string{"INBOX"}}, {Name: "account-b", Type: "fixture", Folders: []string{"INBOX"}}},
-		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root, "max_listing_entries": 64, "max_listing_locator_bytes": 4096}}},
+		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root, "max_listing_entries": 64, "max_listing_locator_bytes": 4096}}},
 		Pairs:   []config.PairConfig{{Source: "account-a", Targets: []string{"local"}}, {Source: "account-b", Targets: []string{"local"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(values map[string]interface{}) (plugins.Source, error) {
-		return sources[values["name"].(string)], nil
+	registry.RegisterSource("fixture", func(values map[string]any) (plugins.Source, error) {
+		return sources[mustAssert[string](t, values["name"])], nil
 	})
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
-	stateTarget, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	stateTarget, err := target.NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateTarget.(interface{ SetName(string) }).SetName("local")
-	stateKey := plugins.TargetStateKey(stateTarget)
-	run := func(options ...SyncOption) *SyncStats {
-		t.Helper()
-		engine, err := NewSyncEngine(cfg, store, registry, options...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := engine.Run(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return stats
+	mustAssert[interface{ SetName(name string) }](t, stateTarget).SetName("local")
+	return &aliasFixture{root: root, store: store, cfg: cfg, registry: registry, stateKey: plugins.TargetStateKey(stateTarget)}
+}
+
+func (fixture *aliasFixture) run(t *testing.T, options ...SyncOption) *SyncStats {
+	t.Helper()
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, options...)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stats := run(); stats.TotalErrors != 0 || stats.TotalWritten != 1 {
-		t.Fatalf("initial sync: %+v", stats)
+	stats, err := engine.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	entries, err := store.BackupMessages(ctx, stateKey)
+	return stats
+}
+
+func (fixture *aliasFixture) corruptOriginal(t *testing.T) (string, string) {
+	t.Helper()
+	entries, err := fixture.store.BackupMessages(t.Context(), fixture.stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator != entries[1].Locator {
 		t.Fatalf("initial aliases: %+v, %v", entries, err)
 	}
 	originalLocator := entries[0].Locator
-	original := filepath.Join(root, filepath.FromSlash(originalLocator))
-	moved := filepath.Join(root, "cur", filepath.Base(original))
+	original := filepath.Join(fixture.root, filepath.FromSlash(originalLocator))
+	moved := filepath.Join(fixture.root, "cur", filepath.Base(original))
 	if err := os.Rename(original, moved); err != nil {
 		t.Fatal(err)
 	}
 	original = moved
-	if err := os.WriteFile(original, []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(original, []byte("corrupt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stats := run(WithRepair(true))
-	if stats.TotalErrors != 0 || stats.TotalWritten != 1 {
-		t.Fatalf("repair aliases: %+v", stats)
-	}
-	entries, err = store.BackupMessages(ctx, stateKey)
+	return original, originalLocator
+}
+
+func (fixture *aliasFixture) assertRepairedAliases(t *testing.T, original, originalLocator string, raw []byte) {
+	t.Helper()
+	entries, err := fixture.store.BackupMessages(t.Context(), fixture.stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator != entries[1].Locator || entries[0].Locator == originalLocator {
 		t.Fatalf("repaired aliases: %+v, %v", entries, err)
 	}
-	// Both alias records point at the single replacement, while the damaged
-	// original remains present as a superseded physical object.
-	replacement := filepath.Join(root, filepath.FromSlash(entries[0].Locator))
+	replacement := filepath.Join(fixture.root, filepath.FromSlash(entries[0].Locator))
 	if replacement == original {
 		t.Fatal("repair overwrote the damaged object")
 	}
-	if data, err := os.ReadFile(replacement); err != nil || string(data) != string(raw) {
+	if data, err := os.ReadFile(replacement); err != nil || !bytes.Equal(data, raw) {
 		t.Fatalf("replacement data = %q, %v", data, err)
 	}
-	maildir, err := target.NewMaildirTarget(map[string]interface{}{"name": "local", "path": root})
+	assertAliasPhysicalCount(t, fixture, originalLocator)
+}
+
+func assertAliasPhysicalCount(t *testing.T, fixture *aliasFixture, originalLocator string) {
+	t.Helper()
+	maildir, err := target.NewMaildirTarget(map[string]any{"name": "local", "path": fixture.root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	physical, err := maildir.(plugins.TargetBackupReader).ListBackupMessages(ctx)
+	physical, err := mustAssert[plugins.TargetBackupReader](t, maildir).ListBackupMessages(t.Context())
 	if err != nil || len(physical) != 2 {
 		t.Fatalf("physical Maildir objects = %d, %v; want damaged original and one replacement", len(physical), err)
 	}
-	superseded, err := store.SupersededBackupObjects(ctx, stateKey)
+	superseded, err := fixture.store.SupersededBackupObjects(t.Context(), fixture.stateKey)
 	if err != nil || !superseded[originalLocator] {
 		t.Fatalf("superseded original = %#v, %v", superseded, err)
 	}
-	if stats := run(WithRepair(true)); stats.TotalErrors != 0 || stats.TotalWritten != 0 {
+}
+
+func TestRepairReusesReplacementAcrossSourceAliases(t *testing.T) {
+	fixture := setupAliasFixture(t)
+	raw := []byte("Subject: duplicate\r\n\r\none message\r\n")
+	if stats := fixture.run(t); stats.TotalErrors != 0 || stats.TotalWritten != 1 {
+		t.Fatalf("initial sync: %+v", stats)
+	}
+	original, originalLocator := fixture.corruptOriginal(t)
+	stats := fixture.run(t, WithRepair(true))
+	if stats.TotalErrors != 0 || stats.TotalWritten != 1 {
+		t.Fatalf("repair aliases: %+v", stats)
+	}
+	fixture.assertRepairedAliases(t, original, originalLocator, raw)
+	if stats := fixture.run(t, WithRepair(true)); stats.TotalErrors != 0 || stats.TotalWritten != 0 {
 		t.Fatalf("repeat repair: %+v", stats)
 	}
 }
@@ -129,12 +158,12 @@ func (t *repairWriteFailureTarget) WriteRepairMessage(context.Context, *plugins.
 }
 
 func TestRepairWriteFailuresDoNotPopulateCache(t *testing.T) {
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	raw := []byte("Subject: retry\r\n\r\nretry body\r\n")
+	raw := []byte("Subject: retry\r\n\r\nretry body\r\n") //nolint:dupword // fixture message content, not prose
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{
 		{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw},
 		{UID: "2", UIDScope: "generation", Folder: "INBOX", Raw: raw},
@@ -146,13 +175,13 @@ func TestRepairWriteFailuresDoNotPopulateCache(t *testing.T) {
 		Pairs:   []config.PairConfig{{Source: "account", Targets: []string{"target"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
-	registry.RegisterTarget("repair-failure", func(map[string]interface{}) (plugins.Target, error) { return backup, nil })
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
+	registry.RegisterTarget("repair-failure", func(map[string]any) (plugins.Target, error) { return backup, nil })
 	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true), WithMaxRetries(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err := engine.Run(context.Background())
+	stats, err := engine.Run(t.Context())
 	if err != nil || stats.TotalWritten != 0 || stats.TotalErrors != 2 {
 		t.Fatalf("repair result: %+v, %v", stats, err)
 	}
@@ -186,25 +215,25 @@ func (t *repairIndexTarget) ReadBackupMessage(_ context.Context, locator string)
 
 func TestRememberRepairBackupDoesNotCreatePartialIndex(t *testing.T) {
 	oldRaw := []byte("Subject: existing\r\n\r\nold backup\r\n")
-	target := &repairIndexTarget{name: "target", entry: plugins.BackupMessage{Locator: "old-locator", Folder: "INBOX"}, raw: oldRaw}
+	repairTarget := &repairIndexTarget{name: "target", entry: plugins.BackupMessage{Locator: "old-locator", Folder: "INBOX"}, raw: oldRaw}
 	engine := &SyncEngine{}
 	msg := &plugins.Message{Folder: "INBOX"}
-	engine.rememberRepairBackup(target, msg, "new-hash", "new-locator")
-	if _, loaded := engine.repairCache[target.Name()]; loaded {
+	engine.rememberRepairBackup(repairTarget, msg, "new-hash", "new-locator")
+	if _, loaded := engine.repairCache[repairTarget.Name()]; loaded {
 		t.Fatal("remembered one write as a complete target index")
 	}
-	locator, found, err := engine.findBackupByHash(context.Background(), target, msg, dedup.ComputeContentHash(oldRaw))
-	if err != nil || !found || locator != "old-locator" || target.listCalls != 1 {
-		t.Fatalf("scan result = %q, %t, %v; list calls = %d", locator, found, err, target.listCalls)
+	locator, found, err := engine.findBackupByHash(t.Context(), repairTarget, msg, dedup.ComputeContentHash(oldRaw))
+	if err != nil || !found || locator != "old-locator" || repairTarget.listCalls != 1 {
+		t.Fatalf("scan result = %q, %t, %v; list calls = %d", locator, found, err, repairTarget.listCalls)
 	}
 }
 
 func TestRepairCacheKeepsPreservedFoldersDistinct(t *testing.T) {
-	maildir, err := target.NewMaildirTarget(map[string]interface{}{"path": physicalTempDir(t), "preserve_folders": true})
+	maildir, err := target.NewMaildirTarget(map[string]any{"path": physicalTempDir(t), "preserve_folders": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	maildir.(interface{ SetName(string) }).SetName("local")
+	mustAssert[interface{ SetName(name string) }](t, maildir).SetName("local")
 	engine := &SyncEngine{}
 	index := map[string]string{}
 	engine.repairCache = map[string]map[string]string{maildir.Name(): index}
@@ -220,14 +249,22 @@ func TestRepairCacheKeepsPreservedFoldersDistinct(t *testing.T) {
 	}
 }
 
-func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
-	ctx := context.Background()
+type folderRepairFixture struct {
+	root     string
+	store    *state.Store
+	cfg      *config.Config
+	registry *plugins.Registry
+	stateKey string
+}
+
+func setupFolderRepairFixture(t *testing.T) *folderRepairFixture {
+	t.Helper()
 	root := physicalTempDir(t)
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	raw := []byte("Subject: folders\r\n\r\nsame bytes\r\n")
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{
 		{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw},
@@ -235,48 +272,63 @@ func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
 	}}
 	cfg := &config.Config{
 		Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX", "Sent"}}},
-		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root, "preserve_folders": true}}},
+		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root, "preserve_folders": true}}},
 		Pairs:   []config.PairConfig{{Source: "account", Targets: []string{"local"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
-	stateTarget, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	stateTarget, err := target.NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateTarget.(interface{ SetName(string) }).SetName("local")
-	stateKey := plugins.TargetStateKey(stateTarget)
-	run := func(options ...SyncOption) *SyncStats {
-		t.Helper()
-		engine, err := NewSyncEngine(cfg, store, registry, options...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := engine.Run(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return stats
+	mustAssert[interface{ SetName(name string) }](t, stateTarget).SetName("local")
+	return &folderRepairFixture{root: root, store: store, cfg: cfg, registry: registry, stateKey: plugins.TargetStateKey(stateTarget)}
+}
+
+func (fixture *folderRepairFixture) run(t *testing.T, options ...SyncOption) *SyncStats {
+	t.Helper()
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, options...)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stats := run(); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
-		t.Fatalf("initial sync: %+v", stats)
+	stats, err := engine.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	entries, err := store.BackupMessages(ctx, stateKey)
+	return stats
+}
+
+func (fixture *folderRepairFixture) corruptEntries(t *testing.T) {
+	t.Helper()
+	entries, err := fixture.store.BackupMessages(t.Context(), fixture.stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator == entries[1].Locator {
 		t.Fatalf("folder manifests: %+v, %v", entries, err)
 	}
-	for _, entry := range entries {
-		path := filepath.Join(root, filepath.FromSlash(entry.Locator))
-		if err := os.WriteFile(path, []byte("corrupt"), 0600); err != nil {
+	for i := range entries {
+		path := filepath.Join(fixture.root, filepath.FromSlash(entries[i].Locator))
+		if err := os.WriteFile(path, []byte("corrupt"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if stats := run(WithRepair(true)); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
-		t.Fatalf("repair folders: %+v", stats)
-	}
-	entries, err = store.BackupMessages(ctx, stateKey)
+}
+
+func (fixture *folderRepairFixture) assertRepairedEntries(t *testing.T) {
+	t.Helper()
+	entries, err := fixture.store.BackupMessages(t.Context(), fixture.stateKey)
 	if err != nil || len(entries) != 2 || entries[0].Locator == entries[1].Locator {
 		t.Fatalf("repaired folder manifests: %+v, %v", entries, err)
 	}
+}
+
+func TestRepairWritesOneReplacementPerPreservedFolder(t *testing.T) {
+	fixture := setupFolderRepairFixture(t)
+	if stats := fixture.run(t); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
+		t.Fatalf("initial sync: %+v", stats)
+	}
+	fixture.corruptEntries(t)
+	if stats := fixture.run(t, WithRepair(true)); stats.TotalErrors != 0 || stats.TotalWritten != 2 {
+		t.Fatalf("repair folders: %+v", stats)
+	}
+	fixture.assertRepairedEntries(t)
 }

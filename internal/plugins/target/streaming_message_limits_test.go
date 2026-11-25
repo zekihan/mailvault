@@ -2,7 +2,6 @@ package target
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,66 +13,101 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
+type streamingLimitsFixture struct {
+	kind      string
+	raw       []byte
+	oversized []byte
+	value     plugins.Target
+	valid     int
+}
+
+func (fixture *streamingLimitsFixture) open(t *testing.T) {
+	t.Helper()
+	values := map[string]any{"path": filepath.Join(physicalTempDir(t), "backup"), "max_message_bytes": len(fixture.oversized), "max_listing_entries": 10, "max_listing_locator_bytes": 4096}
+	var err error
+	if fixture.kind == "maildir" {
+		fixture.value, err = NewMaildirTarget(values)
+	} else {
+		fixture.value, err = NewMboxTarget(values)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.value.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *streamingLimitsFixture) writeMessages(t *testing.T) {
+	t.Helper()
+	ctx := t.Context()
+	writer := mustAssert[plugins.BackupWriter](t, fixture.value)
+	for _, data := range [][]byte{fixture.raw, fixture.oversized} {
+		if _, err := writer.WriteBackupMessage(ctx, &plugins.Message{Raw: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (fixture *streamingLimitsFixture) tightenMessageLimit() {
+	switch target := fixture.value.(type) {
+	case *MaildirTarget:
+		target.maxMessageBytes = int64(len(fixture.raw))
+	case *MboxTarget:
+		target.maxMessageBytes = int64(len(fixture.raw))
+	}
+}
+
+func (fixture *streamingLimitsFixture) walk(t *testing.T) error {
+	t.Helper()
+	ctx := t.Context()
+	reader := mustAssert[plugins.TargetBackupReader](t, fixture.value)
+	valid := 0
+	err := plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
+		message, err := reader.ReadBackupMessage(ctx, entry.Locator)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(message.Raw, fixture.raw) {
+			t.Fatal("stream returned unexpected body")
+		}
+		valid++
+		return nil
+	})
+	fixture.valid = valid
+	return err
+}
+
+func (fixture *streamingLimitsFixture) check(t *testing.T, err error) {
+	t.Helper()
+	// Mbox rejects decoded oversize records before emitting their locator;
+	// Maildir rejects actual message bytes when the consumer reads the entry.
+	if !errors.Is(err, plugins.ErrMessageTooLarge) || fixture.valid > 1 {
+		t.Fatalf("message cap lost during streaming: valid=%d, error=%v", fixture.valid, err)
+	}
+	if fixture.kind == "mbox" && fixture.valid != 1 {
+		t.Fatalf("valid leading mbox record was not processed: %d", fixture.valid)
+	}
+	if target, ok := fixture.value.(*MboxTarget); ok {
+		entries, err := target.ListBackupMessages(t.Context())
+		if !errors.Is(err, plugins.ErrMessageTooLarge) || entries != nil {
+			t.Fatalf("partial mbox list escaped: %v, %v", entries, err)
+		}
+	}
+}
+
 func TestStreamingLocalBackupsRetainMessageAndListingLimits(t *testing.T) {
-	ctx := context.Background()
 	raw := []byte("Subject: fixture\n\n" + strings.Repeat("x", 32) + "\n")
 	oversized := append(bytes.Clone(raw), 'x', '\n')
 	for _, kind := range []string{"maildir", "mbox"} {
 		t.Run(kind, func(t *testing.T) {
-			values := map[string]any{"path": filepath.Join(physicalTempDir(t), "backup"), "max_message_bytes": len(oversized), "max_listing_entries": 10, "max_listing_locator_bytes": 4096}
-			var value plugins.Target
-			var err error
-			if kind == "maildir" {
-				value, err = NewMaildirTarget(values)
-			} else {
-				value, err = NewMboxTarget(values)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer value.Close()
-			if err := value.Initialize(ctx); err != nil {
-				t.Fatal(err)
-			}
-			writer := value.(plugins.BackupWriter)
-			for _, data := range [][]byte{raw, oversized} {
-				if _, err := writer.WriteBackupMessage(ctx, &plugins.Message{Raw: data}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			switch target := value.(type) {
-			case *MaildirTarget:
-				target.maxMessageBytes = int64(len(raw))
-			case *MboxTarget:
-				target.maxMessageBytes = int64(len(raw))
-			}
-			reader := value.(plugins.TargetBackupReader)
-			valid := 0
-			err = plugins.WalkBackupMessages(ctx, reader, func(entry plugins.BackupMessage) error {
-				message, err := reader.ReadBackupMessage(ctx, entry.Locator)
-				if err != nil {
-					return err
-				}
-				if !bytes.Equal(message.Raw, raw) {
-					t.Fatal("stream returned unexpected body")
-				}
-				valid++
-				return nil
-			})
-			// Mbox rejects decoded oversize records before emitting their locator;
-			// Maildir rejects actual message bytes when the consumer reads the entry.
-			if !errors.Is(err, plugins.ErrMessageTooLarge) || valid > 1 {
-				t.Fatalf("message cap lost during streaming: valid=%d, error=%v", valid, err)
-			}
-			if kind == "mbox" && valid != 1 {
-				t.Fatalf("valid leading mbox record was not processed: %d", valid)
-			}
-			if target, ok := value.(*MboxTarget); ok {
-				entries, err := target.ListBackupMessages(ctx)
-				if !errors.Is(err, plugins.ErrMessageTooLarge) || entries != nil {
-					t.Fatalf("partial mbox list escaped: %v, %v", entries, err)
-				}
-			}
+			fixture := &streamingLimitsFixture{kind: kind, raw: raw, oversized: oversized}
+			fixture.open(t)
+			defer fixture.value.Close()
+			fixture.writeMessages(t)
+			fixture.tightenMessageLimit()
+			err := fixture.walk(t)
+			fixture.check(t, err)
 		})
 	}
 }
@@ -92,13 +126,13 @@ func TestStreamingS3ReadRetainsActualMessageLimit(t *testing.T) {
 			count++
 		}
 		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
+		mustAssert[http.Flusher](t, w).Flush()
 		fmt.Fprint(w, strings.Repeat("x", count))
 	}, backupListingLimits{entries: 10, locatorBytes: 4096})
 	target.maxMessageBytes = 64
 	valid := 0
-	err := target.WalkBackupMessages(context.Background(), func(entry plugins.BackupMessage) error {
-		message, err := target.ReadBackupMessage(context.Background(), entry.Locator)
+	err := target.WalkBackupMessages(t.Context(), func(entry plugins.BackupMessage) error {
+		message, err := target.ReadBackupMessage(t.Context(), entry.Locator)
 		if err != nil {
 			return err
 		}

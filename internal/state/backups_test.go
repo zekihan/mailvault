@@ -1,7 +1,6 @@
 package state
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,16 +10,16 @@ import (
 )
 
 func TestBackupMessageManifestPreservesSourceIdentityAndMetadata(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	store, err := NewStore(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	want := plugins.BackupMessage{Source: "account", Target: "archive", Scope: "generation", Folder: "Sent", UID: "42", Locator: "new/message", RawSHA256: "abc", Flags: []string{"\\Seen"}, InternalDate: "2026-10-20T12:00:00Z"}
-	if err := store.RecordBackupMessage(context.Background(), want); err != nil {
+	if err := store.RecordBackupMessage(t.Context(), &want); err != nil {
 		t.Fatal(err)
 	}
-	got, found, err := store.FindBackupMessage(context.Background(), want.Source, want.Target, want.Scope, want.Folder, want.UID)
+	got, found, err := store.FindBackupMessage(t.Context(), want.Source, want.Target, want.Scope, want.Folder, want.UID)
 	if err != nil || !found {
 		t.Fatalf("find manifest: found=%t err=%v", found, err)
 	}
@@ -30,9 +29,9 @@ func TestBackupMessageManifestPreservesSourceIdentityAndMetadata(t *testing.T) {
 }
 
 func TestBackupMessagesByHashFiltersOrdersAndUsesIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := NewStore(path)
+	store, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +43,7 @@ func TestBackupMessagesByHashFiltersOrdersAndUsesIndex(t *testing.T) {
 		{Source: "0", Target: "archive", Scope: "a", Folder: "INBOX", UID: "1", Locator: "unrelated", RawSHA256: "other"},
 		{Source: "a", Target: "another-target", Scope: "a", Folder: "INBOX", UID: "1", Locator: "other-target", RawSHA256: "wanted"},
 	} {
-		if err := store.RecordBackupMessage(ctx, item); err != nil {
+		if err := store.RecordBackupMessage(ctx, &item); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,30 +86,30 @@ func TestBackupMessagesByHashFiltersOrdersAndUsesIndex(t *testing.T) {
 
 func TestBackupHashIndexIsAddedToExistingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := NewStore(path)
+	store, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`DROP INDEX idx_backup_messages_target_hash_order`); err != nil {
+	if _, err := store.db.ExecContext(t.Context(), `DROP INDEX idx_backup_messages_target_hash_order`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = NewStore(path)
+	store, err = NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	var exists bool
-	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_backup_messages_target_hash_order')`).Scan(&exists); err != nil || !exists {
+	if err := store.db.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_backup_messages_target_hash_order')`).Scan(&exists); err != nil || !exists {
 		t.Fatalf("composite index exists=%t err=%v", exists, err)
 	}
 }
 
 func TestLegacyBackupCandidatesRetainUnknownAndExcludeManifestedDeliveries(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	ctx := t.Context()
+	store, err := NewStore(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +123,7 @@ func TestLegacyBackupCandidatesRetainUnknownAndExcludeManifestedDeliveries(t *te
 	if err := store.MarkDelivered(ctx, "target", "hash:hash-one", "src", "INBOX", "1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "src", Target: "target", Scope: "scope", Folder: "INBOX", UID: "1", Locator: "object-1", RawSHA256: "hash-one"}); err != nil {
+	if err := store.RecordBackupMessage(ctx, &plugins.BackupMessage{Source: "src", Target: "target", Scope: "scope", Folder: "INBOX", UID: "1", Locator: "object-1", RawSHA256: "hash-one"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkDelivered(ctx, "target", "mid:unknown", "src", "INBOX", "2"); err != nil {
@@ -146,8 +145,8 @@ func TestLegacyBackupCandidatesRetainUnknownAndExcludeManifestedDeliveries(t *te
 }
 
 func TestLegacyCandidatesRecognizeContentKeyedPOPManifest(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	ctx := t.Context()
+	store, err := NewStore(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +154,7 @@ func TestLegacyCandidatesRecognizeContentKeyedPOPManifest(t *testing.T) {
 	if err := store.MarkDelivered(ctx, "target", "hash:original-hash", "pop", "INBOX", "sequence:1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "pop", Target: "target", Folder: "INBOX", UID: "content:original-hash", RawSHA256: "original-hash", Locator: "new/message"}); err != nil {
+	if err := store.RecordBackupMessage(ctx, &plugins.BackupMessage{Source: "pop", Target: "target", Folder: "INBOX", UID: "content:original-hash", RawSHA256: "original-hash", Locator: "new/message"}); err != nil {
 		t.Fatal(err)
 	}
 	candidates, err := store.LegacyBackupCandidates(ctx, "target")
@@ -164,26 +163,32 @@ func TestLegacyCandidatesRecognizeContentKeyedPOPManifest(t *testing.T) {
 	}
 }
 
-func TestBackupManifestListingAndSupersededObjects(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewStore(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	for _, item := range []plugins.BackupMessage{
+func recordBackupFixtures(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
+	items := []plugins.BackupMessage{
 		{Source: "z", Target: "archive", UID: "2", Locator: "second", Flags: []string{"seen"}},
 		{Source: "a", Target: "archive", UID: "1", Locator: "first"},
 		{Source: "a", Target: "other", UID: "1", Locator: "hidden"},
-	} {
-		if err := store.RecordBackupMessage(ctx, item); err != nil {
+	}
+	for i := range items {
+		if err := store.RecordBackupMessage(ctx, &items[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	items, err := store.BackupMessages(ctx, "archive")
+}
+
+func checkBackupManifest(t *testing.T, store *Store) {
+	t.Helper()
+	items, err := store.BackupMessages(t.Context(), "archive")
 	if err != nil || len(items) != 2 || items[0].Locator != "first" || items[1].Locator != "second" || len(items[1].Flags) != 1 {
 		t.Fatalf("manifest: %+v, %v", items, err)
 	}
+}
+
+func checkSupersededObjects(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	if err := store.MarkBackupObjectSuperseded(ctx, "archive", "old", "new"); err != nil {
 		t.Fatal(err)
 	}
@@ -194,17 +199,33 @@ func TestBackupManifestListingAndSupersededObjects(t *testing.T) {
 	if err != nil || len(objects) != 1 || !objects["old"] {
 		t.Fatalf("superseded: %v, %v", objects, err)
 	}
-	if _, err := store.db.ExecContext(ctx, `UPDATE backup_messages SET flags_json='invalid' WHERE target_name='archive'`); err != nil {
+}
+
+func checkInvalidFlagsRejected(t *testing.T, store *Store) {
+	t.Helper()
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE backup_messages SET flags_json='invalid' WHERE target_name='archive'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BackupMessages(ctx, "archive"); err == nil {
+	if _, err := store.BackupMessages(t.Context(), "archive"); err == nil {
 		t.Fatal("invalid flags accepted")
 	}
 }
 
+func TestBackupManifestListingAndSupersededObjects(t *testing.T) {
+	store, err := NewStore(t.Context(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	recordBackupFixtures(t, store)
+	checkBackupManifest(t, store)
+	checkSupersededObjects(t, store)
+	checkInvalidFlagsRejected(t, store)
+}
+
 func TestKnownUIDsAreScoped(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewStore(":memory:")
+	ctx := t.Context()
+	store, err := NewStore(t.Context(), ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

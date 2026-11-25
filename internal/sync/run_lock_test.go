@@ -18,102 +18,100 @@ import (
 
 type runLockSource struct {
 	fixtureSource
+
 	fetches *atomic.Int32
 }
 
-func (s *runLockSource) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
-	s.fetches.Add(1)
-	return s.fixtureSource.FetchMessages(ctx, folders, since, until)
+func (source *runLockSource) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
+	source.fetches.Add(1)
+	return source.fixtureSource.FetchMessages(ctx, folders, since, until)
 }
 
 type runLockTarget struct {
 	*target.MboxTarget
+
 	writes  *atomic.Int32
 	entered chan struct{}
 	release <-chan struct{}
 }
 
-func (t *runLockTarget) WriteMessage(ctx context.Context, message *plugins.Message) error {
-	if t.writes.Add(1) == 1 {
-		close(t.entered)
+func (runTarget *runLockTarget) WriteMessage(ctx context.Context, message *plugins.Message) error {
+	if runTarget.writes.Add(1) == 1 {
+		close(runTarget.entered)
 		select {
-		case <-t.release:
+		case <-runTarget.release:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	return t.MboxTarget.WriteMessage(ctx, message)
+	return runTarget.MboxTarget.WriteMessage(ctx, message)
 }
 
-func TestOverlappingRunWaitsWithoutFetchingAndCanCancel(t *testing.T) {
-	root := physicalTempDir(t)
+type runLockEngines struct {
+	engines []*SyncEngine
+	entered chan struct{}
+	release chan struct{}
+	fetches atomic.Int32
+	writes  atomic.Int32
+}
+
+func newRunLockEngines(t *testing.T, root string) *runLockEngines {
+	t.Helper()
 	database := filepath.Join(root, "state.db")
 	mailbox := filepath.Join(root, "archive.mbox")
-	entered, release := make(chan struct{}), make(chan struct{})
-	var fetches, writes atomic.Int32
+	locks := &runLockEngines{entered: make(chan struct{}), release: make(chan struct{})}
 	raw := []byte("Message-ID: <fixture@example.invalid>\r\n\r\nfixture body\r\n")
 	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "source", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "archive", Type: "mbox"}}, Pairs: []config.PairConfig{{Source: "source", Targets: []string{"archive"}}}}
-	engines := make([]*SyncEngine, 0, 2)
 	for range 2 {
-		store, err := state.NewStore(database)
+		locks.engines = append(locks.engines, newRunLockEngine(t, locks, cfg, database, mailbox, raw))
+	}
+	return locks
+}
+
+func newRunLockEngine(t *testing.T, locks *runLockEngines, cfg *config.Config, database, mailbox string, raw []byte) *SyncEngine {
+	t.Helper()
+	store, err := state.NewStore(t.Context(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := plugins.NewRegistry()
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) {
+		return &runLockSource{fixtureSource{name: "source", messages: []*plugins.Message{{UID: "1", Folder: "INBOX", Raw: raw}}}, &locks.fetches}, nil
+	})
+	registry.RegisterTarget("mbox", func(map[string]any) (plugins.Target, error) {
+		p, err := target.NewMboxTarget(map[string]any{"path": mailbox, "create_if_missing": true})
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
-		t.Cleanup(func() { _ = store.Close() })
-		registry := plugins.NewRegistry()
-		registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) {
-			return &runLockSource{fixtureSource: fixtureSource{name: "source", messages: []*plugins.Message{{UID: "1", Folder: "INBOX", Raw: raw}}}, fetches: &fetches}, nil
-		})
-		registry.RegisterTarget("mbox", func(map[string]interface{}) (plugins.Target, error) {
-			p, err := target.NewMboxTarget(map[string]interface{}{"path": mailbox, "create_if_missing": true})
-			if err != nil {
-				return nil, err
-			}
-			return &runLockTarget{MboxTarget: p.(*target.MboxTarget), writes: &writes, entered: entered, release: release}, nil
-		})
-		engine, err := NewSyncEngine(cfg, store, registry, WithMaxRetries(0))
-		if err != nil {
-			t.Fatal(err)
-		}
-		engines = append(engines, engine)
+		return &runLockTarget{MboxTarget: mustAssert[*target.MboxTarget](t, p), writes: &locks.writes, entered: locks.entered, release: locks.release}, nil
+	})
+	engine, err := NewSyncEngine(cfg, store, registry, WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
 	}
-	type outcome struct {
-		stats *SyncStats
-		err   error
+	return engine
+}
+
+type lockRunOutcome struct {
+	stats *SyncStats
+	err   error
+}
+
+func assertWaiterIdle(t *testing.T, locks *runLockEngines) {
+	t.Helper()
+	if locks.fetches.Load() != 1 || locks.writes.Load() != 1 {
+		t.Fatalf("waiter performed work: fetches=%d writes=%d", locks.fetches.Load(), locks.writes.Load())
 	}
-	firstDone := make(chan outcome, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	go func() { stats, err := engines[0].Run(ctx); firstDone <- outcome{stats, err} }()
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("first run did not reach its write")
-	}
-	finished := false
-	defer func() {
-		if !finished {
-			close(release)
-			<-firstDone
-		}
-	}()
-	waitingCtx, stop := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	defer stop()
-	_, err := engines[1].Run(waitingCtx)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("overlapping run did not wait for ownership: %v", err)
-	}
-	if fetches.Load() != 1 || writes.Load() != 1 {
-		t.Fatalf("waiter performed work: fetches=%d writes=%d", fetches.Load(), writes.Load())
-	}
-	close(release)
-	first := <-firstDone
-	finished = true
+}
+
+func assertRunLockResult(t *testing.T, locks *runLockEngines, mailbox string, raw []byte, first lockRunOutcome) {
+	t.Helper()
 	if first.err != nil {
 		t.Fatal(first.err)
 	}
 	assertStats(t, first.stats, 1, 0, 0)
-	second, err := engines[1].Run(context.Background())
+	second, err := locks.engines[1].Run(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,4 +123,38 @@ func TestOverlappingRunWaitsWithoutFetchingAndCanCancel(t *testing.T) {
 	if copies := bytes.Count(content, raw); copies != 1 {
 		t.Fatalf("overlapping runs left %d copies", copies)
 	}
+}
+
+func TestOverlappingRunWaitsWithoutFetchingAndCanCancel(t *testing.T) {
+	root := physicalTempDir(t)
+	mailbox := filepath.Join(root, "archive.mbox")
+	raw := []byte("Message-ID: <fixture@example.invalid>\r\n\r\nfixture body\r\n")
+	locks := newRunLockEngines(t, root)
+	firstDone := make(chan lockRunOutcome, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	go func() { stats, err := locks.engines[0].Run(ctx); firstDone <- lockRunOutcome{stats, err} }()
+	select {
+	case <-locks.entered:
+	case <-ctx.Done():
+		t.Fatal("first run did not reach its write")
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			close(locks.release)
+			<-firstDone
+		}
+	}()
+	waitingCtx, stop := context.WithTimeout(t.Context(), 80*time.Millisecond)
+	defer stop()
+	_, err := locks.engines[1].Run(waitingCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("overlapping run did not wait for ownership: %v", err)
+	}
+	assertWaiterIdle(t, locks)
+	close(locks.release)
+	first := <-firstDone
+	finished = true
+	assertRunLockResult(t, locks, mailbox, raw, first)
 }

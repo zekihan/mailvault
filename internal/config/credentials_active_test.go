@@ -10,17 +10,17 @@ import (
 
 func credentialConfigFile(t *testing.T, sourceRef, targetRef string) string {
 	t.Helper()
-	values := map[string]interface{}{
-		"sources": []interface{}{map[string]interface{}{"name": "active", "password_ref": "synthetic-value"}, map[string]interface{}{"name": "unused-source", "password_ref": sourceRef}},
-		"targets": []interface{}{map[string]interface{}{"name": "local", "config": map[string]interface{}{}}, map[string]interface{}{"name": "unused-target", "config": map[string]interface{}{"credentials_ref": targetRef}}},
-		"pairs":   []interface{}{map[string]interface{}{"source": "active", "targets": []string{"local"}}},
+	values := map[string]any{
+		"sources": []any{map[string]any{"name": "active", "password_ref": "synthetic-value"}, map[string]any{"name": "unused-source", "password_ref": sourceRef}},
+		"targets": []any{map[string]any{"name": "local", "config": map[string]any{}}, map[string]any{"name": "unused-target", "config": map[string]any{"credentials_ref": targetRef}}},
+		"pairs":   []any{map[string]any{"source": "active", "targets": []string{"local"}}},
 	}
 	encoded, err := json.Marshal(values)
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, encoded, 0600); err != nil {
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -60,11 +60,11 @@ func TestLoadRejectsMissingActiveCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, resource := range []string{"source", "target"} {
-		var values map[string]interface{}
+		var values map[string]any
 		if err := json.Unmarshal(encoded, &values); err != nil {
 			t.Fatal(err)
 		}
-		pair := values["pairs"].([]interface{})[0].(map[string]interface{})
+		pair := mustAssert[map[string]any](t, mustAssert[[]any](t, values["pairs"])[0])
 		if resource == "source" {
 			pair["source"] = "unused-source"
 		} else {
@@ -74,12 +74,63 @@ func TestLoadRejectsMissingActiveCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, data, 0600); err != nil {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
 			t.Fatalf("missing active %s credential accepted", resource)
 		}
+	}
+}
+
+func rewriteConfigPairSource(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	mustAssert[map[string]any](t, mustAssert[[]any](t, values["pairs"])[0])["source"] = "unused-source"
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertInvalidPassword(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("multiline source password accepted")
+	}
+	if strings.Contains(err.Error(), "synthetic") {
+		t.Fatal("error exposed credential")
+	}
+}
+
+func checkPasswordNormalization(t *testing.T, data, want string, invalid bool) {
+	t.Helper()
+	secretPath := filepath.Join(t.TempDir(), "fixture-value")
+	if err := os.WriteFile(secretPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := credentialConfigFile(t, "file:"+secretPath, "")
+	rewriteConfigPairSource(t, path)
+	cfg, err := Load(path)
+	if invalid {
+		assertInvalidPassword(t, err)
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources[1].PasswordRef != want {
+		t.Fatal("source password bytes not normalized as expected")
 	}
 }
 
@@ -97,43 +148,7 @@ func TestSourcePasswordFilesNormalizeOnlyLineTerminator(t *testing.T) {
 		{name: "embedded-CR", data: "synthetic\rvalue", invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			secretPath := filepath.Join(t.TempDir(), "fixture-value")
-			if err := os.WriteFile(secretPath, []byte(tc.data), 0600); err != nil {
-				t.Fatal(err)
-			}
-			path := credentialConfigFile(t, "file:"+secretPath, "")
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var values map[string]interface{}
-			if err := json.Unmarshal(raw, &values); err != nil {
-				t.Fatal(err)
-			}
-			values["pairs"].([]interface{})[0].(map[string]interface{})["source"] = "unused-source"
-			encoded, err := json.Marshal(values)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, encoded, 0600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := Load(path)
-			if tc.invalid {
-				if err == nil {
-					t.Fatal("multiline source password accepted")
-				}
-				if strings.Contains(err.Error(), "synthetic") {
-					t.Fatal("error exposed credential")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.Sources[1].PasswordRef != tc.want {
-				t.Fatal("source password bytes not normalized as expected")
-			}
+			checkPasswordNormalization(t, tc.data, tc.want, tc.invalid)
 		})
 	}
 }
@@ -151,10 +166,10 @@ func TestSourceEnvironmentAndLiteralPasswordsRejectNewlines(t *testing.T) {
 func TestTargetCredentialFilesKeepMultilineJSON(t *testing.T) {
 	data := "{\n  \"access_key_id\": \"synthetic-id\",\n  \"secret_access_key\": \"synthetic-key\"\n}\n"
 	path := filepath.Join(t.TempDir(), "fixture-json")
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &Config{Targets: []TargetConfig{{Name: "s3", Config: map[string]interface{}{"credentials_ref": "file:" + path}}}}
+	cfg := &Config{Targets: []TargetConfig{{Name: "s3", Config: map[string]any{"credentials_ref": "file:" + path}}}}
 	if err := expandCredentialRefs(cfg); err != nil {
 		t.Fatal(err)
 	}

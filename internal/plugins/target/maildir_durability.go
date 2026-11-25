@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 )
 
@@ -22,9 +23,9 @@ func syncMaildirDirectory(path string) error {
 	return syncOpenedMaildirDirectory(directory)
 }
 
-func (t *MaildirTarget) syncOpenedDirectory(directory *maildirDirectory) error {
-	if t.syncDir != nil {
-		if err := t.syncDir(directory.path); err != nil {
+func (target *MaildirTarget) syncOpenedDirectory(directory *maildirDirectory) error {
+	if target.syncDir != nil {
+		if err := target.syncDir(directory.path); err != nil {
 			return err
 		}
 	}
@@ -40,8 +41,7 @@ func closeMaildirCreations(created []maildirCreation) {
 
 func rollbackMaildirStructure(created []maildirCreation) error {
 	var result error
-	for i := len(created) - 1; i >= 0; i-- {
-		item := created[i]
+	for _, item := range slices.Backward(created) {
 		info, err := item.parent.root.Lstat(item.name)
 		if err == nil && !os.SameFile(info, item.directory.info) {
 			err = fmt.Errorf("newly created directory identity changed: %s", item.directory.path)
@@ -58,7 +58,7 @@ func rollbackMaildirStructure(created []maildirCreation) error {
 
 // Sync only newly created directories and their parents, children first. All
 // descriptors were acquired during creation; renamed paths are never reopened.
-func (t *MaildirTarget) syncStructure(created []maildirCreation) error {
+func (target *MaildirTarget) syncStructure(created []maildirCreation) error {
 	needed := map[string]*maildirDirectory{}
 	for _, item := range created {
 		needed[item.directory.path] = item.directory
@@ -70,18 +70,18 @@ func (t *MaildirTarget) syncStructure(created []maildirCreation) error {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i].path) > len(ordered[j].path) })
 	for _, directory := range ordered {
-		if err := t.syncOpenedDirectory(directory); err != nil {
+		if err := target.syncOpenedDirectory(directory); err != nil {
 			return fmt.Errorf("sync maildir directory %q: %w", directory.path, err)
 		}
 	}
 	return nil
 }
 
-func (t *MaildirTarget) rollbackPublication(directory *maildirDirectory, name string) error {
+func (target *MaildirTarget) rollbackPublication(directory *maildirDirectory, name string) error {
 	if err := directory.root.Remove(name); err != nil {
 		return fmt.Errorf("remove unconfirmed publication: %w", err)
 	}
-	if err := t.syncOpenedDirectory(directory); err != nil {
+	if err := target.syncOpenedDirectory(directory); err != nil {
 		return fmt.Errorf("sync publication rollback: %w", err)
 	}
 	return nil

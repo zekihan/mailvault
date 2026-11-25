@@ -51,7 +51,7 @@ func TestIMAPXOAUTH2SendsExpectedPayload(t *testing.T) {
 		}
 	})
 	src := &IMAPSource{host: host, port: port, username: "fixture-user", useTLS: false, connTimeout: time.Second, readTimeout: time.Second, tokenSource: func(context.Context) (string, error) { return "fixture-access-token", nil }}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	if err := src.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestIMAPXOAUTH2FailureRedactsEchoedPayload(t *testing.T) {
 		}
 	})
 	src := &IMAPSource{host: host, port: port, username: "fixture-user", useTLS: false, connTimeout: time.Second, readTimeout: time.Second, tokenSource: func(context.Context) (string, error) { return "sensitive-fixture-token", nil }}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	err := src.Connect(ctx)
 	if err == nil || strings.Contains(err.Error(), "sensitive-fixture-token") || strings.Contains(err.Error(), base64.StdEncoding.EncodeToString([]byte("user=fixture-user\x01auth=Bearer sensitive-fixture-token\x01\x01"))) {

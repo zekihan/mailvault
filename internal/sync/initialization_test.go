@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"testing"
 )
 
@@ -20,7 +19,7 @@ func TestEngineDryRunDoesNotInitializeOrMutateState(t *testing.T) {
 	if f.targets["first"].initializations != 0 || f.targets["second"].initializations != 0 {
 		t.Fatal("dry run initialized targets")
 	}
-	stats, err := f.store.Stats(context.Background())
+	stats, err := f.store.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

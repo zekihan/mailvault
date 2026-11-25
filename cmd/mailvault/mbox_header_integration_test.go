@@ -13,21 +13,19 @@ import (
 	"github.com/zekihan/mailvault/internal/state"
 )
 
-func TestMboxMalformedHeadersVerifyAndRestore(t *testing.T) {
-	ctx := context.Background()
-	previousStateDir := stateDir
-	stateDir = physicalTempDir(t)
-	t.Cleanup(func() { stateDir = previousStateDir })
-	backup, err := target.NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
+func malformedHeaderFixture(t *testing.T) ([]byte, *target.MboxTarget, string, *state.Store) {
+	t.Helper()
+	ctx := t.Context()
+	backup, err := target.NewMboxTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mbox := backup.(*target.MboxTarget)
+	mbox := mustAssert[*target.MboxTarget](t, backup)
 	mbox.SetName("archive")
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer mbox.Close()
+	t.Cleanup(func() { _ = mbox.Close() })
 	// The source may preserve malformed headers. Include mixed line endings,
 	// quoted From lines and no final newline to exercise the manifest's raw length.
 	raw := []byte("Subject: fixture\r\nFrom forged separator\n>From quoted once\r\n>>From quoted twice\nX-Fixture: value\r\n\r\nFrom body\n>From quoted body\r\nlast line without newline")
@@ -37,14 +35,19 @@ func TestMboxMalformedHeadersVerifyAndRestore(t *testing.T) {
 	}
 	key := plugins.TargetStateKey(mbox)
 	entry := plugins.BackupMessage{Source: "fixture", Target: key, Scope: "scope", Folder: "INBOX", UID: "1", Locator: locator, RawSHA256: dedup.ComputeContentHash(raw)}
-	store, err := state.NewStore(filepath.Join(stateDir, "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	if err := store.RecordBackupMessage(ctx, entry); err != nil {
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.RecordBackupMessage(ctx, &entry); err != nil {
 		t.Fatal(err)
 	}
+	return raw, mbox, key, store
+}
+
+func assertMalformedHeadersVerified(ctx context.Context, t *testing.T, raw []byte, mbox *target.MboxTarget, key string, store *state.Store) {
+	t.Helper()
 	report, err := verifyTargetWithStateTarget(ctx, "archive", key, mbox)
 	if err != nil || report.Scanned != 1 || report.Verified != 1 || report.Corrupt != 0 || report.Missing != 0 || report.Unverifiable != 0 {
 		t.Fatalf("verify malformed headers: %+v, %v", report, err)
@@ -62,4 +65,13 @@ func TestMboxMalformedHeadersVerifyAndRestore(t *testing.T) {
 	if !bytes.Equal(appender.appended[0].Raw, raw) {
 		t.Fatalf("restore changed raw bytes: got %q, want %q", appender.appended[0].Raw, raw)
 	}
+}
+
+func TestMboxMalformedHeadersVerifyAndRestore(t *testing.T) {
+	ctx := t.Context()
+	previousStateDir := stateDir
+	stateDir = physicalTempDir(t)
+	t.Cleanup(func() { stateDir = previousStateDir })
+	raw, mbox, key, store := malformedHeaderFixture(t)
+	assertMalformedHeadersVerified(ctx, t, raw, mbox, key, store)
 }

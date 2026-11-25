@@ -79,54 +79,87 @@ func TestXOAUTH2WirePayload(t *testing.T) {
 	}
 }
 
-func TestDeviceLoginAndRefresh(t *testing.T) {
-	var tokenRequests, devicePolls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+type deviceLoginFixture struct {
+	tokenRequests, devicePolls int
+}
+
+func (fixture *deviceLoginFixture) handle(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("parse form: %v", err)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/devicecode") {
-			if r.Form.Get("scope") == "" || r.Form.Get("client_id") != "synthetic-client" {
-				t.Errorf("device form missing required fields: %v", r.Form)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"device_code": "synthetic-device-code", "user_code": "ABCD-EFGH", "verification_uri": "https://example.invalid/device", "expires_in": 60, "interval": 1})
+			fixture.handleDeviceCode(t, w, r)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/token") {
-			tokenRequests++
-			switch r.Form.Get("grant_type") {
-			case "urn:ietf:params:oauth:grant-type:device_code":
-				devicePolls++
-				if devicePolls == 1 {
-					_ = json.NewEncoder(w).Encode(map[string]any{"error": "authorization_pending"})
-				} else {
-					_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-initial-access", "refresh_token": "synthetic-refresh", "expires_in": 1})
-				}
-			case "refresh_token":
-				if r.Form.Get("refresh_token") != "synthetic-refresh" {
-					t.Errorf("refresh token = %q", r.Form.Get("refresh_token"))
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-access", "refresh_token": "synthetic-rotated", "expires_in": 3600})
-			default:
-				t.Errorf("unexpected grant type %q", r.Form.Get("grant_type"))
-			}
+			fixture.handleToken(t, w, r)
 			return
 		}
 		http.NotFound(w, r)
-	}))
-	defer server.Close()
-	store := memoryStore{}
-	cfg := Config{ClientID: "synthetic-client", DeviceCodeURL: server.URL + "/devicecode", TokenURL: server.URL + "/token", HTTPClient: server.Client()}
+	})
+}
+
+func (fixture *deviceLoginFixture) handleDeviceCode(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if r.Form.Get("scope") == "" || r.Form.Get("client_id") != "synthetic-client" {
+		t.Errorf("device form missing required fields: %v", r.Form)
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"device_code": "synthetic-device-code", "user_code": "ABCD-EFGH", "verification_uri": "https://example.invalid/device", "expires_in": 60, "interval": 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *deviceLoginFixture) handleToken(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	fixture.tokenRequests++
+	switch r.Form.Get("grant_type") {
+	case "urn:ietf:params:oauth:grant-type:device_code":
+		fixture.handleDevicePoll(t, w)
+	case "refresh_token":
+		fixture.handleRefresh(t, w, r)
+	default:
+		t.Errorf("unexpected grant type %q", r.Form.Get("grant_type"))
+	}
+}
+
+func (fixture *deviceLoginFixture) handleDevicePoll(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	fixture.devicePolls++
+	if fixture.devicePolls == 1 {
+		if err := json.NewEncoder(w).Encode(map[string]any{"error": "authorization_pending"}); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-initial-access", "refresh_token": "synthetic-refresh", "expires_in": 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *deviceLoginFixture) handleRefresh(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if r.Form.Get("refresh_token") != "synthetic-refresh" {
+		t.Errorf("refresh token = %q", r.Form.Get("refresh_token"))
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-access", "refresh_token": "synthetic-rotated", "expires_in": 3600}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runDeviceLogin(ctx context.Context, t *testing.T, cfg *Config, store memoryStore) strings.Builder {
+	t.Helper()
 	var instructions strings.Builder
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if err := DeviceLogin(ctx, cfg, "account-key", store, &instructions); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(instructions.String(), "ABCD-EFGH") || strings.Contains(instructions.String(), "synthetic-access") {
-		t.Fatalf("unexpected device instructions: %q", instructions.String())
-	}
+	return instructions
+}
+
+func checkDeviceLoginSaved(t *testing.T, store memoryStore) tokenState {
+	t.Helper()
 	var saved tokenState
 	if err := json.Unmarshal([]byte(store["account-key"]), &saved); err != nil {
 		t.Fatal(err)
@@ -134,10 +167,34 @@ func TestDeviceLoginAndRefresh(t *testing.T) {
 	if saved.RefreshToken != "synthetic-refresh" {
 		t.Fatalf("saved refresh token = %q", saved.RefreshToken)
 	}
+	return saved
+}
+
+func expireDeviceLoginState(t *testing.T, store memoryStore, saved tokenState) {
+	t.Helper()
 	saved.Expiry = time.Now().Add(-time.Minute)
-	encoded, _ := json.Marshal(saved)
+	encoded, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store["account-key"] = string(encoded)
-	provider, err := NewTokenProvider(cfg, "account-key", store)
+}
+
+func TestDeviceLoginAndRefresh(t *testing.T) {
+	fixture := &deviceLoginFixture{}
+	server := httptest.NewServer(fixture.handle(t))
+	defer server.Close()
+	store := memoryStore{}
+	cfg := Config{ClientID: "synthetic-client", DeviceCodeURL: server.URL + "/devicecode", TokenURL: server.URL + "/token", HTTPClient: server.Client()}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	instructions := runDeviceLogin(ctx, t, &cfg, store)
+	if !strings.Contains(instructions.String(), "ABCD-EFGH") || strings.Contains(instructions.String(), "synthetic-access") {
+		t.Fatalf("unexpected device instructions: %q", instructions.String())
+	}
+	saved := checkDeviceLoginSaved(t, store)
+	expireDeviceLoginState(t, store, saved)
+	provider, err := NewTokenProvider(&cfg, "account-key", store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +202,12 @@ func TestDeviceLoginAndRefresh(t *testing.T) {
 	if err != nil || got != "synthetic-access" {
 		t.Fatalf("AccessToken() = %q, %v", got, err)
 	}
+	checkDeviceLoginRotated(t, store, fixture.tokenRequests)
+}
+
+func checkDeviceLoginRotated(t *testing.T, store memoryStore, tokenRequests int) {
+	t.Helper()
+	var saved tokenState
 	if err := json.Unmarshal([]byte(store["account-key"]), &saved); err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +222,9 @@ func TestOAuthErrorsDoNotLeakResponseBody(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"error":"invalid_grant","error_description":"secret-token-value"}`)
 	}))
 	defer server.Close()
-	cfg := Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}.normalized()
-	_, err := requestToken(context.Background(), cfg, url.Values{"grant_type": {"refresh_token"}})
+	rawCfg := Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}
+	cfg := rawCfg.normalized()
+	_, err := requestToken(t.Context(), &cfg, url.Values{"grant_type": {"refresh_token"}})
 	if err == nil || strings.Contains(err.Error(), "secret-token-value") {
 		t.Fatalf("error exposed response body: %v", err)
 	}
@@ -168,11 +232,11 @@ func TestOAuthErrorsDoNotLeakResponseBody(t *testing.T) {
 
 func TestCanceledTokenLookupDoesNotAccessKeyring(t *testing.T) {
 	store := &trackingStore{}
-	provider, err := NewTokenProvider(Config{ClientID: "synthetic-client"}, "account", store)
+	provider, err := NewTokenProvider(&Config{ClientID: "synthetic-client"}, "account", store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := provider.AccessToken(ctx); err == nil {
 		t.Fatal("canceled token lookup succeeded")
@@ -188,20 +252,20 @@ func TestCanceledTokenLookupDoesNotWaitForProviderGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &blockingStore{entered: make(chan struct{}), release: make(chan struct{}), state: string(state)}
-	provider, err := NewTokenProvider(Config{ClientID: "synthetic-client"}, "account", store)
+	provider, err := NewTokenProvider(&Config{ClientID: "synthetic-client"}, "account", store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		token, err := provider.AccessToken(context.Background())
+		token, err := provider.AccessToken(t.Context())
 		if err == nil && token != "cached-access" {
 			err = fmt.Errorf("unexpected access token %q", token)
 		}
 		firstDone <- err
 	}()
 	<-store.entered
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	secondDone := make(chan error, 1)
 	go func() { _, err := provider.AccessToken(ctx); secondDone <- err }()
 	cancel()
@@ -231,10 +295,11 @@ func TestDeviceLoginHonorsCancellation(t *testing.T) {
 		t.Error("token polling should not run after cancellation")
 	}))
 	defer server.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- DeviceLogin(ctx, Config{ClientID: "synthetic-client", DeviceCodeURL: server.URL + "/devicecode", TokenURL: server.URL + "/token", HTTPClient: server.Client()}, "account", memoryStore{}, &strings.Builder{})
+		deviceCfg := Config{ClientID: "synthetic-client", DeviceCodeURL: server.URL + "/devicecode", TokenURL: server.URL + "/token", HTTPClient: server.Client()}
+		done <- DeviceLogin(ctx, &deviceCfg, "account", memoryStore{}, &strings.Builder{})
 	}()
 	<-started
 	cancel()
@@ -259,8 +324,9 @@ func TestOAuthRequestsDoNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, downstream.URL+"/capture", http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	cfg := Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}.normalized()
-	if _, err := requestToken(context.Background(), cfg, url.Values{"grant_type": {"refresh_token"}}); err == nil {
+	rawCfg := Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}
+	cfg := rawCfg.normalized()
+	if _, err := requestToken(t.Context(), &cfg, url.Values{"grant_type": {"refresh_token"}}); err == nil {
 		t.Fatal("redirect response accepted")
 	}
 	if downstreamCalls != 0 {
@@ -274,13 +340,16 @@ func TestRefreshPreservesRefreshTokenWhenRotationOmitted(t *testing.T) {
 	}))
 	defer server.Close()
 	store := memoryStore{}
-	state, _ := json.Marshal(tokenState{RefreshToken: "synthetic-refresh", Expiry: time.Now().Add(-time.Minute)})
-	store["account"] = string(state)
-	provider, err := NewTokenProvider(Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}, "account", store)
+	state, err := json.Marshal(tokenState{RefreshToken: "synthetic-refresh", Expiry: time.Now().Add(-time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.AccessToken(context.Background()); err != nil {
+	store["account"] = string(state)
+	provider, err := NewTokenProvider(&Config{ClientID: "synthetic-client", TokenURL: server.URL + "/token", DeviceCodeURL: server.URL + "/devicecode", HTTPClient: server.Client()}, "account", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.AccessToken(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	var saved tokenState
@@ -292,9 +361,13 @@ func TestRefreshPreservesRefreshTokenWhenRotationOmitted(t *testing.T) {
 	}
 }
 
-func TestGoogleLoopbackLoginUsesStateAndPKCE(t *testing.T) {
-	var gotVerifier string
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+type loopbackTokenFixture struct {
+	gotVerifier string
+}
+
+func (fixture *loopbackTokenFixture) handle(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("parse token form: %v", err)
 			return
@@ -302,58 +375,91 @@ func TestGoogleLoopbackLoginUsesStateAndPKCE(t *testing.T) {
 		if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "google-client" || r.Form.Get("code") != "fixture-code" || r.Form.Get("redirect_uri") == "" {
 			t.Errorf("unexpected token form: %v", r.Form)
 		}
-		gotVerifier = r.Form.Get("code_verifier")
+		fixture.gotVerifier = r.Form.Get("code_verifier")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fixture-access", "refresh_token": "fixture-refresh", "expires_in": 3600})
-	}))
-	defer tokenServer.Close()
-	store := memoryStore{}
-	var output synchronizedBuffer
-	cfg := Config{Provider: "google", ClientID: "google-client", AuthorizationURL: "https://accounts.example.invalid/auth", TokenURL: tokenServer.URL, HTTPClient: tokenServer.Client()}
-	done := make(chan error, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	go func() { done <- LoopbackLogin(ctx, cfg, "account", store, &output) }()
+	})
+}
+
+func waitLoopbackOutput(t *testing.T, output *synchronizedBuffer) string {
+	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		<-time.After(time.Millisecond)
 	}
 	lines := strings.Split(output.String(), "\n")
 	if len(lines) < 2 {
 		t.Fatalf("missing authorization URL: %q", output.String())
 	}
-	authURL, err := url.Parse(lines[1])
+	return lines[1]
+}
+
+func parseLoopbackAuthURL(t *testing.T, output *synchronizedBuffer) url.Values {
+	t.Helper()
+	authLine := waitLoopbackOutput(t, output)
+	authURL, err := url.Parse(authLine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := authURL.Query()
-	if q.Get("code_challenge_method") != "S256" || q.Get("state") == "" {
-		t.Fatalf("authorization request missing state/PKCE: %v", q)
+	queryParams := authURL.Query()
+	if queryParams.Get("code_challenge_method") != "S256" || queryParams.Get("state") == "" {
+		t.Fatalf("authorization request missing state/PKCE: %v", queryParams)
 	}
-	redirect, err := url.Parse(q.Get("redirect_uri"))
+	return queryParams
+}
+
+func doLoopbackCallback(t *testing.T, queryParams url.Values, code string) {
+	t.Helper()
+	redirect, err := url.Parse(queryParams.Get("redirect_uri"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	callbackURL := *redirect
 	callbackURL.Path = ""
 	callbackQuery := callbackURL.Query()
-	callbackQuery.Set("state", q.Get("state"))
-	callbackQuery.Set("code", "fixture-code")
+	callbackQuery.Set("state", queryParams.Get("state"))
+	callbackQuery.Set("code", code)
 	callbackURL.RawQuery = callbackQuery.Encode()
-	response, err := http.Get(callbackURL.String())
+	request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL.String(), http.NoBody)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
+}
+
+func TestGoogleLoopbackLoginUsesStateAndPKCE(t *testing.T) {
+	fixture := &loopbackTokenFixture{}
+	tokenServer := httptest.NewServer(fixture.handle(t))
+	defer tokenServer.Close()
+	store := memoryStore{}
+	var output synchronizedBuffer
+	cfg := Config{Provider: "google", ClientID: "google-client", AuthorizationURL: "https://accounts.example.invalid/auth", TokenURL: tokenServer.URL, HTTPClient: tokenServer.Client()}
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	go func() { done <- LoopbackLogin(ctx, &cfg, "account", store, &output) }()
+	queryParams := parseLoopbackAuthURL(t, &output)
+	doLoopbackCallback(t, queryParams, "fixture-code")
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	checkLoopbackPKCE(t, fixture.gotVerifier, queryParams, &output)
+	checkLoopbackSaved(t, store)
+}
+
+func checkLoopbackPKCE(t *testing.T, gotVerifier string, queryParams url.Values, output *synchronizedBuffer) {
+	t.Helper()
 	challengeSum := sha256.Sum256([]byte(gotVerifier))
-	if gotVerifier == "" || q.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(challengeSum[:]) {
+	if gotVerifier == "" || queryParams.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(challengeSum[:]) {
 		t.Fatal("token exchange verifier did not match PKCE challenge")
 	}
 	if strings.Contains(output.String(), "fixture-access") || strings.Contains(output.String(), "fixture-refresh") {
 		t.Fatal("OAuth output leaked tokens")
 	}
+}
+
+func checkLoopbackSaved(t *testing.T, store memoryStore) {
+	t.Helper()
 	var saved tokenState
 	if err := json.Unmarshal([]byte(store["account"]), &saved); err != nil || saved.RefreshToken != "fixture-refresh" {
 		t.Fatalf("saved token state = %+v, %v", saved, err)
@@ -362,14 +468,14 @@ func TestGoogleLoopbackLoginUsesStateAndPKCE(t *testing.T) {
 
 func TestGoogleLoopbackRejectsStateAndHonorsCancellation(t *testing.T) {
 	var output synchronizedBuffer
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- LoopbackLogin(ctx, Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
+		done <- LoopbackLogin(ctx, &Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
 	}()
 	deadline := time.Now().Add(time.Second)
 	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		<-time.After(time.Millisecond)
 	}
 	if !strings.Contains(output.String(), "Open this URL") {
 		select {
@@ -393,14 +499,14 @@ func TestGoogleLoopbackRejectsStateAndHonorsCancellation(t *testing.T) {
 func TestGoogleLoopbackRejectsMismatchedState(t *testing.T) {
 	var output synchronizedBuffer
 	done := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() {
-		done <- LoopbackLogin(ctx, Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
+		done <- LoopbackLogin(ctx, &Config{Provider: "google", ClientID: "client"}, "account", memoryStore{}, &output)
 	}()
 	deadline := time.Now().Add(time.Second)
 	for !strings.Contains(output.String(), "Open this URL") && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		<-time.After(time.Millisecond)
 	}
 	lines := strings.Split(output.String(), "\n")
 	if len(lines) < 2 {
@@ -420,7 +526,8 @@ func TestGoogleLoopbackRejectsMismatchedState(t *testing.T) {
 	query.Set("state", "wrong-state")
 	query.Set("code", "fixture-code")
 	callback.RawQuery = query.Encode()
-	response, err := http.Get(callback.String())
+	request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), http.NoBody)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

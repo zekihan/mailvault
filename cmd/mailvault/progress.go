@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const progressTickInterval = 5 * time.Second
+
 func startSyncProgress(out io.Writer, dryRun bool) (func(string, string), func()) {
 	var mu sync.Mutex
 	statuses := make(map[string]string)
@@ -21,7 +23,7 @@ func startSyncProgress(out io.Writer, dryRun bool) (func(string, string), func()
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(progressTickInterval)
 		defer ticker.Stop()
 		for {
 			select {

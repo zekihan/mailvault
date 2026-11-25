@@ -16,7 +16,7 @@ import (
 func TestCredentialFileRejectsUnsafeReferences(t *testing.T) {
 	dir := t.TempDir()
 	regular := filepath.Join(dir, "regular")
-	if err := os.WriteFile(regular, []byte("synthetic-secret"), 0600); err != nil {
+	if err := os.WriteFile(regular, []byte("synthetic-secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	symlink := filepath.Join(dir, "symlink")
@@ -24,17 +24,12 @@ func TestCredentialFileRejectsUnsafeReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	fifo := filepath.Join(dir, "fifo")
-	if err := unix.Mkfifo(fifo, 0600); err != nil {
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Keep the socket path short enough for Darwin's sockaddr_un limit.
-	socketDir, err := os.MkdirTemp("/tmp", "mailvault-socket-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(socketDir)
+	socketDir := t.TempDir()
 	socket := filepath.Join(socketDir, "socket")
-	listener, err := net.Listen("unix", socket)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +50,7 @@ func TestCredentialFileRejectsUnsafeReferences(t *testing.T) {
 func TestCredentialFileSizeLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credential")
 	for _, size := range []int64{maxCredentialFileSize, maxCredentialFileSize + 1, 1 << 30} {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,15 +73,15 @@ func TestCredentialFileSizeLimit(t *testing.T) {
 
 func TestCredentialFileWritePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credential")
-	if err := os.WriteFile(path, []byte("synthetic-secret\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("synthetic-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []os.FileMode{0600, 0644, 0660, 0602} {
+	for _, mode := range []os.FileMode{0o600, 0o644, 0o660, 0o602} {
 		if err := os.Chmod(path, mode); err != nil {
 			t.Fatal(err)
 		}
 		value, err := resolveCredentialRef("file:" + path)
-		if mode&0022 != 0 {
+		if mode&0o022 != 0 {
 			if err == nil || value != "" {
 				t.Fatalf("writable mode %o accepted", mode)
 			}
@@ -96,29 +91,28 @@ func TestCredentialFileWritePermissions(t *testing.T) {
 	}
 }
 
-// Override only metadata, so ownership policy needs no chown privileges.
 type credentialOwnerInfo struct {
 	os.FileInfo
-	uid uint32
+
+	uid int
 }
 
-func (i credentialOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: i.uid} }
-
+func (i credentialOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: uint32(i.uid)} } // #nosec G115 -- test mock; UID fixtures are small ints, equality semantics preserved
 func TestCredentialFileOwnership(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credential")
-	if err := os.WriteFile(path, nil, 0600); err != nil {
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	current := uint32(os.Geteuid())
+	current := os.Geteuid()
 	other := current + 1
-	if other == 0 {
+	if other <= 0 {
 		other = 1
 	}
-	for _, uid := range []uint32{0, current, other} {
+	for _, uid := range []int{0, current, other} {
 		err := validateCredentialFile(credentialOwnerInfo{FileInfo: info, uid: uid})
 		if uid == other {
 			if err == nil {

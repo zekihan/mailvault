@@ -47,10 +47,10 @@ func TestBoundedSearchUIDs(t *testing.T) {
 }
 
 func TestListingConfiguration(t *testing.T) {
-	for _, constructor := range []func(map[string]interface{}) (plugins.Source, error){NewIMapSource, NewPOP3Source} {
+	for _, constructor := range []func(map[string]any) (plugins.Source, error){NewIMapSource, NewPOP3Source} {
 		for _, key := range []string{"max_listing_items", "max_listing_bytes"} {
-			for _, value := range []interface{}{-1, "unlimited", 1.5, math.Inf(1)} {
-				_, err := constructor(map[string]interface{}{"host": "example.invalid", "username": "fixture", "password_ref": "synthetic", key: value})
+			for _, value := range []any{-1, "unlimited", 1.5, math.Inf(1)} {
+				_, err := constructor(map[string]any{"host": "example.invalid", "username": "fixture", "password_ref": "synthetic", key: value})
 				if err == nil {
 					t.Errorf("accepted %s=%v", key, value)
 				}
@@ -61,66 +61,93 @@ func TestListingConfiguration(t *testing.T) {
 
 // The peer deliberately withholds a command completion/terminator after the
 // hostile response. Rejection must close the socket rather than drain forever.
+type listingFixtureServer struct {
+	protocol, response string
+	count              int
+	mutation           *atomic.Bool
+	closed             chan struct{}
+}
+
 func listingFixture(t *testing.T, protocol, response string, count int) (string, int, *atomic.Bool, <-chan struct{}) {
 	t.Helper()
-	mutation := &atomic.Bool{}
-	closed := make(chan struct{}, 8)
-	host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
-		defer func() { closed <- struct{}{} }()
-		if protocol == "imap" {
-			fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1 ESEARCH] fixture\r\n")
-		} else {
-			fmt.Fprint(conn, "+OK fixture\r\n")
+	fixture := &listingFixtureServer{protocol: protocol, response: response, count: count, mutation: &atomic.Bool{}, closed: make(chan struct{}, 8)}
+	host, port := protocolServer(t, fixture.serve)
+	return host, port, fixture.mutation, fixture.closed
+}
+
+func (fixture *listingFixtureServer) serve(conn net.Conn, _ <-chan struct{}) {
+	defer func() { fixture.closed <- struct{}{} }()
+	if fixture.protocol == "imap" {
+		fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1 ESEARCH] fixture\r\n")
+	} else {
+		fmt.Fprint(conn, "+OK fixture\r\n")
+	}
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) == 0 {
+			return
 		}
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			parts := strings.Fields(scanner.Text())
-			if len(parts) == 0 {
-				return
-			}
-			if protocol == "pop3" {
-				switch parts[0] {
-				case "USER", "PASS", "NOOP":
-					fmt.Fprint(conn, "+OK\r\n")
-				case "STAT":
-					fmt.Fprintf(conn, "+OK %d 100\r\n", count)
-				case "UIDL":
-					fmt.Fprint(conn, response)
-				case "RETR":
-					mutation.Store(true)
-					fmt.Fprint(conn, "-ERR fixture\r\n")
-				case "QUIT":
-					fmt.Fprint(conn, "+OK\r\n")
-					return
-				}
-				continue
-			}
-			if len(parts) < 2 {
-				return
-			}
-			tag := parts[0]
-			switch parts[1] {
-			case "LOGIN":
-				fmt.Fprintf(conn, "%s OK login\r\n", tag)
-			case "CAPABILITY":
-				fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1 ESEARCH\r\n%s OK caps\r\n", tag)
-			case "EXAMINE":
-				fmt.Fprintf(conn, "* 0 EXISTS\r\n%s OK selected\r\n", tag)
-			case "LIST":
-				fmt.Fprint(conn, response)
-			case "UID":
-				if len(parts) > 2 && parts[2] == "SEARCH" {
-					fmt.Fprintf(conn, "* ESEARCH (TAG \"%s\") UID ALL %s\r\n%s OK search\r\n", tag, response, tag)
-				} else {
-					mutation.Store(true)
-				}
-			case "CREATE", "APPEND":
-				mutation.Store(true)
-				fmt.Fprintf(conn, "%s BAD forbidden\r\n", tag)
-			}
+		if fixture.handleParts(conn, parts) {
+			return
 		}
-	})
-	return host, port, mutation, closed
+	}
+}
+
+func (fixture *listingFixtureServer) handleParts(conn net.Conn, parts []string) bool {
+	if fixture.protocol == "pop3" {
+		return fixture.handlePOP3(conn, parts)
+	}
+	return fixture.handleIMAP(conn, parts)
+}
+
+func (fixture *listingFixtureServer) handlePOP3(conn net.Conn, parts []string) bool {
+	switch parts[0] {
+	case "USER", "PASS", "NOOP":
+		fmt.Fprint(conn, "+OK\r\n")
+	case "STAT":
+		fmt.Fprintf(conn, "+OK %d 100\r\n", fixture.count)
+	case "UIDL":
+		fmt.Fprint(conn, fixture.response)
+	case "RETR":
+		fixture.mutation.Store(true)
+		fmt.Fprint(conn, "-ERR fixture\r\n")
+	case "QUIT":
+		fmt.Fprint(conn, "+OK\r\n")
+		return true
+	}
+	return false
+}
+
+func (fixture *listingFixtureServer) handleIMAP(conn net.Conn, parts []string) bool {
+	if len(parts) < 2 {
+		return true
+	}
+	tag := parts[0]
+	switch parts[1] {
+	case "LOGIN":
+		fmt.Fprintf(conn, "%s OK login\r\n", tag)
+	case "CAPABILITY":
+		fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1 ESEARCH\r\n%s OK caps\r\n", tag)
+	case "EXAMINE":
+		fmt.Fprintf(conn, "* 0 EXISTS\r\n%s OK selected\r\n", tag)
+	case "LIST":
+		fmt.Fprint(conn, fixture.response)
+	case "UID":
+		fixture.handleIMAPUID(conn, parts, tag)
+	case "CREATE", "APPEND":
+		fixture.mutation.Store(true)
+		fmt.Fprintf(conn, "%s BAD forbidden\r\n", tag)
+	}
+	return false
+}
+
+func (fixture *listingFixtureServer) handleIMAPUID(conn net.Conn, parts []string, tag string) {
+	if len(parts) > 2 && parts[2] == "SEARCH" {
+		fmt.Fprintf(conn, "* ESEARCH (TAG \"%s\") UID ALL %s\r\n%s OK search\r\n", tag, fixture.response, tag)
+		return
+	}
+	fixture.mutation.Store(true)
 }
 
 func TestIMAPListBudgetsAbortDiscoveryAndRestore(t *testing.T) {
@@ -137,7 +164,7 @@ func TestIMAPListBudgetsAbortDiscoveryAndRestore(t *testing.T) {
 				host, port, mutated, closed := listingFixture(t, "imap", tc.response, 0)
 				src := &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: tc.limits}
 				defer src.Close()
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 				defer cancel()
 				var err error
 				if restore {
@@ -180,7 +207,7 @@ func TestIMAPSearchRejectsHostileRangeOnWire(t *testing.T) {
 			host, port, mutated, _ := listingFixture(t, "imap", tc.response, 0)
 			src := &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: 10, bytes: tc.maxBytes}}
 			defer src.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
 			for range messages {
@@ -219,7 +246,7 @@ func TestPOP3ListingBudgets(t *testing.T) {
 			host, port, retrieved, closed := listingFixture(t, "pop3", tc.response, tc.count)
 			src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: tc.limits}
 			defer src.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
 			for range messages {
@@ -258,7 +285,7 @@ func TestPOP3BoundedUIDLAtLimitRetainsProtocolState(t *testing.T) {
 	host, port := mailtest.POP3Server(t, messages, nil)
 	src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: count, bytes: responseBytes}}
 	defer src.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	ctx = plugins.WithKnownUIDs(ctx, func(string, string) (map[string]bool, error) { return known, nil })
 	out, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
@@ -299,7 +326,7 @@ func TestPOP3UIDLUnsupportedUsesLazySequenceIdentities(t *testing.T) {
 	})
 	src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: 2, bytes: 1024}}
 	defer src.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	out, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
 	var uids []string
@@ -339,79 +366,119 @@ func TestIMAPListAtLimitPreservesDecodedMailboxNames(t *testing.T) {
 	})
 	src := &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: 3, bytes: 4096}}
 	defer src.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	folders, err := src.ListFolders(ctx)
-	if err != nil || !reflect.DeepEqual(folders, []string{"INBOX", "日本語"}) {
+	if err != nil || !reflect.DeepEqual(folders, []string{"INBOX", "日本語"}) { //nolint:gosmopolitan // Unicode (Han script) folder fixture; the byte-limit checks require multibyte runes
 		t.Fatalf("folders=%v err=%v", folders, err)
 	}
-	if _, err := src.EnsureMailbox(ctx, "日本語", true); err != nil {
+	if _, err := src.EnsureMailbox(ctx, "日本語", true); err != nil { //nolint:gosmopolitan // Unicode (Han script) folder fixture; the byte-limit checks require multibyte runes
 		t.Fatalf("restore check after streamed LIST: %v", err)
+	}
+}
+
+type pop3TLSFixture struct {
+	startTLS    bool
+	raw         string
+	certificate tls.Certificate
+}
+
+func (fixture *pop3TLSFixture) serve(t *testing.T, conn net.Conn, _ <-chan struct{}) {
+	t.Helper()
+	if fixture.startTLS {
+		if !fixture.servePlainSTLS(conn) {
+			return
+		}
+	}
+	secure := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{fixture.certificate}, MinVersion: tls.VersionTLS12})
+	if secure.HandshakeContext(t.Context()) != nil {
+		return
+	}
+	fixture.serveSecure(t, secure)
+}
+
+func (fixture *pop3TLSFixture) servePlainSTLS(conn net.Conn) bool {
+	fmt.Fprint(conn, "+OK fixture\r\n")
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "STLS" {
+		return false
+	}
+	fmt.Fprint(conn, "+OK start TLS\r\n")
+	return true
+}
+
+func (fixture *pop3TLSFixture) serveSecure(t *testing.T, secure *tls.Conn) {
+	t.Helper()
+	if !fixture.startTLS {
+		fmt.Fprint(secure, "+OK fixture\r\n")
+	}
+	scanner := bufio.NewScanner(secure)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) == 0 {
+			return
+		}
+		if fixture.handleCommand(secure, parts) {
+			return
+		}
+	}
+}
+
+func (fixture *pop3TLSFixture) handleCommand(secure *tls.Conn, parts []string) bool {
+	switch parts[0] {
+	case "USER", "PASS", "NOOP":
+		fmt.Fprint(secure, "+OK\r\n")
+	case "STAT":
+		fmt.Fprint(secure, "+OK 1 10000\r\n")
+	case "UIDL":
+		fmt.Fprint(secure, "+OK\r\n1 fixture-id\r\n.\r\n")
+	case "LIST":
+		fmt.Fprintf(secure, "+OK %s %d\r\n", parts[1], len(fixture.raw))
+	case "RETR":
+		fmt.Fprintf(secure, "+OK\r\n%s.\r\n", fixture.raw)
+	case "QUIT":
+		fmt.Fprint(secure, "+OK\r\n")
+		return true
+	}
+	return false
+}
+
+func openPOP3TLSListingSource(t *testing.T, startTLS bool, raw string) (*POP3Source, string, int) {
+	t.Helper()
+	certificate, roots := pop3TestCertificate(t)
+	fixture := &pop3TLSFixture{startTLS: startTLS, raw: raw, certificate: certificate}
+	host, port := protocolServer(t, func(conn net.Conn, stop <-chan struct{}) { fixture.serve(t, conn, stop) })
+	source := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", useTLS: !startTLS, startTLS: startTLS, tlsConfig: &tls.Config{RootCAs: roots}, connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: 1, bytes: 128}}
+	return source, host, port
+}
+
+func checkPOP3TLSListingBody(t *testing.T, source *POP3Source, raw string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	out, failures := source.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
+	count := 0
+	for msg := range out {
+		count++
+		if string(msg.Raw) != raw {
+			t.Errorf("message body changed: got %d bytes, want %d", len(msg.Raw), len(raw))
+		}
+	}
+	for err := range failures {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("messages=%d", count)
 	}
 }
 
 func TestPOP3TLSListingBudgetDoesNotLimitMessageBody(t *testing.T) {
 	for _, startTLS := range []bool{false, true} {
 		t.Run(fmt.Sprintf("starttls=%v", startTLS), func(t *testing.T) {
-			certificate, roots := pop3TestCertificate(t)
 			raw := "Subject: synthetic\r\n\r\n" + strings.Repeat("x", 10000) + "\r\n"
-			host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
-				if startTLS {
-					fmt.Fprint(conn, "+OK fixture\r\n")
-					line, err := bufio.NewReader(conn).ReadString('\n')
-					if err != nil || strings.TrimSpace(line) != "STLS" {
-						return
-					}
-					fmt.Fprint(conn, "+OK start TLS\r\n")
-				}
-				secure := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
-				if secure.Handshake() != nil {
-					return
-				}
-				if !startTLS {
-					fmt.Fprint(secure, "+OK fixture\r\n")
-				}
-				scanner := bufio.NewScanner(secure)
-				for scanner.Scan() {
-					parts := strings.Fields(scanner.Text())
-					if len(parts) == 0 {
-						return
-					}
-					switch parts[0] {
-					case "USER", "PASS", "NOOP":
-						fmt.Fprint(secure, "+OK\r\n")
-					case "STAT":
-						fmt.Fprint(secure, "+OK 1 10000\r\n")
-					case "UIDL":
-						fmt.Fprint(secure, "+OK\r\n1 fixture-id\r\n.\r\n")
-					case "LIST":
-						fmt.Fprintf(secure, "+OK %s %d\r\n", parts[1], len(raw))
-					case "RETR":
-						fmt.Fprintf(secure, "+OK\r\n%s.\r\n", raw)
-					case "QUIT":
-						fmt.Fprint(secure, "+OK\r\n")
-						return
-					}
-				}
-			})
-			src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", useTLS: !startTLS, startTLS: startTLS, tlsConfig: &tls.Config{RootCAs: roots}, connTimeout: time.Second, readTimeout: time.Second, limits: listingLimits{items: 1, bytes: 128}}
-			defer src.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			out, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
-			count := 0
-			for msg := range out {
-				count++
-				if string(msg.Raw) != raw {
-					t.Errorf("message body changed: got %d bytes, want %d", len(msg.Raw), len(raw))
-				}
-			}
-			for err := range failures {
-				t.Fatal(err)
-			}
-			if count != 1 {
-				t.Fatalf("messages=%d", count)
-			}
+			source, _, _ := openPOP3TLSListingSource(t, startTLS, raw)
+			defer source.Close()
+			checkPOP3TLSListingBody(t, source, raw)
 		})
 	}
 }

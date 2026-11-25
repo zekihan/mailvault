@@ -7,11 +7,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 func destinationFingerprint(values ...string) string {
-	data, _ := json.Marshal(values)
+	data, _ := json.Marshal(values) //nolint:errcheck,errchkjson // marshaling []string cannot fail; hash input must stay stable
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }
@@ -39,8 +40,8 @@ func canonicalDestinationPath(path string) string {
 	if err != nil {
 		return abs
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		resolved = filepath.Join(resolved, missing[i])
+	for _, part := range slices.Backward(missing) {
+		resolved = filepath.Join(resolved, part)
 	}
 	return filepath.Clean(resolved)
 }

@@ -33,27 +33,28 @@ func (c listingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 type listingPageBody struct {
 	io.ReadCloser
+
 	remaining int64
 }
 
-func (b *listingPageBody) Read(p []byte) (int, error) {
-	if len(p) == 0 {
+func (body *listingPageBody) Read(data []byte) (int, error) {
+	if len(data) == 0 {
 		return 0, nil
 	}
-	if b.remaining == 0 {
+	if body.remaining == 0 {
 		var probe [1]byte
-		n, err := b.ReadCloser.Read(probe[:])
+		n, err := body.ReadCloser.Read(probe[:])
 		if n > 0 {
-			_ = b.Close()
+			_ = body.Close()
 			return 0, fmt.Errorf("%w: S3 listing page exceeds %d bytes", plugins.ErrBackupListingLimit, maxS3ListingPageBytes)
 		}
 		return 0, err
 	}
-	if int64(len(p)) > b.remaining {
-		p = p[:b.remaining]
+	if int64(len(data)) > body.remaining {
+		data = data[:body.remaining]
 	}
-	n, err := b.ReadCloser.Read(p)
-	b.remaining -= int64(n)
+	n, err := body.ReadCloser.Read(data)
+	body.remaining -= int64(n)
 	return n, err
 }
 

@@ -15,6 +15,11 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins/config"
 )
 
+const (
+	mboxDirPerms  = 0o700
+	mboxFilePerms = 0o600
+)
+
 // MboxTarget implements the Target interface for mbox format.
 type MboxTarget struct {
 	listingLimits   backupListingLimits
@@ -28,7 +33,7 @@ type MboxTarget struct {
 	mu              sync.Mutex
 }
 
-func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
+func NewMboxTarget(configMap map[string]any) (plugins.Target, error) {
 	limits, err := parseBackupListingLimits(configMap)
 	if err != nil {
 		return nil, err
@@ -37,16 +42,25 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 	if limitErr != nil {
 		return nil, limitErr
 	}
-	path, _ := config.ParseString(configMap, config.TargetConfigPath, "")
-	create, _ := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
+	path, err := config.ParseString(configMap, config.TargetConfigPath, "")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.TargetConfigPath, err)
+	}
+	create, err := config.ParseBool(configMap, config.TargetConfigCreateIfMissing, true)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", config.TargetConfigCreateIfMissing, err)
+	}
 
 	if path == "" {
 		return nil, errors.New("path is required")
 	}
 
-	// Expand home directory
+	// Expand home directory.
 	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("expand home directory: %w", err)
+		}
 		path = filepath.Join(home, path[2:])
 	}
 
@@ -60,141 +74,123 @@ func NewMboxTarget(configMap map[string]interface{}) (plugins.Target, error) {
 }
 
 // SetName sets the target name (called by registry).
-func (t *MboxTarget) SetName(name string) {
-	t.name = name
+func (target *MboxTarget) SetName(name string) {
+	target.name = name
 }
 
-func (t *MboxTarget) Name() string {
-	return t.name
+func (target *MboxTarget) Name() string {
+	return target.name
 }
 
-func (t *MboxTarget) Type() string {
+func (target *MboxTarget) Type() string {
 	return "mbox"
 }
 
-func (t *MboxTarget) DestinationIdentity() string {
-	return destinationFingerprint(t.Type(), canonicalDestinationPath(t.path))
+func (target *MboxTarget) DestinationIdentity() string {
+	return destinationFingerprint(target.Type(), canonicalDestinationPath(target.path))
 }
 
-func (t *MboxTarget) Initialize(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (target *MboxTarget) Initialize(ctx context.Context) error {
+	target.mu.Lock()
+	defer target.mu.Unlock()
 
 	// Do not create either the parent directory or mailbox when disabled.
-	dir := filepath.Dir(t.path)
+	dir := filepath.Dir(target.path)
 	flags := os.O_RDWR | os.O_APPEND
-	if t.create {
-		if err := os.MkdirAll(dir, 0700); err != nil {
+	if target.create {
+		if err := os.MkdirAll(dir, mboxDirPerms); err != nil {
 			return fmt.Errorf("create mbox directory: %w", err)
 		}
 		flags |= os.O_CREATE
 	}
 
-	// Open mbox file for appending
-	file, err := openMboxFile(t.path, flags, 0600)
+	file, err := openMboxFile(target.path, flags, mboxFilePerms)
 	if err != nil {
 		return fmt.Errorf("open mbox file: %w", err)
 	}
-	t.file = file
+	target.file = file
 
 	return nil
 }
 
-func (t *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
-	_, err := t.WriteBackupMessage(ctx, msg)
+func (target *MboxTarget) WriteMessage(ctx context.Context, msg *plugins.Message) error {
+	_, err := target.WriteBackupMessage(ctx, msg)
 	return err
 }
 
-func (t *MboxTarget) LastBackupLocator() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.lastLocator
+func (target *MboxTarget) LastBackupLocator() string {
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	return target.lastLocator
 }
 
-func (t *MboxTarget) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
-	return t.WriteBackupMessage(ctx, msg)
+func (target *MboxTarget) WriteRepairMessage(ctx context.Context, msg *plugins.Message) (string, error) {
+	return target.WriteBackupMessage(ctx, msg)
 }
 
-func (t *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Message) (locator string, err error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.lastLocator = ""
-	// Mbox adds a final newline to unterminated messages. Reserve that byte
-	// within the decoded limit so physical listing/verification can read it.
+func (target *MboxTarget) WriteBackupMessage(ctx context.Context, msg *plugins.Message) (_ string, err error) {
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	target.lastLocator = ""
 	decodedBytes := int64(len(msg.Raw))
 	if len(msg.Raw) > 0 && msg.Raw[len(msg.Raw)-1] != '\n' {
 		decodedBytes++
 	}
-	if err := plugins.CheckMessageSize(decodedBytes, t.maxMessageBytes); err != nil {
+	if err := plugins.CheckMessageSize(decodedBytes, target.maxMessageBytes); err != nil {
 		return "", err
 	}
 
-	if t.file == nil {
+	if target.file == nil {
 		return "", errors.New("mbox not initialized")
 	}
-	if t.broken != nil {
-		return "", t.broken
+	if target.broken != nil {
+		return "", target.broken
 	}
-	if err := lockMbox(ctx, t.file); err != nil {
+	if err := lockMbox(ctx, target.file); err != nil {
 		return "", fmt.Errorf("lock mbox: %w", err)
 	}
 	defer func() {
-		if unlockErr := unlockMbox(t.file); unlockErr != nil {
-			t.broken = fmt.Errorf("unlock mbox: %w", unlockErr)
-			err = errors.Join(err, t.broken)
+		if unlockErr := unlockMbox(target.file); unlockErr != nil {
+			target.broken = fmt.Errorf("unlock mbox: %w", unlockErr)
+			err = errors.Join(err, target.broken)
 		}
 	}()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	info, err := t.file.Stat()
+	info, err := target.statMboxFile()
 	if err != nil {
-		return "", fmt.Errorf("stat mbox: %w", err)
+		return "", err
 	}
-	if !info.Mode().IsRegular() {
-		return "", errors.New("mbox must be a regular file")
+	padding, err := target.mboxBoundaryPadding(info)
+	if err != nil {
+		return "", err
 	}
-	var padding []byte
-	if info.Size() > 0 {
-		var lastByte [1]byte
-		if _, err := t.file.ReadAt(lastByte[:], info.Size()-1); err != nil {
-			return "", fmt.Errorf("read mbox boundary: %w", err)
-		}
-		if lastByte[0] != '\n' {
-			padding = []byte{'\n'}
-		}
-	}
-
-	// Escape every raw line using mboxrd, including malformed headers: the
-	// reader recognizes "From " separators throughout the record.
 	raw := escapeMboxrd(msg.Raw)
 	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
 		raw = append(raw, '\n')
 	}
+	record := buildMboxRecord(raw)
+	writeData := joinMboxWrite(padding, record)
+	if err := target.appendMboxRecord(writeData, info.Size()); err != nil {
+		return "", err
+	}
+	target.lastLocator = fmt.Sprintf("%d:%d:%d:%d", info.Size()+int64(len(padding)), len(record), len(raw), len(msg.Raw))
+	return target.lastLocator, nil
+}
 
-	// Append a complete record under the inode lock. On any failure restore
-	// the original length before another writer or retry can append.
+func buildMboxRecord(raw []byte) []byte {
 	fromLine := fmt.Sprintf("From MAILER-DAEMON %s\n", time.Now().Format(time.ANSIC))
 	record := append([]byte(fromLine), raw...)
 	record = append(record, '\n')
-	writeData := append(padding, record...)
-	n, writeErr := t.file.Write(writeData)
-	if writeErr == nil && n != len(writeData) {
-		writeErr = errors.New("short write")
-	}
-	if writeErr == nil {
-		writeErr = t.file.Sync()
-	}
-	if writeErr != nil {
-		rollbackErr := errors.Join(t.file.Truncate(info.Size()), t.file.Sync())
-		if rollbackErr != nil {
-			t.broken = fmt.Errorf("mbox rollback failed; refusing further appends: %w", rollbackErr)
-		}
-		return "", errors.Join(fmt.Errorf("append mbox: %w", writeErr), t.broken)
-	}
+	return record
+}
 
-	t.lastLocator = fmt.Sprintf("%d:%d:%d:%d", info.Size()+int64(len(padding)), len(record), len(raw), len(msg.Raw))
-	return t.lastLocator, nil
+func joinMboxWrite(padding, record []byte) []byte {
+	writeData := make([]byte, 0, len(padding)+len(record))
+	writeData = append(writeData, padding...)
+	writeData = append(writeData, record...)
+	return writeData
 }
 
 func escapeMboxrd(raw []byte) []byte {
@@ -226,14 +222,62 @@ func escapeMboxrd(raw []byte) []byte {
 	return out
 }
 
-func (t *MboxTarget) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (target *MboxTarget) Close() error {
+	target.mu.Lock()
+	defer target.mu.Unlock()
 
-	if t.file != nil {
-		err := t.file.Close()
-		t.file = nil
+	if target.file != nil {
+		err := target.file.Close()
+		target.file = nil
 		return err
 	}
 	return nil
+}
+
+func (target *MboxTarget) statMboxFile() (os.FileInfo, error) {
+	info, err := target.file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat mbox: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("mbox must be a regular file")
+	}
+	return info, nil
+}
+
+func (target *MboxTarget) mboxBoundaryPadding(info os.FileInfo) ([]byte, error) {
+	padding := make([]byte, 0, 1)
+	if info.Size() == 0 {
+		return padding, nil
+	}
+	var lastByte [1]byte
+	if _, err := target.file.ReadAt(lastByte[:], info.Size()-1); err != nil {
+		return nil, fmt.Errorf("read mbox boundary: %w", err)
+	}
+	if lastByte[0] != '\n' {
+		padding = []byte{'\n'}
+	}
+	return padding, nil
+}
+
+func (target *MboxTarget) appendMboxRecord(writeData []byte, fileSize int64) error {
+	n, writeErr := target.file.Write(writeData)
+	if writeErr == nil && n != len(writeData) {
+		writeErr = errors.New("short write")
+	}
+	if writeErr == nil {
+		writeErr = target.file.Sync()
+	}
+	if writeErr != nil {
+		target.rollbackMboxAppend(fileSize)
+		return errors.Join(fmt.Errorf("append mbox: %w", writeErr), target.broken)
+	}
+	return nil
+}
+
+func (target *MboxTarget) rollbackMboxAppend(fileSize int64) {
+	rollbackErr := errors.Join(target.file.Truncate(fileSize), target.file.Sync())
+	if rollbackErr != nil {
+		target.broken = fmt.Errorf("mbox rollback failed; refusing further appends: %w", rollbackErr)
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,43 +16,56 @@ import (
 	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
+type oversizedLiteralServer struct {
+	size int64
+}
+
+func (server *oversizedLiteralServer) serve(conn net.Conn, _ <-chan struct{}) {
+	fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) < 2 {
+			return
+		}
+		server.handleCommand(conn, parts)
+	}
+}
+
+func (server *oversizedLiteralServer) handleCommand(conn net.Conn, parts []string) {
+	switch parts[1] {
+	case "LOGIN":
+		fmt.Fprintf(conn, "%s OK authenticated\r\n", parts[0])
+	case "CAPABILITY":
+		fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1\r\n%s OK capabilities\r\n", parts[0])
+	case "EXAMINE":
+		fmt.Fprintf(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\n%s OK selected\r\n", parts[0])
+	case "UID":
+		server.handleUID(conn, parts)
+	}
+}
+
+func (server *oversizedLiteralServer) handleUID(conn net.Conn, parts []string) {
+	if parts[2] == "SEARCH" {
+		fmt.Fprintf(conn, "* SEARCH 1\r\n%s OK searched\r\n", parts[0])
+		return
+	}
+	// Only the size is sent. A body read would block until the test deadline.
+	fmt.Fprintf(conn, "* 1 FETCH (UID 1 BODY[] {%d}\r\n", server.size)
+	if server.size == 1026 {
+		// Exercise cleanup when response bytes are already buffered,
+		// including enough extra items to block an undrained decoder.
+		fmt.Fprint(conn, strings.Repeat("x", int(server.size)), strings.Repeat(" FLAGS ()", 40), " BODY[] {1}\r\nx)\r\n")
+	}
+}
+
 func TestIMAPRejectsOversizedLiteralWithoutReadingBody(t *testing.T) {
 	for _, size := range []int64{1025, 1 << 40, 1026} {
-		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
-				fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
-				scanner := bufio.NewScanner(conn)
-				for scanner.Scan() {
-					parts := strings.Fields(scanner.Text())
-					if len(parts) < 2 {
-						return
-					}
-					switch parts[1] {
-					case "LOGIN":
-						fmt.Fprintf(conn, "%s OK authenticated\r\n", parts[0])
-					case "CAPABILITY":
-						fmt.Fprintf(conn, "* CAPABILITY IMAP4rev1\r\n%s OK capabilities\r\n", parts[0])
-					case "EXAMINE":
-						fmt.Fprintf(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\n%s OK selected\r\n", parts[0])
-					case "UID":
-						if parts[2] == "SEARCH" {
-							fmt.Fprintf(conn, "* SEARCH 1\r\n%s OK searched\r\n", parts[0])
-						} else {
-							// Only the size is sent. A body read would block until the test deadline.
-							fmt.Fprintf(conn, "* 1 FETCH (UID 1 BODY[] {%d}\r\n", size)
-							if size == 1026 {
-								// Exercise cleanup when response bytes are already buffered,
-								// including enough extra items to block an undrained decoder.
-								fmt.Fprint(conn, strings.Repeat("x", int(size)), strings.Repeat(" FLAGS ()", 40), " BODY[] {1}\r\nx)\r\n")
-							}
-
-						}
-					}
-				}
-			})
+		t.Run(strconv.FormatInt(size, 10), func(t *testing.T) {
+			host, port := protocolServer(t, (&oversizedLiteralServer{size: size}).serve)
 			src := &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", maxConns: 1, maxMessageBytes: 1024, connTimeout: time.Second, readTimeout: 5 * time.Second}
 			defer src.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
 			for range messages {
@@ -70,7 +84,7 @@ func TestIMAPRejectsOversizedLiteralWithoutReadingBody(t *testing.T) {
 
 func TestPOP3RejectsUnadvertisedOverflowAndLISTOversize(t *testing.T) {
 	for _, advertised := range []int{1, 65} {
-		t.Run(fmt.Sprint(advertised), func(t *testing.T) {
+		t.Run(strconv.Itoa(advertised), func(t *testing.T) {
 			retr := make(chan struct{}, 1)
 			host, port := protocolServer(t, func(conn net.Conn, _ <-chan struct{}) {
 				fmt.Fprint(conn, "+OK ready\r\n")
@@ -95,7 +109,7 @@ func TestPOP3RejectsUnadvertisedOverflowAndLISTOversize(t *testing.T) {
 			})
 			src := &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", maxMessageBytes: 64, connTimeout: time.Second, readTimeout: 5 * time.Second}
 			defer src.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
 			for range messages {
@@ -134,10 +148,55 @@ func TestPOP3BoundedBodyPreservesBytesAcrossFragments(t *testing.T) {
 	}
 }
 
+func backpressureLimit() int64 {
+	return int64(len(fmt.Sprintf("Message-ID: <pool-%d@example.invalid>\r\nSubject: %d\r\n\r\nbody-%d\r\n", 50, 50, 50)))
+}
+
+func openBackpressureSource(t *testing.T, kind string, limit int64) (plugins.Source, int) {
+	t.Helper()
+	if kind == "imap" {
+		pool := newIMAPPoolFixture(t, 50, false)
+		return &IMAPSource{host: pool.host, port: pool.port, username: "fixture", password: "synthetic", maxConns: 2, maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}, 2
+	}
+	fixture := make([]mailtest.POP3Message, 50)
+	for i := range fixture {
+		fixture[i] = mailtest.POP3Message{UID: strconv.Itoa(i), Raw: strings.Repeat("x", int(limit)-2) + "\r\n"}
+	}
+	host, port := mailtest.POP3Server(t, fixture, nil)
+	return &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}, 1
+}
+
+func checkBackpressureBound(ctx context.Context, t *testing.T, fetched <-chan int, workers int, limit int64, messages <-chan *plugins.Message) {
+	t.Helper()
+	// The target consumes one message and blocks. At most one per worker plus
+	// one in the retry relay can remain resident, besides the target's message.
+	select {
+	case <-messages:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	maxFetched := workers + 2
+	for range maxFetched {
+		select {
+		case <-fetched:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	select {
+	case n := <-fetched:
+		t.Fatalf("fetched %d while target blocked; raw byte budget is %d", n, int64(maxFetched)*limit)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if cap(messages) != 0 {
+		t.Fatalf("source queue capacity=%d", cap(messages))
+	}
+}
+
 func TestSourcesApplyBackpressureBehindBlockedTarget(t *testing.T) {
 	for _, kind := range []string{"imap", "pop3"} {
 		t.Run(kind, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			fetched := make(chan int, 100)
 			ctx = plugins.WithFetchProgress(ctx, func(progress plugins.FetchProgress) {
@@ -145,46 +204,11 @@ func TestSourcesApplyBackpressureBehindBlockedTarget(t *testing.T) {
 					fetched <- progress.Fetched
 				}
 			})
-			var src plugins.Source
-			limit := int64(len(fmt.Sprintf("Message-ID: <pool-%d@example.invalid>\r\nSubject: %d\r\n\r\nbody-%d\r\n", 50, 50, 50)))
-			workers := 2
-			if kind == "imap" {
-				host, port, _, _, _, _ := imapPoolFixture(t, 50, false)
-				src = &IMAPSource{host: host, port: port, username: "fixture", password: "synthetic", maxConns: workers, maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}
-			} else {
-				workers = 1
-				fixture := make([]mailtest.POP3Message, 50)
-				for i := range fixture {
-					fixture[i] = mailtest.POP3Message{UID: fmt.Sprint(i), Raw: strings.Repeat("x", int(limit)-2) + "\r\n"}
-				}
-				host, port := mailtest.POP3Server(t, fixture, nil)
-				src = &POP3Source{host: host, port: port, username: "fixture", password: "synthetic", maxMessageBytes: limit, connTimeout: time.Second, readTimeout: time.Second}
-			}
+			limit := backpressureLimit()
+			src, workers := openBackpressureSource(t, kind, limit)
 			defer func() { cancel(); _ = src.Close() }()
 			messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 0, 0)
-			// The target consumes one message and blocks. At most one per worker plus
-			// one in the retry relay can remain resident, besides the target's message.
-			select {
-			case <-messages:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			maxFetched := workers + 2
-			for n := 0; n < maxFetched; n++ {
-				select {
-				case <-fetched:
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
-			}
-			select {
-			case n := <-fetched:
-				t.Fatalf("fetched %d while target blocked; raw byte budget is %d", n, int64(maxFetched)*limit)
-			case <-time.After(100 * time.Millisecond):
-			}
-			if cap(messages) != 0 {
-				t.Fatalf("source queue capacity=%d", cap(messages))
-			}
+			checkBackpressureBound(ctx, t, fetched, workers, limit, messages)
 			cancel()
 			for range messages {
 			}
@@ -196,7 +220,7 @@ func TestSourcesApplyBackpressureBehindBlockedTarget(t *testing.T) {
 
 func TestRestoreAppendRejectsOversizeBeforeConnecting(t *testing.T) {
 	src := &IMAPSource{maxMessageBytes: 4}
-	err := src.AppendMessage(context.Background(), "Restored", &plugins.Message{Raw: []byte("large")}, "7")
+	err := src.AppendMessage(t.Context(), "Restored", &plugins.Message{Raw: []byte("large")}, "7")
 	if !errors.Is(err, plugins.ErrMessageTooLarge) {
 		t.Fatalf("oversized APPEND reached transport: %v", err)
 	}

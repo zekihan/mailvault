@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,13 @@ import (
 
 // Set by the release build's -X main.version linker flag.
 var version = "dev"
+
+const (
+	defaultSyncConcurrency = 5
+	defaultMaxRetries      = 3
+)
+
+const stateDirPerms = 0o750
 
 var (
 	cfgFile       string
@@ -59,7 +67,10 @@ func init() {
 	rootCmd.AddCommand(newStateCleanupCommand())
 	rootCmd.AddCommand(newVerifyCommand())
 	repairCmd := &cobra.Command{Use: "repair", Short: "Repair a source-to-target backup after verification", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-		apply, _ := cmd.Flags().GetBool("apply")
+		apply, err := cmd.Flags().GetBool("apply")
+		if err != nil {
+			return fmt.Errorf("read apply flag: %w", err)
+		}
 		if !apply {
 			return errors.New("repair writes backup data; pass --apply to continue")
 		}
@@ -78,7 +89,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output JSON instead of human-readable format")
 	rootCmd.PersistentFlags().StringVar(&stateDir, "state-dir", "", "directory for state database (default: ~/.local/share/mailvault)")
 
-	// Sync command
+	// Sync command.
 	syncCmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Synchronize mail from sources to targets",
@@ -89,12 +100,12 @@ func init() {
 	syncCmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without making changes")
 	syncCmd.Flags().StringVar(&since, "since", "", "only fetch messages at or after this timestamp (RFC3339, inclusive)")
 	syncCmd.Flags().StringVar(&until, "until", "", "only fetch messages before this timestamp (RFC3339, exclusive)")
-	syncCmd.Flags().IntVar(&concurrency, "concurrency", 5, "maximum concurrent source-target pairs")
-	syncCmd.Flags().IntVar(&maxRetries, "max-retries", 3, "maximum retries for failed writes")
+	syncCmd.Flags().IntVar(&concurrency, "concurrency", defaultSyncConcurrency, "maximum concurrent source-target pairs")
+	syncCmd.Flags().IntVar(&maxRetries, "max-retries", defaultMaxRetries, "maximum retries for failed writes")
 	syncCmd.Flags().StringVar(&retryDelay, "retry-delay", "1s", "base delay between retries")
 	rootCmd.AddCommand(syncCmd)
 
-	// Validate-config command
+	// Validate-config command.
 	validateCmd := &cobra.Command{
 		Use:   "validate-config",
 		Short: "Validate configuration file and test connectivity",
@@ -102,7 +113,7 @@ func init() {
 	}
 	rootCmd.AddCommand(validateCmd)
 
-	// List-sources command
+	// List-sources command.
 	listSourcesCmd := &cobra.Command{
 		Use:   "list-sources",
 		Short: "List configured sources",
@@ -110,7 +121,7 @@ func init() {
 	}
 	rootCmd.AddCommand(listSourcesCmd)
 
-	// List-targets command
+	// List-targets command.
 	listTargetsCmd := &cobra.Command{
 		Use:   "list-targets",
 		Short: "List configured targets",
@@ -118,7 +129,7 @@ func init() {
 	}
 	rootCmd.AddCommand(listTargetsCmd)
 
-	// Version command
+	// Version command.
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
@@ -138,88 +149,79 @@ func loadConfig() (*config.Config, error) {
 	return config.Load(cfgFile)
 }
 
-func loadStateStore() (*state.Store, error) {
+func loadStateStore(ctx context.Context) (*state.Store, error) {
 	dir := stateDir
 	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = fmt.Sprintf("%s/.local/share/mailvault", home)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("expand home directory: %w", err)
+		}
+		dir = home + "/.local/share/mailvault"
 	}
-	dbPath := fmt.Sprintf("%s/state.db", dir)
+	dbPath := dir + "/state.db"
 	if dryRun {
 		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-			return state.NewStore(":memory:")
+			return state.NewStore(ctx, ":memory:")
 		} else if err != nil {
 			return nil, fmt.Errorf("stat state database: %w", err)
 		}
-		return state.NewReadOnlyStore(dbPath)
+		return state.NewReadOnlyStore(ctx, dbPath)
 	}
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, stateDirPerms); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
-	return state.NewStore(dbPath)
+	return state.NewStore(ctx, dbPath)
 }
 
-func runSync(cmd *cobra.Command, args []string) (err error) {
-	ctx := commandContext(cmd)
-
-	var cfg *config.Config
+func loadSyncConfig() (*config.Config, error) {
 	if repairMode {
-		cfg, err = config.LoadSelected(cfgFile, repairSource, repairTarget)
-	} else {
-		cfg, err = loadConfig()
+		return config.LoadSelected(cfgFile, repairSource, repairTarget)
 	}
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
+	return loadConfig()
+}
 
-	if err := config.Validate(cfg); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
-	if repairMode {
-		found := false
-		for _, pair := range cfg.Pairs {
-			if pair.Source == repairSource {
-				for _, target := range pair.Targets {
-					if target == repairTarget {
-						found = true
-					}
-				}
-			}
+func repairPairConfigured(cfg *config.Config) bool {
+	for _, pair := range cfg.Pairs {
+		if pair.Source == repairSource && containsString(pair.Targets, repairTarget) {
+			return true
 		}
-		if !found {
-			return fmt.Errorf("configured source-target pair %q -> %q not found", repairSource, repairTarget)
-		}
-		cfg.Pairs = []config.PairConfig{{Source: repairSource, Targets: []string{repairTarget}}}
 	}
+	return false
+}
 
-	stateStore, err := loadStateStore()
-	if err != nil {
-		return fmt.Errorf("load state store: %w", err)
+func containsString(values []string, want string) bool {
+	return slices.Contains(values, want)
+}
+
+func applyRepairFilter(cfg *config.Config) error {
+	if !repairMode {
+		return nil
 	}
-	defer func() {
-		err = errors.Join(err, stateStore.Close())
-	}()
+	if !repairPairConfigured(cfg) {
+		return fmt.Errorf("configured source-target pair %q -> %q not found", repairSource, repairTarget)
+	}
+	cfg.Pairs = []config.PairConfig{{Source: repairSource, Targets: []string{repairTarget}}}
+	return nil
+}
 
-	registry := builtin.Registry()
-
+func parseSyncOptions() (time.Duration, int64, int64, error) {
 	retryDelayDur, err := time.ParseDuration(retryDelay)
 	if err != nil {
-		return fmt.Errorf("parse retry-delay: %w", err)
+		return 0, 0, 0, fmt.Errorf("parse retry-delay: %w", err)
 	}
-
 	sinceTime, err := parseTimeBound(since)
 	if err != nil {
-		return fmt.Errorf("parse since: %w", err)
+		return 0, 0, 0, fmt.Errorf("parse since: %w", err)
 	}
 	untilTime, err := parseTimeBound(until)
 	if err != nil {
-		return fmt.Errorf("parse until: %w", err)
+		return 0, 0, 0, fmt.Errorf("parse until: %w", err)
 	}
+	return retryDelayDur, sinceTime, untilTime, nil
+}
 
-	progress, stopProgress := startSyncProgress(os.Stderr, dryRun)
-	defer stopProgress()
-
-	engine, err := sync.NewSyncEngine(cfg, stateStore, registry,
+func newSyncEngine(cfg *config.Config, stateStore *state.Store, progress func(string, string), retryDelayDur time.Duration, sinceTime, untilTime int64) (*sync.SyncEngine, error) {
+	engine, err := sync.NewSyncEngine(cfg, stateStore, builtin.Registry(),
 		sync.WithDryRun(dryRun),
 		sync.WithForceFetchAll(forceFetchAll),
 		sync.WithRepair(repairMode),
@@ -232,9 +234,40 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		sync.WithUntil(untilTime),
 	)
 	if err != nil {
-		return fmt.Errorf("create sync engine: %w", err)
+		return nil, fmt.Errorf("create sync engine: %w", err)
 	}
+	return engine, nil
+}
 
+func runSync(cmd *cobra.Command, args []string) (err error) {
+	ctx := commandContext(cmd)
+	cfg, err := loadSyncConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := config.Validate(cfg); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
+	if err := applyRepairFilter(cfg); err != nil {
+		return err
+	}
+	stateStore, err := loadStateStore(ctx)
+	if err != nil {
+		return fmt.Errorf("load state store: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, stateStore.Close())
+	}()
+	retryDelayDur, sinceTime, untilTime, err := parseSyncOptions()
+	if err != nil {
+		return err
+	}
+	progress, stopProgress := startSyncProgress(os.Stderr, dryRun)
+	defer stopProgress()
+	engine, err := newSyncEngine(cfg, stateStore, progress, retryDelayDur, sinceTime, untilTime)
+	if err != nil {
+		return err
+	}
 	stats, err := engine.Run(ctx)
 	if err != nil {
 		syncErr := fmt.Errorf("sync failed: %w", err)
@@ -243,7 +276,6 @@ func runSync(cmd *cobra.Command, args []string) (err error) {
 		}
 		return syncErr
 	}
-
 	if err := printStats(stats); err != nil {
 		return err
 	}
@@ -284,9 +316,9 @@ func printStats(stats *sync.SyncStats) error {
 	return nil
 }
 
-func runValidateConfig(cmd *cobra.Command, args []string) (err error) {
+func runValidateConfig(cmd *cobra.Command, args []string) error {
 	report, validationErr := validateConfiguration(commandContext(cmd))
-	return errors.Join(validationErr, printValidationReport(report))
+	return errors.Join(validationErr, printValidationReport(&report))
 }
 
 func runListSources(cmd *cobra.Command, args []string) error {
@@ -302,7 +334,8 @@ func runListSources(cmd *cobra.Command, args []string) error {
 		return enc.Encode(cfg.Sources)
 	}
 
-	for _, src := range cfg.Sources {
+	for i := range cfg.Sources {
+		src := &cfg.Sources[i]
 		fmt.Printf("%s (%s://%s:%d)\n", src.Name, src.Type, src.Host, src.Port)
 		fmt.Printf("  Username: %s\n", src.Username)
 		fmt.Printf("  Folders: %s\n", strings.Join(src.Folders, ", "))

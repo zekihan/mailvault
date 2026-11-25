@@ -10,12 +10,12 @@ var ErrBackupListingLimit = errors.New("backup listing budget exceeded")
 // TargetBackupWalker visits entries synchronously, without retaining prior
 // batches. Enumeration order is backend-specific. A callback error stops I/O.
 type TargetBackupWalker interface {
-	WalkBackupMessages(context.Context, func(BackupMessage) error) error
+	WalkBackupMessages(ctx context.Context, visit func(BackupMessage) error) error
 }
 
 // WalkBackupMessages supports legacy plugins while preferring incremental readers.
 func WalkBackupMessages(ctx context.Context, reader interface {
-	ListBackupMessages(context.Context) ([]BackupMessage, error)
+	ListBackupMessages(ctx context.Context) ([]BackupMessage, error)
 }, visit func(BackupMessage) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -30,11 +30,11 @@ func WalkBackupMessages(ctx context.Context, reader interface {
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
+	for i := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := visit(entry); err != nil {
+		if err := visit(entries[i]); err != nil {
 			return err
 		}
 	}

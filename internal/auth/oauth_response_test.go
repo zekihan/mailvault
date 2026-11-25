@@ -30,11 +30,11 @@ func TestOAuthResponseReadPreservesContextErrors(t *testing.T) {
 		request func(context.Context, Config) error
 	}{
 		{"device authorization", func(ctx context.Context, cfg Config) error {
-			_, err := requestDeviceCode(ctx, cfg)
+			_, err := requestDeviceCode(ctx, &cfg)
 			return err
 		}},
 		{"token exchange", func(ctx context.Context, cfg Config) error {
-			_, err := requestToken(ctx, cfg, url.Values{"grant_type": {"refresh_token"}})
+			_, err := requestToken(ctx, &cfg, url.Values{"grant_type": {"refresh_token"}})
 			return err
 		}},
 	}
@@ -52,12 +52,13 @@ func TestOAuthResponseReadPreservesContextErrors(t *testing.T) {
 						}
 						return context.DeadlineExceeded
 					}}
-					cfg := Config{
+					rawCfg := Config{ // #nosec G101 -- synthetic public client ID
 						ClientID:      "synthetic-client",
 						DeviceCodeURL: "https://example.invalid/devicecode",
 						TokenURL:      "https://example.invalid/token",
 						HTTPClient:    &http.Client{Transport: transport},
-					}.normalized()
+					}
+					cfg := rawCfg.normalized()
 					if err := request.request(ctx, cfg); !errors.Is(err, want) {
 						t.Fatalf("request error = %v, want %v", err, want)
 					}

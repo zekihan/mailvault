@@ -11,7 +11,7 @@ import (
 )
 
 func TestIncrementalResumesAfterDeliveryReceiptFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	root := physicalTempDir(t)
 	statePath := filepath.Join(physicalTempDir(t), "state.db")
 	msg := &plugins.Message{
@@ -20,16 +20,16 @@ func TestIncrementalResumesAfterDeliveryReceiptFailure(t *testing.T) {
 	}
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{msg}}
 	var registeredSource plugins.Source = &incrementalFixtureSource{source}
-	cfg, registry := repairReceiptFixture(root, &registeredSource)
-	store := openReceiptTestStore(t, statePath)
-	addDeliveryFailureTrigger(t, statePath)
+	cfg, registry := repairReceiptFixture(root, registeredSource)
+	store := openReceiptTestStore(ctx, t, statePath)
+	addDeliveryFailureTrigger(ctx, t, statePath)
 
-	stats := runReceiptTestEngine(t, ctx, cfg, store, registry)
+	stats := runReceiptTestEngine(ctx, t, cfg, store, registry)
 	assertStats(t, stats, 1, 0, 1)
 	if err := stats.Results[0].Errors[0]; !strings.Contains(err.Error(), "forced delivery receipt failure") {
 		t.Fatalf("delivery error = %v", err)
 	}
-	assertMaildirObjectCount(t, ctx, root, 1)
+	assertMaildirObjectCount(ctx, t, root, 1)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,50 +45,65 @@ func TestIncrementalResumesAfterDeliveryReceiptFailure(t *testing.T) {
 		t.Fatal(dropErr)
 	}
 
-	store = openReceiptTestStore(t, statePath)
-	stats = runReceiptTestEngine(t, ctx, cfg, store, registry)
+	store = openReceiptTestStore(ctx, t, statePath)
+	stats = runReceiptTestEngine(ctx, t, cfg, store, registry)
 	assertStats(t, stats, 0, 1, 0)
-	assertMaildirObjectCount(t, ctx, root, 1)
-	assertRepairReceipts(t, ctx, store, root, msg)
+	assertMaildirObjectCount(ctx, t, root, 1)
+	assertRepairReceipts(ctx, t, store, root, msg)
 
-	stats = runReceiptTestEngine(t, ctx, cfg, store, registry)
+	stats = runReceiptTestEngine(ctx, t, cfg, store, registry)
 	if stats.TotalFetched != 0 || stats.TotalErrors != 0 {
 		t.Fatalf("resumed delivery did not persist its UID receipt: %+v", stats)
 	}
 }
 
+func assertDeliveryReceipt(ctx context.Context, t *testing.T, fixture *engineFixture, mode, target string) {
+	t.Helper()
+	known, err := fixture.store.KnownUIDs(ctx, "account", target, "generation-1", "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mode != "dry-run" && (mode != "failure" || target != "first")
+	if known["42"] != want {
+		t.Fatalf("%s receipt = %v, want %v", target, known, want)
+	}
+}
+
+func assertReceiptScopeIsolation(ctx context.Context, t *testing.T, fixture *engineFixture) {
+	t.Helper()
+	for _, query := range [][4]string{{"account", "new-target", "generation-1", "Archive"}, {"account", "first", "generation-2", "Archive"}, {"account", "first", "generation-1", "Other"}} {
+		known, err := fixture.store.KnownUIDs(ctx, query[0], query[1], query[2], query[3])
+		if err != nil || len(known) != 0 {
+			t.Fatalf("receipt leaked across scope: %v %v", known, err)
+		}
+	}
+}
+
+func runReceiptDeliveryMode(t *testing.T, mode string) {
+	t.Helper()
+	fixture := newEngineFixture(t)
+	for _, msg := range fixture.source.messages {
+		msg.UIDScope = "generation-1"
+	}
+	fixture.targets["first"].fail = mode == "failure"
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, WithDryRun(mode == "dry-run"), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if _, err := engine.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"first", "second"} {
+		assertDeliveryReceipt(ctx, t, fixture, mode, target)
+	}
+	assertReceiptScopeIsolation(ctx, t, fixture)
+}
+
 func TestIMAPReceiptsRequireSuccessfulDelivery(t *testing.T) {
 	for _, mode := range []string{"success", "failure", "dry-run"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newEngineFixture(t)
-			for _, msg := range f.source.messages {
-				msg.UIDScope = "generation-1"
-			}
-			f.targets["first"].fail = mode == "failure"
-			engine, err := NewSyncEngine(f.cfg, f.store, f.registry, WithDryRun(mode == "dry-run"), WithMaxRetries(0))
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx := context.Background()
-			if _, err := engine.Run(ctx); err != nil {
-				t.Fatal(err)
-			}
-			for _, target := range []string{"first", "second"} {
-				known, err := f.store.KnownUIDs(ctx, "account", target, "generation-1", "Archive")
-				if err != nil {
-					t.Fatal(err)
-				}
-				want := mode != "dry-run" && (mode != "failure" || target != "first")
-				if known["42"] != want {
-					t.Fatalf("%s receipt = %v, want %v", target, known, want)
-				}
-			}
-			for _, query := range [][4]string{{"account", "new-target", "generation-1", "Archive"}, {"account", "first", "generation-2", "Archive"}, {"account", "first", "generation-1", "Other"}} {
-				known, err := f.store.KnownUIDs(ctx, query[0], query[1], query[2], query[3])
-				if err != nil || len(known) != 0 {
-					t.Fatalf("receipt leaked across scope: %v %v", known, err)
-				}
-			}
+			runReceiptDeliveryMode(t, mode)
 		})
 	}
 }
@@ -98,8 +113,8 @@ type incrementalFixtureSource struct {
 	*fixtureSource
 }
 
-func (s *incrementalFixtureSource) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
-	messages := make(chan *plugins.Message, len(s.messages))
+func (source *incrementalFixtureSource) FetchMessages(ctx context.Context, folders []string, since, until int64) (<-chan *plugins.Message, <-chan error) {
+	messages := make(chan *plugins.Message, len(source.messages))
 	failures := make(chan error, 1)
 	defer close(messages)
 	defer close(failures)
@@ -108,7 +123,7 @@ func (s *incrementalFixtureSource) FetchMessages(ctx context.Context, folders []
 		failures <- err
 		return messages, failures
 	}
-	for _, msg := range s.messages {
+	for _, msg := range source.messages {
 		if !known[msg.UID] {
 			messages <- msg
 		}
@@ -117,21 +132,21 @@ func (s *incrementalFixtureSource) FetchMessages(ctx context.Context, folders []
 }
 
 func TestIncrementalSecondRunAndForceFetchAll(t *testing.T) {
-	f := newEngineFixture(t)
-	f.cfg.Pairs = f.cfg.Pairs[:1]
-	f.cfg.Pairs[0].Targets = []string{"first"}
-	f.source.messages = f.source.messages[:1]
-	f.source.messages[0].UIDScope = "generation-1"
-	f.registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) {
-		return &incrementalFixtureSource{f.source}, nil
+	fixture := newEngineFixture(t)
+	fixture.cfg.Pairs = fixture.cfg.Pairs[:1]
+	fixture.cfg.Pairs[0].Targets = []string{"first"}
+	fixture.source.messages = fixture.source.messages[:1]
+	fixture.source.messages[0].UIDScope = "generation-1"
+	fixture.registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) {
+		return &incrementalFixtureSource{fixture.source}, nil
 	})
 	run := func(force bool, wantFetched int) {
 		t.Helper()
-		engine, err := NewSyncEngine(f.cfg, f.store, f.registry, WithForceFetchAll(force))
+		engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, WithForceFetchAll(force))
 		if err != nil {
 			t.Fatal(err)
 		}
-		stats, err := engine.Run(context.Background())
+		stats, err := engine.Run(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,10 +156,10 @@ func TestIncrementalSecondRunAndForceFetchAll(t *testing.T) {
 	}
 	run(false, 1)
 	run(false, 0)
-	f.source.messages = append(f.source.messages, &plugins.Message{UID: "43", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: new\r\n\r\nnew body")})
+	fixture.source.messages = append(fixture.source.messages, &plugins.Message{UID: "43", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: new\r\n\r\nnew body")}) //nolint:dupword // fixture message content, not prose
 	run(false, 1)
 	run(true, 2)
-	if f.targets["first"].writes != 2 {
-		t.Fatalf("force fetch duplicated backups: %d writes", f.targets["first"].writes)
+	if fixture.targets["first"].writes != 2 {
+		t.Fatalf("force fetch duplicated backups: %d writes", fixture.targets["first"].writes)
 	}
 }

@@ -9,11 +9,11 @@ import (
 
 func TestReleaseBinaryReportsLinkedVersion(t *testing.T) {
 	binary := filepath.Join(physicalTempDir(t), "mailvault")
-	build := exec.Command("go", "build", "-ldflags", "-X main.version=v9.8.7-test", "-o", binary, ".")
+	build := exec.CommandContext(t.Context(), "go", "build", "-ldflags", "-X main.version=v9.8.7-test", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build release binary: %v\n%s", err, output)
 	}
-	output, err := exec.Command(binary, "version").CombinedOutput()
+	output, err := exec.CommandContext(t.Context(), binary, "version").CombinedOutput()
 	if err != nil {
 		t.Fatalf("version command: %v\n%s", err, output)
 	}

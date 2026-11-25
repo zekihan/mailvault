@@ -8,11 +8,13 @@ import (
 	"github.com/zekihan/mailvault/internal/auth"
 )
 
+const providerMicrosoft = "microsoft"
+
 // NewOAuthTokenProvider builds a source token callback without contacting the
 // identity provider. AccessToken refreshes lazily when a connection needs it.
-func NewOAuthTokenProvider(source SourceConfig) (func(context.Context) (string, error), error) {
+func NewOAuthTokenProvider(source *SourceConfig) (func(context.Context) (string, error), error) {
 	if source.OAuth2 == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // no OAuth2 configured; nil provider is the no-op signal
 	}
 	if !source.UseTLS && !source.StartTLS {
 		return nil, fmt.Errorf("source %q: OAuth2 requires TLS (use_tls or start_tls)", source.Name)
@@ -22,7 +24,7 @@ func NewOAuthTokenProvider(source SourceConfig) (func(context.Context) (string, 
 		return nil, fmt.Errorf("source %q: oauth2.client_secret is not supported for public OAuth clients", source.Name)
 	}
 	store := oauthStore(options)
-	provider, err := auth.NewTokenProvider(auth.Config{
+	provider, err := auth.NewTokenProvider(&auth.Config{
 		Provider: options.Provider, ClientID: options.ClientID, Tenant: options.Tenant, Scopes: options.Scopes,
 		DeviceCodeURL: options.DeviceCodeURL, AuthorizationURL: options.AuthorizationURL, TokenURL: options.TokenURL,
 	}, OAuthTokenAccount(source), store)
@@ -33,11 +35,11 @@ func NewOAuthTokenProvider(source SourceConfig) (func(context.Context) (string, 
 }
 
 // OAuthTokenAccount returns the keyring account used by login and sync.
-func OAuthTokenAccount(source SourceConfig) string {
+func OAuthTokenAccount(source *SourceConfig) string {
 	if source.OAuth2 != nil && source.OAuth2.TokenKey != "" {
 		return source.OAuth2.TokenKey
 	}
-	tenant, clientID, provider := "consumers", "", "microsoft"
+	tenant, clientID, provider := "consumers", "", providerMicrosoft
 	if source.OAuth2 != nil {
 		if source.OAuth2.Provider != "" {
 			provider = source.OAuth2.Provider
@@ -48,7 +50,7 @@ func OAuthTokenAccount(source SourceConfig) string {
 		clientID = source.OAuth2.ClientID
 	}
 	identity := source.Host + "\x00" + source.Username + "\x00" + tenant + "\x00" + clientID
-	if provider != "microsoft" {
+	if provider != providerMicrosoft {
 		identity = provider + "\x00" + identity
 	}
 	hash := sha256.Sum256([]byte(identity))

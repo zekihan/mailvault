@@ -33,7 +33,7 @@ func TestIMAPCloseAfterFolderFailureAndReconnect(t *testing.T) {
 	})
 	src := &IMAPSource{host: host, port: port, username: "test", password: "synthetic", connTimeout: time.Second, readTimeout: time.Second}
 	t.Cleanup(func() { _ = src.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	messages, failures := src.FetchMessages(ctx, []string{"Archive"}, 0, 0)
 	for range messages {

@@ -22,7 +22,7 @@ func TestExcludeDeliveredPreservesHoles(t *testing.T) {
 func TestRetryFetchStableIdentity(t *testing.T) {
 	out := make(chan *plugins.Message, 4)
 	attempts := 0
-	err := retryFetch(context.Background(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
+	err := retryFetch(t.Context(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
 		attempts++
 		ch <- &plugins.Message{UIDScope: "generation", Folder: "INBOX", UID: "1"}
 		if attempts == 1 {
@@ -39,7 +39,7 @@ func TestRetryFetchStableIdentity(t *testing.T) {
 func TestRetryFetchDoesNotReplayUnstableIdentity(t *testing.T) {
 	out := make(chan *plugins.Message, 4)
 	attempts := 0
-	err := retryFetch(context.Background(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
+	err := retryFetch(t.Context(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
 		attempts++
 		ch <- &plugins.Message{UID: "sequence:1"}
 		return io.EOF
@@ -57,7 +57,7 @@ func TestServerRejectionIsNotMarkedAsTransportFailure(t *testing.T) {
 }
 
 func TestRetryFetchCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	attempts := 0
 	err := retryFetch(ctx, make(chan *plugins.Message), func(ctx context.Context, ch chan<- *plugins.Message) error {
 		attempts++
@@ -72,7 +72,7 @@ func TestRetryFetchCancellation(t *testing.T) {
 func TestRetryFetchPublishesStreamedUIDs(t *testing.T) {
 	attempts := 0
 	out := make(chan *plugins.Message, 2)
-	err := retryFetch(context.Background(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
+	err := retryFetch(t.Context(), out, func(ctx context.Context, ch chan<- *plugins.Message) error {
 		attempts++
 		known := skipStreamedUIDs(ctx, "scope", "INBOX", nil)
 		if attempts == 2 && !known["42"] {

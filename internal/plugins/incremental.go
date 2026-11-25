@@ -36,5 +36,5 @@ func KnownUIDs(ctx context.Context, scope, folder string) (map[string]bool, erro
 	if lookup, ok := ctx.Value(knownUIDsKey{}).(func(string, string) (map[string]bool, error)); ok {
 		return lookup(scope, folder)
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // no lookup registered; nil set is the no-op signal
 }

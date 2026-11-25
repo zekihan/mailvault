@@ -1,30 +1,26 @@
 package state
 
 import (
-	"context"
 	"testing"
 	"time"
 )
 
-func TestStore_Basic(t *testing.T) {
-	ctx := context.Background()
-
-	// Create temp database
-	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
-
-	store, err := NewStore(dbPath)
+func openBasicStore(t *testing.T) *Store {
+	t.Helper()
+	dbPath := t.TempDir() + "/test.db"
+	store, err := NewStore(t.Context(), dbPath)
 	if err != nil {
-		t.Fatalf("NewStore() = %v, want nil", err)
+		t.Fatalf("NewStore(t.Context(), ) = %v, want nil", err)
 	}
-	defer store.Close()
+	return store
+}
 
-	// Test UpsertSource
+func checkBasicFolderState(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	if err := store.UpsertSource(ctx, "gmail", "imap", "imap.gmail.com", "user@gmail.com"); err != nil {
 		t.Fatalf("UpsertSource() = %v, want nil", err)
 	}
-
-	// Test folder state
 	fs := &FolderState{
 		UIDValidity: "12345",
 		UIDNext:     "100",
@@ -33,8 +29,6 @@ func TestStore_Basic(t *testing.T) {
 	if err := store.UpsertFolderState(ctx, "gmail", "INBOX", fs); err != nil {
 		t.Fatalf("UpsertFolderState() = %v, want nil", err)
 	}
-
-	// Retrieve folder state
 	got, err := store.GetFolderState(ctx, "gmail", "INBOX")
 	if err != nil {
 		t.Fatalf("GetFolderState() = %v, want nil", err)
@@ -45,13 +39,21 @@ func TestStore_Basic(t *testing.T) {
 	if got.UIDValidity != "12345" || got.UIDNext != "100" || got.ModSeq != "5000" {
 		t.Fatalf("GetFolderState() = %+v, want UIDValidity=12345, UIDNext=100, ModSeq=5000", got)
 	}
+}
 
-	// Test message tracking
+func checkBasicMessageTracking(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	if err := store.MarkMessageFetched(ctx, "gmail", "INBOX", "1", "<msg1@example.com>", "hash1", 1024, "2024-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("MarkMessageFetched() = %v, want nil", err)
 	}
+	checkBasicMessageExists(t, store)
+	checkBasicMessageLookup(t, store)
+}
 
-	// Check exists by UID
+func checkBasicMessageExists(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	exists, err := store.MessageExists(ctx, "gmail", "INBOX", "1")
 	if err != nil {
 		t.Fatalf("MessageExists() = %v, want nil", err)
@@ -59,8 +61,6 @@ func TestStore_Basic(t *testing.T) {
 	if !exists {
 		t.Fatal("MessageExists() = false, want true")
 	}
-
-	// Check not exists
 	exists, err = store.MessageExists(ctx, "gmail", "INBOX", "999")
 	if err != nil {
 		t.Fatalf("MessageExists() = %v, want nil", err)
@@ -68,8 +68,11 @@ func TestStore_Basic(t *testing.T) {
 	if exists {
 		t.Fatal("MessageExists() = true, want false")
 	}
+}
 
-	// Test deduplication by Message-ID
+func checkBasicMessageLookup(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	found, err := store.FindByMessageID(ctx, "<msg1@example.com>")
 	if err != nil {
 		t.Fatalf("FindByMessageID() = %v, want nil", err)
@@ -77,8 +80,6 @@ func TestStore_Basic(t *testing.T) {
 	if len(found) != 1 || found[0].UID != "1" {
 		t.Fatalf("FindByMessageID() = %+v, want 1 record with UID=1", found)
 	}
-
-	// Test deduplication by Content-Hash
 	found, err = store.FindByContentHash(ctx, "hash1")
 	if err != nil {
 		t.Fatalf("FindByContentHash() = %v, want nil", err)
@@ -86,8 +87,11 @@ func TestStore_Basic(t *testing.T) {
 	if len(found) != 1 || found[0].UID != "1" {
 		t.Fatalf("FindByContentHash() = %+v, want 1 record with UID=1", found)
 	}
+}
 
-	// Test OAuth tokens
+func checkBasicTokenAndStats(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
 	tok := &OAuthToken{
 		AccessToken:  "access-123",
 		RefreshToken: "refresh-123",
@@ -96,7 +100,6 @@ func TestStore_Basic(t *testing.T) {
 	if err := store.UpsertOAuthToken(ctx, "gmail", tok); err != nil {
 		t.Fatalf("UpsertOAuthToken() = %v, want nil", err)
 	}
-
 	gotTok, err := store.GetOAuthToken(ctx, "gmail")
 	if err != nil {
 		t.Fatalf("GetOAuthToken() = %v, want nil", err)
@@ -104,8 +107,6 @@ func TestStore_Basic(t *testing.T) {
 	if gotTok == nil || gotTok.AccessToken != "access-123" {
 		t.Fatalf("GetOAuthToken() = %+v, want access-123", gotTok)
 	}
-
-	// Test stats
 	stats, err := store.Stats(ctx)
 	if err != nil {
 		t.Fatalf("Stats() = %v, want nil", err)
@@ -115,8 +116,16 @@ func TestStore_Basic(t *testing.T) {
 	}
 }
 
+func TestStore_Basic(t *testing.T) {
+	store := openBasicStore(t)
+	defer store.Close()
+	checkBasicFolderState(t, store)
+	checkBasicMessageTracking(t, store)
+	checkBasicTokenAndStats(t, store)
+}
+
 func TestStore_CleanOldMessages(t *testing.T) {
-	local := time.Local
+	local := time.Local //nolint:gosmopolitan // test zone fixture; local handling is the scenario
 	zone := time.FixedZone("UTC+3", 3*60*60)
 	// A timer can read the process time zone while the fixture sets up its clock.
 	readLocal := make(chan *time.Location, 1)
@@ -126,13 +135,13 @@ func TestStore_CleanOldMessages(t *testing.T) {
 		t.Fatal("setting up the cleanup clock changed the process time zone")
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/test.db"
 
-	store, err := NewStore(dbPath)
+	store, err := NewStore(t.Context(), dbPath)
 	if err != nil {
-		t.Fatalf("NewStore() = %v, want nil", err)
+		t.Fatalf("NewStore(t.Context(), ) = %v, want nil", err)
 	}
 	defer store.Close()
 
@@ -167,8 +176,8 @@ func TestStore_CleanOldMessages(t *testing.T) {
 }
 
 func TestCleanupOldMessageMetadataRetainsDeliveryReceipts(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewStore(t.TempDir() + "/state.db")
+	ctx := t.Context()
+	store, err := NewStore(t.Context(), t.TempDir()+"/state.db")
 	if err != nil {
 		t.Fatal(err)
 	}

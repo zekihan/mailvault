@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -11,7 +10,7 @@ import (
 )
 
 func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, tc := range []struct {
 		name   string
 		target plugins.Target
@@ -23,7 +22,7 @@ func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			storePath := filepath.Join(physicalTempDir(t), "state.db")
-			store, err := state.NewStore(storePath)
+			store, err := state.NewStore(ctx, storePath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,7 +35,7 @@ func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
 				{source: "0-other-target", folder: "Starred", locator: "wrong-target", target: "second", rowHash: hash},
 				{source: "0-unrelated", folder: "Starred", locator: "unrelated", target: "first", rowHash: "other-hash"},
 			} {
-				if err := store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: row.source, Target: row.target, Scope: "scope", Folder: row.folder, UID: "1", Locator: row.locator, RawSHA256: row.rowHash}); err != nil {
+				if err := store.RecordBackupMessage(ctx, &plugins.BackupMessage{Source: row.source, Target: row.target, Scope: "scope", Folder: row.folder, UID: "1", Locator: row.locator, RawSHA256: row.rowHash}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -65,16 +64,16 @@ func TestRecordBackupAliasUsesHashMatchesAndPlacementOrder(t *testing.T) {
 }
 
 func TestRecordBackupAliasWithoutMatchingPlacementIsNoOp(t *testing.T) {
-	ctx := context.Background()
-	f := newEngineFixture(t)
-	if err := f.store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "account", Target: "first", Scope: "scope", Folder: "INBOX", UID: "1", Locator: "inbox", RawSHA256: "hash"}); err != nil {
+	ctx := t.Context()
+	fixture := newEngineFixture(t)
+	if err := fixture.store.RecordBackupMessage(ctx, &plugins.BackupMessage{Source: "account", Target: "first", Scope: "scope", Folder: "INBOX", UID: "1", Locator: "inbox", RawSHA256: "hash"}); err != nil {
 		t.Fatal(err)
 	}
 	target := &placementTarget{&fixtureTarget{name: "first"}}
-	if err := (&SyncEngine{stateStore: f.store}).recordBackupAlias(ctx, f.source, target, &plugins.Message{UID: "2", UIDScope: "scope", Folder: "Starred"}, "hash"); err != nil {
+	if err := (&SyncEngine{stateStore: fixture.store}).recordBackupAlias(ctx, fixture.source, target, &plugins.Message{UID: "2", UIDScope: "scope", Folder: "Starred"}, "hash"); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := f.store.BackupMessages(ctx, "first")
+	entries, err := fixture.store.BackupMessages(ctx, "first")
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("manifest after unmatched alias: %d entries, %v; want original only", len(entries), err)
 	}

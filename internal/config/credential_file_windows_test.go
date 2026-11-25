@@ -38,7 +38,7 @@ func TestWindowsCredentialFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credential")
 	const secret = "synthetic-fixture\r\n"
-	if err := os.WriteFile(path, []byte(secret), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := readCredentialFile(path); err != nil || string(got) != secret {
@@ -60,7 +60,7 @@ func TestWindowsCredentialFile(t *testing.T) {
 		}
 	})
 	for _, size := range []int64{maxCredentialFileSize, maxCredentialFileSize + 1} {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -25,7 +25,7 @@ func newAuthCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sourceName == "" {
-				return fmt.Errorf("--source is required")
+				return errors.New("--source is required")
 			}
 			source, err := config.LoadOAuthSource(cfgFile, sourceName)
 			if err != nil {
@@ -34,7 +34,7 @@ func newAuthCommand() *cobra.Command {
 			oauth := source.OAuth2
 			authConfig := auth.Config{Provider: oauth.Provider, ClientID: oauth.ClientID, Tenant: oauth.Tenant, Scopes: oauth.Scopes,
 				DeviceCodeURL: oauth.DeviceCodeURL, AuthorizationURL: oauth.AuthorizationURL, TokenURL: oauth.TokenURL,
-				ValidateAccessToken: mailboxTokenValidator(source, builtin.Registry())}
+				ValidateAccessToken: mailboxTokenValidator(&source, builtin.Registry())}
 			store := auth.Store(auth.KeyringStore{})
 			if oauth.TokenFile != "" {
 				store = auth.FileStore{Path: oauth.TokenFile}
@@ -43,9 +43,9 @@ func newAuthCommand() *cobra.Command {
 				return err
 			}
 			if oauth.Provider == "google" {
-				err = auth.LoopbackLogin(cmd.Context(), authConfig, config.OAuthTokenAccount(source), store, cmd.OutOrStdout())
+				err = auth.LoopbackLogin(cmd.Context(), &authConfig, config.OAuthTokenAccount(&source), store, cmd.OutOrStdout())
 			} else {
-				err = auth.DeviceLogin(cmd.Context(), authConfig, config.OAuthTokenAccount(source), store, cmd.OutOrStdout())
+				err = auth.DeviceLogin(cmd.Context(), &authConfig, config.OAuthTokenAccount(&source), store, cmd.OutOrStdout())
 			}
 			if err != nil {
 				return err
@@ -59,7 +59,7 @@ func newAuthCommand() *cobra.Command {
 	return cmd
 }
 
-func mailboxTokenValidator(source config.SourceConfig, registry *plugins.Registry) func(context.Context, string) error {
+func mailboxTokenValidator(source *config.SourceConfig, registry *plugins.Registry) func(context.Context, string) error {
 	return func(ctx context.Context, token string) (err error) {
 		values, err := config.SourcePluginConfig(source)
 		if err != nil {

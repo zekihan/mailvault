@@ -2,7 +2,6 @@ package target
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -16,13 +15,13 @@ import (
 )
 
 func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	root := physicalTempDir(t)
-	target, err := NewMaildirTarget(map[string]interface{}{"path": root})
+	target, err := NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	maildir := target.(*MaildirTarget)
+	maildir := mustAssert[*MaildirTarget](t, target)
 	if err := maildir.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +50,12 @@ func TestMaildirBackupLocatorSurvivesClientFlagRename(t *testing.T) {
 }
 
 func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
-	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
+	ctx := t.Context()
+	target, err := NewMboxTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mbox := target.(*MboxTarget)
+	mbox := mustAssert[*MboxTarget](t, target)
 	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
@@ -78,7 +77,7 @@ func TestMboxBackupLocatorPreservesExactRawBytes(t *testing.T) {
 func TestMboxMalformedHeadersListAsOneMessage(t *testing.T) {
 	for name, newline := range map[string]string{"LF": "\n", "CRLF": "\r\n"} {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			mbox := &MboxTarget{path: filepath.Join(physicalTempDir(t), "archive.mbox"), create: true}
 			if err := mbox.Initialize(ctx); err != nil {
 				t.Fatal(err)
@@ -112,12 +111,12 @@ func TestMboxMalformedHeadersListAsOneMessage(t *testing.T) {
 }
 
 func TestMboxListingStreamsLongLinesAndMboxrdEscapes(t *testing.T) {
-	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
+	ctx := t.Context()
+	target, err := NewMboxTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mbox := target.(*MboxTarget)
+	mbox := mustAssert[*MboxTarget](t, target)
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +161,7 @@ func TestMboxRecordLengthStreamingMatchesMboxrdUnescape(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer file.Close()
-			encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(context.Background(), file, 0, int64(len(record)))
+			encodedLength, decodedLength, hasSeparatorNewline, err := mboxRecordLengths(t.Context(), file, 0, int64(len(record)))
 			if err != nil || !hasSeparatorNewline {
 				t.Fatalf("record lengths error = %v, separator newline = %v", err, hasSeparatorNewline)
 			}
@@ -178,12 +177,12 @@ func TestMboxRecordLengthStreamingMatchesMboxrdUnescape(t *testing.T) {
 }
 
 func TestMboxBackupReaderSeparatesMessagesAndRejectsOutOfBoundsLocator(t *testing.T) {
-	ctx := context.Background()
-	target, err := NewMboxTarget(map[string]interface{}{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
+	ctx := t.Context()
+	target, err := NewMboxTarget(map[string]any{"path": filepath.Join(physicalTempDir(t), "archive.mbox")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mbox := target.(*MboxTarget)
+	mbox := mustAssert[*MboxTarget](t, target)
 	defer mbox.Close()
 	if err := mbox.Initialize(ctx); err != nil {
 		t.Fatal(err)
@@ -217,11 +216,11 @@ func TestMboxListingRejectsMissingInitialSeparator(t *testing.T) {
 	if err := os.WriteFile(path, []byte("Subject: damaged\n\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target, err := NewMboxTarget(map[string]interface{}{"path": path})
+	target, err := NewMboxTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := target.(*MboxTarget).ListBackupMessages(context.Background()); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+	if _, err := mustAssert[*MboxTarget](t, target).ListBackupMessages(t.Context()); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
 		t.Fatalf("listing malformed mbox error = %v, want corruption", err)
 	}
 }
@@ -241,11 +240,11 @@ func TestMboxListingBoundsOversizedRecordBeforeAllocation(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	target, err := NewMboxTarget(map[string]interface{}{"path": path})
+	target, err := NewMboxTarget(map[string]any{"path": path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := target.(*MboxTarget).listBackupMessages(context.Background(), 128); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
+	if _, err := mustAssert[*MboxTarget](t, target).listBackupMessages(t.Context(), 128); !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
 		t.Fatalf("listing oversized record error = %v, want corruption", err)
 	}
 }
