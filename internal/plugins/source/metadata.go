@@ -9,7 +9,9 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
-func (s *IMAPSource) refreshMetadata(ctx context.Context, session *imapSession, scope, folder string, known map[string]bool) error {
+const metadataFetchBatch = 100
+
+func (src *IMAPSource) refreshMetadata(ctx context.Context, session *imapSession, scope, folder string, known map[string]bool) error {
 	observe := plugins.MetadataObserver(ctx)
 	if observe == nil || len(known) == 0 {
 		return nil
@@ -22,10 +24,7 @@ func (s *IMAPSource) refreshMetadata(ctx context.Context, session *imapSession, 
 		}
 	}
 	for start := 0; start < len(ids); start += 100 {
-		end := start + 100
-		if end > len(ids) {
-			end = len(ids)
-		}
+		end := min(start+metadataFetchBatch, len(ids))
 		finish := session.wire.beginIO(ctx)
 		fetch := session.client.Fetch(imap.UIDSetNum(ids[start:end]...), &imap.FetchOptions{Flags: true})
 		var failure error

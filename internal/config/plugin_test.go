@@ -6,7 +6,7 @@ import (
 )
 
 func TestSourcePluginConfigBuildsOAuthWithoutReadingTokens(t *testing.T) {
-	source := SourceConfig{Name: "outlook", UseTLS: true, Host: "outlook.office365.com", Username: "fixture@example.invalid", OAuth2: &OAuth2Config{ClientID: "synthetic-client"}}
+	source := &SourceConfig{Name: "outlook", UseTLS: true, Host: "outlook.office365.com", Username: "fixture@example.invalid", OAuth2: &OAuth2Config{ClientID: "synthetic-client"}}
 	values, err := SourcePluginConfig(source)
 	if err != nil {
 		t.Fatal(err)

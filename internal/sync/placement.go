@@ -19,7 +19,7 @@ func targetReceiptScope(target plugins.Target, scope string) string {
 
 func targetDeliveryIdentity(target plugins.Target, msg *plugins.Message, identity string) string {
 	if policy, ok := target.(interface {
-		DeliveryIdentity(*plugins.Message, string) string
+		DeliveryIdentity(msg *plugins.Message, identity string) string
 	}); ok {
 		identity = policy.DeliveryIdentity(msg, identity)
 	}

@@ -12,7 +12,7 @@ func TestParseDurationNumericRange(t *testing.T) {
 	minSeconds := math.MinInt64 / int64(time.Second)
 	tests := []struct {
 		name    string
-		value   interface{}
+		value   any
 		want    time.Duration
 		wantErr bool
 	}{
@@ -40,7 +40,7 @@ func TestParseDurationNumericRange(t *testing.T) {
 		for _, seconds := range []int64{maxSeconds, maxSeconds + 1, minSeconds, minSeconds - 1} {
 			tests = append(tests, struct {
 				name    string
-				value   interface{}
+				value   any
 				want    time.Duration
 				wantErr bool
 			}{"int " + strconv.FormatInt(seconds, 10), int(seconds), time.Duration(seconds) * time.Second, seconds > maxSeconds || seconds < minSeconds})
@@ -48,7 +48,7 @@ func TestParseDurationNumericRange(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseDuration(map[string]interface{}{"d": tt.value}, "d", 0)
+			got, err := ParseDuration(map[string]any{"d": tt.value}, "d", 0)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ParseDuration() error = %v, wantErr %v", err, tt.wantErr)
 			}

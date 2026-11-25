@@ -51,7 +51,7 @@ func TestIMAPConnectRetriesDroppedConnections(t *testing.T) {
 		serveIMAPLogin(conn, "OK logged in")
 	})
 	src := retryTestSource(host, port)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := src.Connect(ctx); err != nil {
 		t.Fatalf("connect after dropped connections: %v", err)
@@ -63,18 +63,18 @@ func TestIMAPConnectRetriesDroppedConnections(t *testing.T) {
 }
 
 func TestIMAPConnectRetriesRefusedConnections(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	reserved, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := reserved.Addr().String()
-	port := reserved.Addr().(*net.TCPAddr).Port
+	port := mustAssert[*net.TCPAddr](t, reserved.Addr()).Port
 	_ = reserved.Close()
 
 	listening := make(chan net.Listener, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		listener, err := net.Listen("tcp", addr)
+		<-time.After(100 * time.Millisecond)
+		listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", addr)
 		if err != nil {
 			listening <- nil
 			return
@@ -94,7 +94,7 @@ func TestIMAPConnectRetriesRefusedConnections(t *testing.T) {
 	})
 
 	src := retryTestSource("127.0.0.1", port)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := src.Connect(ctx); err != nil {
 		t.Fatalf("connect after refused connections: %v", err)
@@ -103,17 +103,17 @@ func TestIMAPConnectRetriesRefusedConnections(t *testing.T) {
 }
 
 func TestIMAPConnectUnreachableFailsWithinBudget(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	reserved, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := reserved.Addr().(*net.TCPAddr).Port
+	port := mustAssert[*net.TCPAddr](t, reserved.Addr()).Port
 	_ = reserved.Close()
 
 	src := retryTestSource("127.0.0.1", port)
 	src.connectRetry.budget = 300 * time.Millisecond
 	started := time.Now()
-	err = src.Connect(context.Background())
+	err = src.Connect(t.Context())
 	elapsed := time.Since(started)
 	if !errors.Is(err, errConnectRetriesExhausted) {
 		t.Fatalf("err=%v, want exhausted retries", err)
@@ -133,7 +133,7 @@ func TestIMAPConnectDoesNotRetryAuthRejection(t *testing.T) {
 		serveIMAPLogin(conn, "NO [AUTHENTICATIONFAILED] invalid credentials")
 	})
 	src := retryTestSource(host, port)
-	err := src.Connect(context.Background())
+	err := src.Connect(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "login") {
 		t.Fatalf("err=%v, want login rejection", err)
 	}
@@ -152,7 +152,7 @@ func TestIMAPConnectRetriesUnavailableLogin(t *testing.T) {
 		serveIMAPLogin(conn, "OK logged in")
 	})
 	src := retryTestSource(host, port)
-	if err := src.Connect(context.Background()); err != nil {
+	if err := src.Connect(t.Context()); err != nil {
 		t.Fatalf("connect after temporary login failure: %v", err)
 	}
 	_ = src.Close()
@@ -162,10 +162,10 @@ func TestIMAPConnectRetriesUnavailableLogin(t *testing.T) {
 }
 
 func TestRetryConnectHonorsCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	attempts := 0
 	policy := connectBackoff{budget: 2 * time.Hour, initial: time.Hour}
-	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	go func() { <-time.After(20 * time.Millisecond); cancel() }()
 	err := retryConnect(ctx, policy, "fixture", func(context.Context) error {
 		attempts++
 		return io.EOF
@@ -177,7 +177,7 @@ func TestRetryConnectHonorsCancellation(t *testing.T) {
 
 func TestRetryConnectZeroBudgetMakesOneAttempt(t *testing.T) {
 	attempts := 0
-	err := retryConnect(context.Background(), connectBackoff{}, "fixture", func(context.Context) error {
+	err := retryConnect(t.Context(), connectBackoff{}, "fixture", func(context.Context) error {
 		attempts++
 		return io.EOF
 	})

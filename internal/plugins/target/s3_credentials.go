@@ -14,7 +14,7 @@ var errS3Credentials = errors.New("credentials_ref must resolve to JSON with non
 
 func s3CredentialProvider(ref string) (aws.CredentialsProvider, error) {
 	if ref == "" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // empty ref selects the default provider; nil is the signal
 	}
 	var values struct {
 		AccessKeyID     string `json:"access_key_id"`
@@ -26,7 +26,7 @@ func s3CredentialProvider(ref string) (aws.CredentialsProvider, error) {
 	if err := decoder.Decode(&values); err != nil {
 		return nil, errS3Credentials
 	}
-	if decoder.Decode(new(interface{})) != io.EOF || values.AccessKeyID == "" || values.SecretAccessKey == "" {
+	if decoder.Decode(new(any)) != io.EOF || values.AccessKeyID == "" || values.SecretAccessKey == "" {
 		return nil, errS3Credentials
 	}
 	return credentials.NewStaticCredentialsProvider(values.AccessKeyID, values.SecretAccessKey, values.SessionToken), nil

@@ -1,7 +1,6 @@
 package target
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -24,7 +23,7 @@ func TestS3CredentialSelection(t *testing.T) {
 				requests <- observed{r.Header.Get("Authorization"), r.Header.Get("X-Amz-Security-Token")}
 			}))
 			defer server.Close()
-			values := map[string]interface{}{"bucket": "test-bucket", "region": "us-east-1", "endpoint": server.URL}
+			values := map[string]any{"bucket": "test-bucket", "region": "us-east-1", "endpoint": server.URL}
 			wantKey, wantToken := "ambient-key", ""
 			if explicit {
 				values["credentials_ref"] = `{"access_key_id":"configured-key","secret_access_key":"configured-test-value","session_token":"configured-session"}`
@@ -34,7 +33,7 @@ func TestS3CredentialSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := target.Initialize(context.Background()); err != nil {
+			if err := target.Initialize(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			got := <-requests
@@ -47,7 +46,7 @@ func TestS3CredentialSelection(t *testing.T) {
 
 func TestS3RejectsMalformedExplicitCredentials(t *testing.T) {
 	for _, ref := range []string{"", "synthetic-sensitive-value", `{"access_key_id":"only-key"}`, `{"access_key_id":7,"secret_access_key":"synthetic-sensitive-value"}`} {
-		_, err := NewS3Target(map[string]interface{}{"bucket": "test-bucket", "region": "us-east-1", "credentials_ref": ref})
+		_, err := NewS3Target(map[string]any{"bucket": "test-bucket", "region": "us-east-1", "credentials_ref": ref})
 		if err == nil {
 			t.Fatal("malformed explicit credentials silently accepted")
 		}

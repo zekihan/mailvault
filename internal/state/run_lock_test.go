@@ -11,22 +11,22 @@ import (
 
 func TestSyncLockContendsAcrossStoresAndReleases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	first, err := NewStore(path)
+	first, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	second, err := NewStore(path)
+	second, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	release, err := first.LockSync(context.Background())
+	release, err := first.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	if _, err := second.LockSync(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second store bypassed lock: %v", err)
@@ -37,7 +37,7 @@ func TestSyncLockContendsAcrossStoresAndReleases(t *testing.T) {
 	if err := release(); err != nil {
 		t.Fatalf("release is not idempotent: %v", err)
 	}
-	again, err := second.LockSync(context.Background())
+	again, err := second.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,17 +50,17 @@ func TestSyncLockContendsAcrossStoresAndReleases(t *testing.T) {
 }
 
 func TestSyncLockMemoryStoreSerializesWithoutFile(t *testing.T) {
-	store, err := NewStore(":memory:")
+	store, err := NewStore(t.Context(), ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	release, err := store.LockSync(context.Background())
+	release, err := store.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	if _, err := store.LockSync(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("private memory store bypassed gate: %v", err)
@@ -68,7 +68,7 @@ func TestSyncLockMemoryStoreSerializesWithoutFile(t *testing.T) {
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
-	again, err := store.LockSync(context.Background())
+	again, err := store.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,19 +79,19 @@ func TestSyncLockMemoryStoreSerializesWithoutFile(t *testing.T) {
 
 func TestReadOnlySyncLockDoesNotCreateSidecar(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := NewStore(path)
+	store, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	readOnly, err := NewReadOnlyStore(path)
+	readOnly, err := NewReadOnlyStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer readOnly.Close()
-	if _, err := readOnly.LockSync(context.Background()); !errors.Is(err, errReadOnlySyncLock) {
+	if _, err := readOnly.LockSync(t.Context()); !errors.Is(err, errReadOnlySyncLock) {
 		t.Fatalf("read-only lock accepted: %v", err)
 	}
 	if _, err := os.Stat(path + ".sync.lock"); !os.IsNotExist(err) {
@@ -102,13 +102,13 @@ func TestReadOnlySyncLockDoesNotCreateSidecar(t *testing.T) {
 func TestSyncLockUsesOpenedDatabaseAfterDirectoryChange(t *testing.T) {
 	original := t.TempDir()
 	t.Chdir(original)
-	store, err := NewStore("state.db")
+	store, err := NewStore(t.Context(), "state.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	t.Chdir(t.TempDir())
-	release, err := store.LockSync(context.Background())
+	release, err := store.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestSyncLockRecognizesSymlinkAlias(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state.db")
 	alias := filepath.Join(root, "alias.db")
-	first, err := NewStore(path)
+	first, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,17 +132,17 @@ func TestSyncLockRecognizesSymlinkAlias(t *testing.T) {
 	if err := os.Symlink(path, alias); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	second, err := NewStore(alias)
+	second, err := NewStore(t.Context(), alias)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	release, err := first.LockSync(context.Background())
+	release, err := first.LockSync(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	if _, err := second.LockSync(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("alias bypassed database lock: %v", err)

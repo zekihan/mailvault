@@ -33,9 +33,35 @@ func (s *durableFixtureSource) FetchMessages(context.Context, []string, int64, i
 	return messages, failures
 }
 
-func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
-	target := durableMaildirFixture(t)
-	target.SetName("archive")
+type durableFixture struct {
+	target   *MaildirTarget
+	store    *state.Store
+	message  *plugins.Message
+	cfg      *config.Config
+	registry *plugins.Registry
+}
+
+func (fixture *durableFixture) open(t *testing.T) {
+	t.Helper()
+	fixture.target = durableMaildirFixture(t)
+	fixture.target.SetName("archive")
+	fixture.installFailingSync(fixture.target)
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store = store
+	fixture.message = &plugins.Message{UID: "1", Folder: "INBOX", Raw: []byte("Subject: fixture\r\n\r\nbody\r\n")}
+	registry := plugins.NewRegistry()
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) {
+		return &durableFixtureSource{message: fixture.message}, nil
+	})
+	registry.RegisterTarget("maildir", func(map[string]any) (plugins.Target, error) { return fixture.target, nil })
+	fixture.cfg = &config.Config{Sources: []config.SourceConfig{{Name: "source", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "archive", Type: "maildir"}}, Pairs: []config.PairConfig{{Source: "source", Targets: []string{"archive"}}}}
+	fixture.registry = registry
+}
+
+func (fixture *durableFixture) installFailingSync(target *MaildirTarget) {
 	newDir := filepath.Join(target.path, "new")
 	target.syncDir = func(path string) error {
 		if path == newDir {
@@ -49,46 +75,46 @@ func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
 		}
 		return syncMaildirDirectory(path)
 	}
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+}
+
+func (fixture *durableFixture) run(t *testing.T) *syncengine.SyncStats {
+	t.Helper()
+	engine, err := syncengine.NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, syncengine.WithMaxRetries(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	message := &plugins.Message{UID: "1", Folder: "INBOX", Raw: []byte("Subject: fixture\r\n\r\nbody\r\n")}
-	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) {
-		return &durableFixtureSource{message: message}, nil
-	})
-	registry.RegisterTarget("maildir", func(map[string]interface{}) (plugins.Target, error) { return target, nil })
-	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "source", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "archive", Type: "maildir"}}, Pairs: []config.PairConfig{{Source: "source", Targets: []string{"archive"}}}}
-	run := func() *syncengine.SyncStats {
-		engine, err := syncengine.NewSyncEngine(cfg, store, registry, syncengine.WithMaxRetries(0))
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := engine.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return stats
+	stats, err := engine.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	failed := run()
+	return stats
+}
+
+func (fixture *durableFixture) identity() string {
+	return "placement:" + dedup.ComputeContentHash([]byte(fixture.target.DestinationIdentity()+"\x00hash:"+dedup.ComputeContentHash(fixture.message.Raw)))
+}
+
+func (fixture *durableFixture) checkDelivery(t *testing.T, want bool) {
+	t.Helper()
+	exists, err := fixture.store.DeliveryExists(t.Context(), plugins.TargetStateKey(fixture.target), fixture.identity())
+	if err != nil || exists != want {
+		t.Fatalf("delivery receipt=%v want %v: %v", exists, want, err)
+	}
+}
+
+func TestMaildirFailedDurabilityDoesNotPersistDelivery(t *testing.T) {
+	fixture := &durableFixture{}
+	fixture.open(t)
+	defer fixture.store.Close()
+	failed := fixture.run(t)
 	if failed.TotalWritten != 0 || failed.TotalErrors != 1 {
 		t.Fatalf("failed sync acknowledged delivery: %+v", failed)
 	}
-	identity := "placement:" + dedup.ComputeContentHash([]byte(target.DestinationIdentity()+"\x00hash:"+dedup.ComputeContentHash(message.Raw)))
-	stateTarget := plugins.TargetStateKey(target)
-	exists, err := store.DeliveryExists(context.Background(), stateTarget, identity)
-	if err != nil || exists {
-		t.Fatalf("failed durability persisted receipt: %v %v", exists, err)
-	}
-	target.syncDir = nil
-	success := run()
+	fixture.checkDelivery(t, false)
+	fixture.target.syncDir = nil
+	success := fixture.run(t)
 	if success.TotalWritten != 1 || success.TotalErrors != 0 {
 		t.Fatalf("durable retry failed: %+v", success)
 	}
-	exists, err = store.DeliveryExists(context.Background(), stateTarget, identity)
-	if err != nil || !exists {
-		t.Fatalf("durable delivery missing receipt: %v %v", exists, err)
-	}
+	fixture.checkDelivery(t, true)
 }

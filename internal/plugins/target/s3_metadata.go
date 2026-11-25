@@ -3,8 +3,8 @@ package target
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/zekihan/mailvault/internal/plugins"
 )
@@ -21,7 +21,7 @@ func s3ObjectMetadata(msg *plugins.Message, contentHash [32]byte) map[string]str
 		"message-id":    msg.MessageID,
 		"content-hash":  hex.EncodeToString(contentHash[:]),
 		"internal-date": msg.InternalDate,
-		"size":          fmt.Sprintf("%d", msg.Size),
+		"size":          strconv.FormatInt(msg.Size, 10),
 	}
 	size := 0
 	for key, value := range metadata {

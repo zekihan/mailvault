@@ -32,67 +32,82 @@ type validationReport struct {
 	mappings           []config.PairConfig
 }
 
-func validateConfiguration(contexts ...context.Context) (report validationReport, err error) {
-	report.Sources = []validationResource{}
-	report.Targets = []validationResource{}
-	report.Errors = []string{}
-	defer func() {
-		if err != nil {
-			report.Valid = false
-			if len(report.Errors) == 0 {
-				report.Errors = append(report.Errors, err.Error())
-			}
-		}
-	}()
-	cfg, err := config.LoadForValidation(cfgFile)
-	if err != nil {
-		return report, fmt.Errorf("load config: %w", err)
-	}
-	if err := config.Validate(cfg); err != nil {
-		return report, fmt.Errorf("validate config: %w", err)
-	}
+func newValidationReport() validationReport {
+	return validationReport{Sources: []validationResource{}, Targets: []validationResource{}, Errors: []string{}}
+}
+
+func initValidationReport(cfg *config.Config, report *validationReport) {
 	report.Valid = true
 	report.ConfigurationValid = true
 	report.Pairs = len(cfg.Pairs)
 	report.mappings = cfg.Pairs
-	for _, source := range cfg.Sources {
+	for i := range cfg.Sources {
+		source := &cfg.Sources[i]
 		report.Sources = append(report.Sources, validationResource{Name: source.Name, Type: source.Type, Status: "not_tested", host: source.Host, port: source.Port})
 	}
 	for _, target := range cfg.Targets {
 		report.Targets = append(report.Targets, validationResource{Name: target.Name, Type: target.Type, Status: "not_tested"})
 	}
+}
+
+func validationContext(contexts ...context.Context) context.Context {
+	if len(contexts) > 0 && contexts[0] != nil {
+		return contexts[0]
+	}
+	return context.Background()
+}
+
+func recordValidationFailure(report *validationReport, failures *[]error, resource *validationResource, kind string, failure error) {
+	if failure == nil {
+		resource.Status = "ok"
+		return
+	}
+	resource.Status = "failed"
+	resource.Error = failure.Error()
+	wrapped := fmt.Errorf("%s %q: %w", kind, resource.Name, failure)
+	report.Errors = append(report.Errors, wrapped.Error())
+	*failures = append(*failures, wrapped)
+}
+
+func validateConfiguration(contexts ...context.Context) (validationReport, error) {
+	report := newValidationReport()
+	cfg, err := config.LoadForValidation(cfgFile)
+	if err != nil {
+		wrapped := fmt.Errorf("load config: %w", err)
+		report.Valid = false
+		if len(report.Errors) == 0 {
+			report.Errors = append(report.Errors, wrapped.Error())
+		}
+		return report, wrapped
+	}
+	if err := config.Validate(cfg); err != nil {
+		wrapped := fmt.Errorf("validate config: %w", err)
+		report.Valid = false
+		if len(report.Errors) == 0 {
+			report.Errors = append(report.Errors, wrapped.Error())
+		}
+		return report, wrapped
+	}
+	initValidationReport(cfg, &report)
 	if dryRun {
 		return report, nil
 	}
 	report.ConnectivityTested = true
 	registry := builtin.Registry()
-	ctx := context.Background()
-	if len(contexts) > 0 && contexts[0] != nil {
-		ctx = contexts[0]
-	}
+	ctx := validationContext(contexts...)
 	var failures []error
-	record := func(resource *validationResource, kind string, failure error) {
-		if failure == nil {
-			resource.Status = "ok"
-			return
-		}
-		resource.Status = "failed"
-		resource.Error = failure.Error()
-		wrapped := fmt.Errorf("%s %q: %w", kind, resource.Name, failure)
-		report.Errors = append(report.Errors, wrapped.Error())
-		failures = append(failures, wrapped)
-	}
-	for i, sourceConfig := range cfg.Sources {
+	for i := range cfg.Sources {
+		sourceConfig := &cfg.Sources[i]
 		values, failure := config.SourcePluginConfig(sourceConfig, cfg.MaxMessageBytes)
 		if failure != nil {
-			record(&report.Sources[i], "source", failure)
+			recordValidationFailure(&report, &failures, &report.Sources[i], "source", failure)
 			continue
 		}
 		source, failure := registry.CreateSource(sourceConfig.Type, values)
 		if failure == nil {
 			failure = errors.Join(source.Connect(ctx), source.Close())
 		}
-		record(&report.Sources[i], "source", failure)
+		recordValidationFailure(&report, &failures, &report.Sources[i], "source", failure)
 	}
 	for i, targetConfig := range cfg.Targets {
 		values := config.TargetPluginConfig(targetConfig, cfg.MaxMessageBytes)
@@ -100,12 +115,19 @@ func validateConfiguration(contexts ...context.Context) (report validationReport
 		if failure == nil {
 			failure = errors.Join(target.Initialize(ctx), target.Close())
 		}
-		record(&report.Targets[i], "target", failure)
+		recordValidationFailure(&report, &failures, &report.Targets[i], "target", failure)
 	}
-	return report, errors.Join(failures...)
+	joined := errors.Join(failures...)
+	if joined != nil {
+		report.Valid = false
+		if len(report.Errors) == 0 {
+			report.Errors = append(report.Errors, joined.Error())
+		}
+	}
+	return report, joined
 }
 
-func printValidationReport(report validationReport) error {
+func printValidationReport(report *validationReport) error {
 	if jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")

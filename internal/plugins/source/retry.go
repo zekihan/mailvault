@@ -39,7 +39,10 @@ type streamedUIDsKey struct{}
 // Include streamed UIDs when selecting bodies for a retry. They are separate
 // from delivery receipts because the consumer may have failed to store them.
 func skipStreamedUIDs(ctx context.Context, scope, folder string, known map[string]bool) map[string]bool {
-	streamed, _ := ctx.Value(streamedUIDsKey{}).(map[streamedUID]bool)
+	var streamed map[streamedUID]bool
+	if v, ok := ctx.Value(streamedUIDsKey{}).(map[streamedUID]bool); ok {
+		streamed = v
+	}
 	var merged map[string]bool
 	for key := range streamed {
 		if key.scope != scope || key.folder != folder {
@@ -62,46 +65,60 @@ func retryFetch(ctx context.Context, out chan<- *plugins.Message, fetch func(con
 	emitted := make(map[streamedUID]bool)
 	unstable := false
 	for attempt := 0; ; attempt++ {
-		messages := make(chan *plugins.Message)
-		result := make(chan error, 1)
-		attemptCtx := context.WithValue(ctx, streamedUIDsKey{}, maps.Clone(emitted))
-		go func() { result <- fetch(attemptCtx, messages); close(messages) }()
-		for msg := range messages {
-			key := streamedUID{msg.UIDScope, msg.Folder, msg.UID}
-			if msg.UIDScope != "" && emitted[key] {
-				continue
-			}
-			select {
-			case out <- msg:
-				if msg.UIDScope == "" {
-					unstable = true
-				} else {
-					emitted[key] = true
-				}
-			case <-ctx.Done():
-				// Drain the producer before returning so its connection lock stays owned.
-			}
-		}
-		err := <-result
+		err := runFetchAttempt(ctx, out, fetch, emitted, &unstable)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err == nil || unstable || attempt >= 2 || !transientSourceError(err) {
 			return err
 		}
-		plugins.ReportFetchProgress(ctx, plugins.FetchProgress{Total: -1, Stage: "connection lost; retrying"})
-		timer := time.NewTimer(time.Duration(1<<attempt) * 200 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := waitRetryBackoff(ctx, attempt); err != nil {
+			return err
 		}
 	}
 }
 
-// Initial connection backoff: 1s, 2s, 4s, ... capped at 30s, until the
-// configured budget would be exceeded by the next wait.
+func runFetchAttempt(ctx context.Context, out chan<- *plugins.Message, fetch func(context.Context, chan<- *plugins.Message) error, emitted map[streamedUID]bool, unstable *bool) error {
+	messages := make(chan *plugins.Message)
+	result := make(chan error, 1)
+	attemptCtx := context.WithValue(ctx, streamedUIDsKey{}, maps.Clone(emitted))
+	go func() { result <- fetch(attemptCtx, messages); close(messages) }()
+	for msg := range messages {
+		forwardFetchedMessage(ctx, out, msg, emitted, unstable)
+	}
+	return <-result
+}
+
+func forwardFetchedMessage(ctx context.Context, out chan<- *plugins.Message, msg *plugins.Message, emitted map[streamedUID]bool, unstable *bool) {
+	key := streamedUID{msg.UIDScope, msg.Folder, msg.UID}
+	if msg.UIDScope != "" && emitted[key] {
+		return
+	}
+	select {
+	case out <- msg:
+		if msg.UIDScope == "" {
+			*unstable = true
+		} else {
+			emitted[key] = true
+		}
+	case <-ctx.Done():
+		// Drain the producer before returning so its connection lock stays owned.
+	}
+}
+
+func waitRetryBackoff(ctx context.Context, attempt int) error {
+	plugins.ReportFetchProgress(ctx, plugins.FetchProgress{Total: -1, Stage: "connection lost; retrying"})
+	timer := time.NewTimer(time.Duration(1<<attempt) * 200 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Initial connection backoff: 1s, 2s, 4s, and so on, capped at 30s until the configured budget would be exceeded by the next wait.
 const (
 	DefaultConnectRetryTimeout = 3 * time.Minute
 	connectRetryInitialDelay   = time.Second
@@ -161,7 +178,11 @@ func retryConnect(ctx context.Context, policy connectBackoff, name string, conne
 		if time.Now().Add(delay).After(deadline) {
 			return fmt.Errorf("%w after %d attempts within %s: %w", errConnectRetriesExhausted, attempt, policy.budget, err)
 		}
-		slog.Warn("source connection failed; retrying", "source", name, "attempt", attempt, "retry_in", delay.String(), "error", err.Error())
+		slog.WarnContext(ctx, "Source connection failed; retrying",
+			slog.String("source", name),
+			slog.Int("attempt", attempt),
+			slog.String("retryIn", delay.String()),
+			slog.Any("error", err))
 		plugins.ReportFetchProgress(ctx, plugins.FetchProgress{Total: -1, Stage: fmt.Sprintf("connection attempt %d failed; retrying in %s", attempt, delay)})
 		timer := time.NewTimer(delay)
 		select {

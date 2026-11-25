@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const mailboxLockRetryInterval = 10 * time.Millisecond
+
 // Cooperating writers lock the mailbox inode while appending or rolling back.
 func lockMbox(ctx context.Context, file *os.File) error {
 	for {
@@ -22,7 +24,7 @@ func lockMbox(ctx context.Context, file *os.File) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		case <-time.After(mailboxLockRetryInterval):
 		}
 	}
 }

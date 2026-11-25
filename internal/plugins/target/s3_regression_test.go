@@ -1,7 +1,6 @@
 package target
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +25,7 @@ func isolateS3AWS(t *testing.T) {
 func TestS3RejectsMalformedStringOptions(t *testing.T) {
 	for _, field := range []string{"bucket", "region", "endpoint", "prefix"} {
 		t.Run(field, func(t *testing.T) {
-			values := map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "endpoint": "http://127.0.0.1:1", "prefix": "private/"}
+			values := map[string]any{"bucket": "bucket", "region": "us-east-1", "endpoint": "http://127.0.0.1:1", "prefix": "private/"}
 			values[field] = 23
 			_, err := NewS3Target(values)
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), field) {
@@ -44,29 +43,29 @@ func TestS3BoundsLongUnicodeObjectKeys(t *testing.T) {
 	var keys []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
-			w.WriteHeader(200)
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		key := strings.TrimPrefix(r.URL.Path, "/bucket/")
 		if len([]byte(key)) > 1024 {
-			w.WriteHeader(400)
+			w.WriteHeader(http.StatusBadRequest)
 			_, _ = fmt.Fprint(w, `<Error><Code>KeyTooLongError</Code></Error>`)
 			return
 		}
 		keys = append(keys, key)
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	p, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "endpoint": server.URL, "credentials_ref": `{"access_key_id":"x","secret_access_key":"y"}`})
+	target, err := NewS3Target(map[string]any{"bucket": "bucket", "region": "us-east-1", "endpoint": server.URL, "credentials_ref": `{"access_key_id":"x","secret_access_key":"y"}`}) // #nosec G101 -- fixture dummy credentials only
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = p.Initialize(context.Background()); err != nil {
+	if err = target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	raw := []byte("body")
-	for _, m := range []*plugins.Message{{Folder: strings.Repeat("界", 200), UID: "42", Raw: raw}, {Folder: "INBOX", UID: "42", Raw: raw}, {Folder: "Archive", UID: "42", Raw: raw}, {Folder: "INBOX", UID: "43", Raw: raw}} {
-		if err = p.WriteMessage(context.Background(), m); err != nil {
+	for _, m := range []*plugins.Message{{Folder: strings.Repeat("界", 200), UID: "42", Raw: raw}, {Folder: "INBOX", UID: "42", Raw: raw}, {Folder: "Archive", UID: "42", Raw: raw}, {Folder: "INBOX", UID: "43", Raw: raw}} { //nolint:gosmopolitan // Unicode (Han script) folder fixture; the byte-limit checks require multibyte runes
+		if err = target.WriteMessage(t.Context(), m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,18 +81,18 @@ func TestS3BoundsLongUnicodeObjectKeys(t *testing.T) {
 }
 
 func TestS3RejectsPrefixThatCannotFitKey(t *testing.T) {
-	_, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "prefix": strings.Repeat("p", 1025)})
+	_, err := NewS3Target(map[string]any{"bucket": "bucket", "region": "us-east-1", "prefix": strings.Repeat("p", 1025)})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "prefix") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
 func TestS3AcceptsValidStringOptions(t *testing.T) {
-	p, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1", "endpoint": "http://localhost:9000", "prefix": "private"})
+	p, err := NewS3Target(map[string]any{"bucket": "bucket", "region": "us-east-1", "endpoint": "http://localhost:9000", "prefix": "private"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := p.(*S3Target)
+	target := mustAssert[*S3Target](t, p)
 	if target.bucket != "bucket" || target.region != "us-east-1" || target.endpoint != "http://localhost:9000" || target.prefix != "private/" {
 		t.Fatalf("target options = %#v", target)
 	}

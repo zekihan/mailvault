@@ -7,7 +7,7 @@ import (
 )
 
 func TestPOP3AcceptsSTARTTLS(t *testing.T) {
-	source, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": false, "start_tls": true})
+	source, err := NewPOP3Source(map[string]any{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": false, "start_tls": true})
 	if err != nil {
 		t.Fatalf("STARTTLS rejected: %v", err)
 	}
@@ -15,7 +15,7 @@ func TestPOP3AcceptsSTARTTLS(t *testing.T) {
 }
 
 func TestPOP3RejectsConflictingTLSModes(t *testing.T) {
-	_, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": true, "start_tls": true})
+	_, err := NewPOP3Source(map[string]any{"host": "example.invalid", "username": "test-user", "password_ref": "synthetic-value", "use_tls": true, "start_tls": true})
 	if err == nil {
 		t.Fatal("conflicting TLS modes accepted")
 	}
@@ -28,11 +28,11 @@ func TestSourcesRejectOAuthWithoutTLS(t *testing.T) {
 		new  func() error
 	}{
 		{"imap", func() error {
-			_, err := NewIMapSource(map[string]interface{}{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
+			_, err := NewIMapSource(map[string]any{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
 			return err
 		}},
 		{"pop3", func() error {
-			_, err := NewPOP3Source(map[string]interface{}{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
+			_, err := NewPOP3Source(map[string]any{"host": "example.invalid", "username": "user", "oauth2_token_provider": provider, "use_tls": false, "start_tls": false})
 			return err
 		}},
 	} {

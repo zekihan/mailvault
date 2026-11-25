@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"testing"
 
 	"github.com/zekihan/mailvault/internal/plugins"
@@ -9,20 +8,20 @@ import (
 
 func TestMetadataRefreshPersistsKeywordsAndHonorsDryRun(t *testing.T) {
 	for _, dry := range []bool{false, true} {
-		f := newEngineFixture(t)
-		engine, err := NewSyncEngine(f.cfg, f.store, f.registry, WithDryRun(dry))
+		fixture := newEngineFixture(t)
+		engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, WithDryRun(dry))
 		if err != nil {
 			t.Fatal(err)
 		}
 		msg := &plugins.Message{UIDScope: "scope", Folder: "INBOX", UID: "1", Flags: []string{"\\Seen", "custom"}}
-		entry := plugins.BackupMessage{Source: f.source.Name(), Target: f.targets["first"].Name(), Scope: "scope", Folder: "INBOX", UID: "1", Locator: "locator", RawSHA256: "hash", Flags: []string{"\\Flagged"}}
-		if err := f.store.RecordBackupMessage(context.Background(), entry); err != nil {
+		entry := plugins.BackupMessage{Source: fixture.source.Name(), Target: fixture.targets["first"].Name(), Scope: "scope", Folder: "INBOX", UID: "1", Locator: "locator", RawSHA256: "hash", Flags: []string{"\\Flagged"}}
+		if err := fixture.store.RecordBackupMessage(t.Context(), &entry); err != nil {
 			t.Fatal(err)
 		}
-		if err := engine.refreshMetadata(context.Background(), f.source, f.targets["first"], msg); err != nil {
+		if err := engine.refreshMetadata(t.Context(), fixture.source, fixture.targets["first"], msg); err != nil {
 			t.Fatal(err)
 		}
-		saved, found, err := f.store.FindBackupMessage(context.Background(), entry.Source, entry.Target, entry.Scope, entry.Folder, entry.UID)
+		saved, found, err := fixture.store.FindBackupMessage(t.Context(), entry.Source, entry.Target, entry.Scope, entry.Folder, entry.UID)
 		if err != nil || !found {
 			t.Fatalf("manifest: %v", err)
 		}

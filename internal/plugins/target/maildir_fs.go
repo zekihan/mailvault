@@ -13,6 +13,11 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
+const (
+	maildirDirPerms  = 0o750
+	maildirFilePerms = 0o600
+)
+
 // A directory handle pins the inode used for every operation. Paths are only
 // used to validate identity and to report errors, never to create/read mail.
 type maildirDirectory struct {
@@ -21,7 +26,7 @@ type maildirDirectory struct {
 	info os.FileInfo
 }
 
-func (d *maildirDirectory) Close() error { return d.root.Close() }
+func (dir *maildirDirectory) Close() error { return dir.root.Close() }
 
 func openedMaildirDirectory(root *os.Root, path string, expected os.FileInfo) (*maildirDirectory, error) {
 	info, err := root.Stat(".")
@@ -43,34 +48,34 @@ func openMaildirPath(path string, create bool, created *[]maildirCreation) (*mai
 	return openAbsoluteMaildir(absolute, create, created)
 }
 
-func (d *maildirDirectory) child(name string, create bool, created *[]maildirCreation) (*maildirDirectory, error) {
+func (dir *maildirDirectory) child(name string, create bool, created *[]maildirCreation) (*maildirDirectory, error) {
 	// Lstat and the identity comparison also reject symlinks on platforms where
 	// Root.OpenRoot follows an in-root symlink. OpenRoot itself enforces containment.
 	owned := false
-	info, err := d.root.Lstat(name)
+	info, err := dir.root.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) && create {
-		err = d.root.Mkdir(name, 0750)
+		err = dir.root.Mkdir(name, maildirDirPerms)
 		owned = err == nil
 		if err == nil || errors.Is(err, os.ErrExist) {
-			info, err = d.root.Lstat(name)
+			info, err = dir.root.Lstat(name)
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("maildir component %q is not a real directory", filepath.Join(d.path, name))
+		return nil, fmt.Errorf("maildir component %q is not a real directory", filepath.Join(dir.path, name))
 	}
-	root, err := d.root.OpenRoot(name)
+	root, err := dir.root.OpenRoot(name)
 	if err != nil {
 		return nil, err
 	}
-	child, err := openedMaildirDirectory(root, filepath.Join(d.path, name), info)
+	child, err := openedMaildirDirectory(root, filepath.Join(dir.path, name), info)
 	if err != nil {
 		return nil, err
 	}
 	if owned && created != nil {
-		parentCopy, copyErr := d.walk(".", false, nil)
+		parentCopy, copyErr := dir.walk(".", false, nil)
 		if copyErr != nil {
 			_ = child.Close()
 			return nil, copyErr
@@ -86,23 +91,23 @@ func (d *maildirDirectory) child(name string, create bool, created *[]maildirCre
 	return child, nil
 }
 
-func (d *maildirDirectory) walk(path string, create bool, created *[]maildirCreation) (*maildirDirectory, error) {
+func (dir *maildirDirectory) walk(path string, create bool, created *[]maildirCreation) (*maildirDirectory, error) {
 	clean := filepath.Clean(path)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return nil, errors.New("invalid relative maildir path")
 	}
-	root, err := d.root.OpenRoot(".")
+	root, err := dir.root.OpenRoot(".")
 	if err != nil {
 		return nil, err
 	}
-	current, err := openedMaildirDirectory(root, d.path, d.info)
+	current, err := openedMaildirDirectory(root, dir.path, dir.info)
 	if err != nil {
 		return nil, err
 	}
 	if clean == "." {
 		return current, nil
 	}
-	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(clean, string(filepath.Separator)) {
 		next, err := current.child(part, create, created)
 		_ = current.Close()
 		if err != nil {
@@ -113,14 +118,14 @@ func (d *maildirDirectory) walk(path string, create bool, created *[]maildirCrea
 	return current, nil
 }
 
-func (d *maildirDirectory) validate() error {
-	current, err := openMaildirPath(d.path, false, nil)
+func (dir *maildirDirectory) validate() error {
+	current, err := openMaildirPath(dir.path, false, nil)
 	if err != nil {
 		return fmt.Errorf("revalidate maildir: %w", err)
 	}
 	defer func() { _ = current.Close() }()
-	if !os.SameFile(d.info, current.info) {
-		return fmt.Errorf("maildir directory identity changed: %s", d.path)
+	if !os.SameFile(dir.info, current.info) {
+		return fmt.Errorf("maildir directory identity changed: %s", dir.path)
 	}
 	return nil
 }
@@ -134,10 +139,10 @@ func validateMaildirDirectories(directories ...*maildirDirectory) error {
 	return nil
 }
 
-func (d *maildirDirectory) createTemp() (*os.File, string, error) {
+func (dir *maildirDirectory) createTemp() (*os.File, string, error) {
 	for range 100 {
 		name := "mailvault-" + rand.Text()
-		file, err := d.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+		file, err := dir.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, maildirFilePerms)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
@@ -146,19 +151,17 @@ func (d *maildirDirectory) createTemp() (*os.File, string, error) {
 	return nil, "", errors.New("could not reserve a unique maildir filename")
 }
 
-func removeMaildirFile(d *maildirDirectory, name string) error { return d.root.Remove(name) }
+func removeMaildirFile(dir *maildirDirectory, name string) error { return dir.root.Remove(name) }
 
-// Open once, then check and read the same inode. O_NONBLOCK prevents a swapped
-// FIFO from hanging before fstat; O_NOFOLLOW rejects a swapped final symlink.
-func (d *maildirDirectory) openMessage(name string) (*os.File, error) {
-	info, err := d.root.Lstat(name)
+func (dir *maildirDirectory) openMessage(name string) (*os.File, error) {
+	info, err := dir.root.Lstat(name)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("maildir locator is not a regular file")
 	}
-	file, err := d.root.OpenFile(name, maildirReadFlags, 0)
+	file, err := dir.root.OpenFile(name, maildirReadFlags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -187,16 +190,14 @@ func readMaildirMessage(file *os.File, limit int64) ([]byte, error) {
 	return plugins.ReadMessage(file, limit)
 }
 
-// walkEntries uses an independent directory stream under the pinned handle,
-// retaining at most one batch. The budget also charges ignored entries and paths.
-func (d *maildirDirectory) walkEntries(ctx context.Context, budget *backupListingBudget, prefix string, visit func(os.DirEntry) error) error {
+func (dir *maildirDirectory) walkEntries(ctx context.Context, budget *backupListingBudget, prefix string, visit func(os.DirEntry) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := d.validate(); err != nil {
+	if err := dir.validate(); err != nil {
 		return err
 	}
-	file, err := d.root.Open(".")
+	file, err := dir.root.Open(".")
 	if err != nil {
 		return err
 	}
@@ -207,24 +208,7 @@ func (d *maildirDirectory) walkEntries(ctx context.Context, budget *backupListin
 		}
 		entries, readErr := file.ReadDir(backupDirectoryBatchSize)
 		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := d.validate(); err != nil {
-				return err
-			}
-			if err := budget.add(filepath.ToSlash(filepath.Join(prefix, entry.Name()))); err != nil {
-				return err
-			}
-			if err := visit(entry); err != nil {
-				return err
-			}
-			// A callback may mutate or rename directories. Do not acknowledge
-			// the batch or emit another entry if the named identity changed.
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := d.validate(); err != nil {
+			if err := dir.visitEntry(ctx, budget, prefix, entry, visit); err != nil {
 				return err
 			}
 		}
@@ -235,105 +219,160 @@ func (d *maildirDirectory) walkEntries(ctx context.Context, budget *backupListin
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return d.validate()
+			return dir.validate()
 		}
 	}
 }
 
-// resolveMessage preserves Maildir's new/cur moves and flag renames, returning
-// the descriptor that was checked rather than a pathname to reopen later.
-func (d *maildirDirectory) resolveMessage(locator string) (*os.File, string, error) {
-	return d.resolveMessageBounded(context.Background(), locator, backupListingLimits{})
+func (dir *maildirDirectory) visitEntry(ctx context.Context, budget *backupListingBudget, prefix string, entry os.DirEntry, visit func(os.DirEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := dir.validate(); err != nil {
+		return err
+	}
+	if err := budget.add(filepath.ToSlash(filepath.Join(prefix, entry.Name()))); err != nil {
+		return err
+	}
+	if err := visit(entry); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return dir.validate()
 }
 
-func (d *maildirDirectory) resolveMessageBounded(ctx context.Context, locator string, limits backupListingLimits) (*os.File, string, error) {
+func (dir *maildirDirectory) resolveMessage(locator string) (*os.File, string, error) {
+	return dir.resolveMessageBounded(context.Background(), locator, backupListingLimits{})
+}
+
+func (dir *maildirDirectory) resolveMessageBounded(ctx context.Context, locator string, limits backupListingLimits) (*os.File, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
-	clean := filepath.Clean(filepath.FromSlash(locator))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, "", errors.New("invalid maildir locator")
+	clean, err := cleanMaildirLocator(locator)
+	if err != nil {
+		return nil, "", err
 	}
 	parent := filepath.Dir(clean)
-	directory, err := d.walk(parent, false, nil)
+	file, err := dir.openExactMessage(ctx, clean, parent)
 	if err == nil {
-		file, openErr := directory.openMessage(filepath.Base(clean))
-		if openErr == nil {
-			openErr = validateMaildirDirectories(d, directory)
-		}
-		if openErr == nil {
-			openErr = ctx.Err()
-		}
-		_ = directory.Close()
-		if openErr == nil {
-			return file, clean, nil
-		}
-		if file != nil {
-			_ = file.Close()
-		}
-		err = openErr
+		return file, clean, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, "", err
 	}
-	base := strings.SplitN(filepath.Base(clean), ":2,", 2)[0]
+	return dir.findRenamedMessage(ctx, locator, clean, parent, limits)
+}
+
+func cleanMaildirLocator(locator string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(locator))
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("invalid maildir locator")
+	}
+	return clean, nil
+}
+
+func (dir *maildirDirectory) openExactMessage(ctx context.Context, clean, parent string) (*os.File, error) {
+	directory, err := dir.walk(parent, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	file, openErr := directory.openMessage(filepath.Base(clean))
+	if openErr == nil {
+		openErr = validateMaildirDirectories(dir, directory)
+	}
+	if openErr == nil {
+		openErr = ctx.Err()
+	}
+	_ = directory.Close()
+	if openErr == nil {
+		return file, nil
+	}
+	if file != nil {
+		_ = file.Close()
+	}
+	return nil, openErr
+}
+
+func (dir *maildirDirectory) findRenamedMessage(ctx context.Context, locator, clean, parent string, limits backupListingLimits) (*os.File, string, error) {
+	base, _, _ := strings.Cut(filepath.Base(clean), ":2,")
 	folder := filepath.Dir(parent)
-	var found *os.File
-	var relative string
-	budget := limits.budget()
-	for _, subdir := range []string{"cur", "new"} {
-		directory, err := d.walk(filepath.Join(folder, subdir), false, nil)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err == nil {
-			err = directory.walkEntries(ctx, budget, filepath.Join(folder, subdir), func(entry os.DirEntry) error {
-				if !entry.Type().IsRegular() || (entry.Name() != base && !strings.HasPrefix(entry.Name(), base+":2,")) {
-					return nil
-				}
-				file, err := directory.openMessage(entry.Name())
-				if err != nil {
-					return err
-				}
-				if found != nil {
-					_ = file.Close()
-					return fmt.Errorf("maildir locator %q has multiple matching files", locator)
-				}
-				found = file
-				relative = filepath.Join(folder, subdir, entry.Name())
-				return nil
-			})
-			_ = directory.Close()
-		}
-		if err != nil {
-			if found != nil {
-				_ = found.Close()
-			}
+	search := &maildirRenameSearch{dir: dir, locator: locator, base: base, folder: folder, budget: limits.budget()}
+	for _, subdir := range []string{maildirDirCur, maildirDirNew} {
+		if err := search.searchSubdir(ctx, subdir); err != nil {
+			search.closeFound()
 			return nil, "", err
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		if found != nil {
-			_ = found.Close()
-		}
+		search.closeFound()
 		return nil, "", err
 	}
-	if found == nil {
+	if search.found == nil {
 		return nil, "", fmt.Errorf("%w: %s", plugins.ErrBackupMessageMissing, locator)
 	}
-	if err := d.validateMessage(relative, found); err != nil {
-		_ = found.Close()
+	if err := dir.validateMessage(search.relative, search.found); err != nil {
+		_ = search.found.Close()
 		return nil, "", err
 	}
-	if err := d.validate(); err != nil {
-		_ = found.Close()
+	if err := dir.validate(); err != nil {
+		_ = search.found.Close()
 		return nil, "", err
 	}
 	if err := ctx.Err(); err != nil {
-		_ = found.Close()
+		_ = search.found.Close()
 		return nil, "", err
 	}
-	return found, relative, nil
+	return search.found, search.relative, nil
+}
+
+type maildirRenameSearch struct {
+	dir      *maildirDirectory
+	locator  string
+	base     string
+	folder   string
+	budget   *backupListingBudget
+	found    *os.File
+	relative string
+}
+
+func (search *maildirRenameSearch) closeFound() {
+	if search.found != nil {
+		_ = search.found.Close()
+	}
+}
+
+func (search *maildirRenameSearch) searchSubdir(ctx context.Context, subdir string) error {
+	directory, err := search.dir.walk(filepath.Join(search.folder, subdir), false, nil)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	return directory.walkEntries(ctx, search.budget, filepath.Join(search.folder, subdir), func(entry os.DirEntry) error {
+		return search.visitEntry(directory, subdir, entry)
+	})
+}
+
+func (search *maildirRenameSearch) visitEntry(directory *maildirDirectory, subdir string, entry os.DirEntry) error {
+	if !entry.Type().IsRegular() || (entry.Name() != search.base && !strings.HasPrefix(entry.Name(), search.base+":2,")) {
+		return nil
+	}
+	file, err := directory.openMessage(entry.Name())
+	if err != nil {
+		return err
+	}
+	if search.found != nil {
+		_ = file.Close()
+		return fmt.Errorf("maildir locator %q has multiple matching files", search.locator)
+	}
+	search.found = file
+	search.relative = filepath.Join(search.folder, subdir, entry.Name())
+	return nil
 }
 
 func checkMaildirPublication(directory *maildirDirectory, name string, expected os.FileInfo) error {
@@ -347,8 +386,8 @@ func checkMaildirPublication(directory *maildirDirectory, name string, expected 
 	return nil
 }
 
-func (d *maildirDirectory) validateMessage(relative string, file *os.File) error {
-	directory, err := d.walk(filepath.Dir(relative), false, nil)
+func (dir *maildirDirectory) validateMessage(relative string, file *os.File) error {
+	directory, err := dir.walk(filepath.Dir(relative), false, nil)
 	if err != nil {
 		return err
 	}

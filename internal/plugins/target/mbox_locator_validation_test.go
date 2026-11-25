@@ -2,7 +2,6 @@ package target
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -35,7 +34,7 @@ func TestMboxReaderRejectsLocatorsThatDiscardPayload(t *testing.T) {
 			}
 			mbox := &MboxTarget{path: path}
 			locator := fmt.Sprintf("0:%d:%d:%d", len(tc.data), tc.encoded, tc.raw)
-			msg, err := mbox.ReadBackupMessage(context.Background(), locator)
+			msg, err := mbox.ReadBackupMessage(t.Context(), locator)
 			if !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
 				t.Fatalf("read = %+v, %v; want corruption", msg, err)
 			}
@@ -49,18 +48,18 @@ func TestMboxReaderRejectsIncompleteListedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	mbox := &MboxTarget{path: path}
-	entries, err := mbox.ListBackupMessages(context.Background())
+	entries, err := mbox.ListBackupMessages(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("entries = %+v", entries)
 	}
-	msg, err := mbox.ReadBackupMessage(context.Background(), entries[0].Locator)
+	msg, err := mbox.ReadBackupMessage(t.Context(), entries[0].Locator)
 	if !errors.Is(err, plugins.ErrBackupMessageCorrupt) {
 		t.Fatalf("read = %+v, %v; want corruption", msg, err)
 	}
-	result, err := restore.Run(context.Background(), mbox, nil, nil, restore.Options{
+	result, err := restore.Run(t.Context(), mbox, nil, nil, restore.Options{
 		BackupTarget: "archive", DestinationSource: "synthetic", DestinationFolder: "restore", DryRun: true,
 	})
 	if !errors.Is(err, plugins.ErrBackupMessageCorrupt) || result.Planned != 0 {
@@ -69,7 +68,7 @@ func TestMboxReaderRejectsIncompleteListedRecord(t *testing.T) {
 }
 
 func TestMboxReaderPreservesValidRawLengthVariants(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, raw := range [][]byte{nil, []byte("x"), []byte("Subject: synthetic\n\nbody\n"), []byte("From escaped\n>From quoted")} {
 		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
 			mbox := &MboxTarget{path: filepath.Join(t.TempDir(), "archive.mbox"), create: true}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"github.com/zekihan/mailvault/internal/state"
 	"os"
 	"path/filepath"
@@ -19,7 +18,7 @@ func TestDryRunCreatesNeitherTargetNorState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := cfg.Targets[0].Config["path"].(string)
+	path := mustAssert[string](t, cfg.Targets[0].Config["path"])
 	output, err := captureOutput(t, func() error { return runSync(nil, nil) })
 	if err == nil || !strings.Contains(output, "ERROR") {
 		t.Fatalf("expected refused source with diagnostics: %v %s", err, output)
@@ -35,11 +34,11 @@ func TestDryRunDoesNotModifyExistingState(t *testing.T) {
 	dryRun = true
 	jsonOutput = false
 	path := filepath.Join(stateDir, "state.db")
-	store, err := state.NewStore(path)
+	store, err := state.NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertSource(context.Background(), "test-account", "pop3", "original-host", "original-user"); err != nil {
+	if err := store.UpsertSource(t.Context(), "test-account", "pop3", "original-host", "original-user"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

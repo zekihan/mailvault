@@ -16,6 +16,34 @@ func TestSourceDefaultsUseDecodedConfigurationPresence(t *testing.T) {
 	t.Run("file-config", TestLoadSourceDefaultsPreservesExplicitValues)
 }
 
+func assertDefaultSource(t *testing.T, defaults *SourceConfig) {
+	t.Helper()
+	if !defaults.UseTLS || defaults.ConnectionTimeout != 30*time.Second || defaults.ReadTimeout != 60*time.Second || defaults.ConnectRetryTimeout != 3*time.Minute {
+		t.Fatalf("unsafe or missing defaults: TLS=%v dial=%v read=%v", defaults.UseTLS, defaults.ConnectionTimeout, defaults.ReadTimeout)
+	}
+}
+
+func assertExplicitZeroSource(t *testing.T, explicit *SourceConfig) {
+	t.Helper()
+	if explicit.UseTLS || explicit.ConnectionTimeout != 0 || explicit.ReadTimeout != 0 || explicit.ConnectRetryTimeout != 0 {
+		t.Fatal("explicit false/zero settings were overridden")
+	}
+}
+
+func assertStartTLSSource(t *testing.T, starttls *SourceConfig) {
+	t.Helper()
+	if starttls.UseTLS || !starttls.StartTLS || starttls.ConnectionTimeout != 30*time.Second || starttls.ReadTimeout != 60*time.Second {
+		t.Fatal("STARTTLS defaults selected implicit TLS or lost timeouts")
+	}
+}
+
+func assertCustomTimeoutSource(t *testing.T, custom *SourceConfig) {
+	t.Helper()
+	if !custom.UseTLS || custom.ConnectionTimeout != 7*time.Second || custom.ReadTimeout != 11*time.Second || custom.ConnectRetryTimeout != 45*time.Second {
+		t.Fatal("explicit TLS/timeouts were changed")
+	}
+}
+
 func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`sources:
@@ -57,27 +85,15 @@ func TestLoadSourceDefaultsPreservesExplicitValues(t *testing.T) {
     connect_retry_timeout: 45s
     max_connections: 1
 `)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaults := cfg.Sources[0]
-	if !defaults.UseTLS || defaults.ConnectionTimeout != 30*time.Second || defaults.ReadTimeout != 60*time.Second || defaults.ConnectRetryTimeout != 3*time.Minute {
-		t.Fatalf("unsafe or missing defaults: TLS=%v dial=%v read=%v", defaults.UseTLS, defaults.ConnectionTimeout, defaults.ReadTimeout)
-	}
-	explicit := cfg.Sources[1]
-	if explicit.UseTLS || explicit.ConnectionTimeout != 0 || explicit.ReadTimeout != 0 || explicit.ConnectRetryTimeout != 0 {
-		t.Fatal("explicit false/zero settings were overridden")
-	}
-	starttls := cfg.Sources[2]
-	if starttls.UseTLS || !starttls.StartTLS || starttls.ConnectionTimeout != 30*time.Second || starttls.ReadTimeout != 60*time.Second {
-		t.Fatal("STARTTLS defaults selected implicit TLS or lost timeouts")
-	}
-	custom := cfg.Sources[3]
-	if !custom.UseTLS || custom.ConnectionTimeout != 7*time.Second || custom.ReadTimeout != 11*time.Second || custom.ConnectRetryTimeout != 45*time.Second {
-		t.Fatal("explicit TLS/timeouts were changed")
-	}
+	assertDefaultSource(t, &cfg.Sources[0])
+	assertExplicitZeroSource(t, &cfg.Sources[1])
+	assertStartTLSSource(t, &cfg.Sources[2])
+	assertCustomTimeoutSource(t, &cfg.Sources[3])
 }

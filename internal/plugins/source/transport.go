@@ -12,72 +12,81 @@ import (
 // consume the next command's read budget.
 type deadlineConn struct {
 	net.Conn
+
 	mu      sync.Mutex
 	timeout time.Duration
 	active  bool
 	lastErr error
 }
 
-func (c *deadlineConn) SetReadDeadline(deadline time.Time) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.active && c.timeout > 0 {
-		limit := time.Now().Add(c.timeout)
+func (conn *deadlineConn) SetReadDeadline(deadline time.Time) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.active && conn.timeout > 0 {
+		limit := time.Now().Add(conn.timeout)
 		if deadline.IsZero() || limit.Before(deadline) {
 			deadline = limit
 		}
 	}
-	return c.Conn.SetReadDeadline(deadline)
+	return conn.Conn.SetReadDeadline(deadline)
 }
 
-func (c *deadlineConn) Read(p []byte) (int, error) {
-	if err := c.SetReadDeadline(time.Time{}); err != nil {
-		c.recordError(err)
+func (conn *deadlineConn) Read(p []byte) (int, error) {
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		conn.recordError(err)
 		return 0, err
 	}
-	n, err := c.Conn.Read(p)
+	n, err := conn.Conn.Read(p)
 	if err != nil {
-		c.recordError(err)
+		conn.recordError(err)
 	}
 	return n, err
 }
 
-func (c *deadlineConn) Write(p []byte) (int, error) {
-	if c.timeout > 0 {
-		if err := c.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
-			c.recordError(err)
+func (conn *deadlineConn) Write(data []byte) (int, error) {
+	if conn.timeout > 0 {
+		if err := conn.SetWriteDeadline(time.Now().Add(conn.timeout)); err != nil {
+			conn.recordError(err)
 			return 0, err
 		}
 	}
-	n, err := c.Conn.Write(p)
+	n, err := conn.Conn.Write(data)
 	if err != nil {
-		c.recordError(err)
+		conn.recordError(err)
 	}
 	return n, err
 }
 
-func (c *deadlineConn) recordError(err error) { c.mu.Lock(); c.lastErr = err; c.mu.Unlock() }
+func (conn *deadlineConn) recordError(err error) {
+	conn.mu.Lock()
+	conn.lastErr = err
+	conn.mu.Unlock()
+}
 
-func (c *deadlineConn) transportError() error { c.mu.Lock(); defer c.mu.Unlock(); return c.lastErr }
+func (conn *deadlineConn) transportError() error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.lastErr
+}
 
 // beginIO must be paired with its returned cleanup before the source lock is
 // released. Closing the transport on cancellation interrupts TLS handshakes as
 // well as blocked protocol reads/writes, even when the library resets deadlines.
-func (c *deadlineConn) beginIO(ctx context.Context) func() {
-	c.mu.Lock()
-	c.active = true
-	c.lastErr = nil
-	if c.timeout > 0 {
-		_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+func (conn *deadlineConn) beginIO(ctx context.Context) func() {
+	conn.mu.Lock()
+	conn.active = true
+	conn.lastErr = nil
+	if conn.timeout > 0 {
+		_ = conn.Conn.SetReadDeadline(time.Now().Add(conn.timeout)) //nolint:errcheck // best-effort; a dead conn fails the following read
 	}
-	c.mu.Unlock()
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	conn.mu.Unlock()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	return func() {
 		stop()
-		c.mu.Lock()
-		c.active = false
-		_ = c.Conn.SetReadDeadline(time.Time{})
-		c.mu.Unlock()
+		conn.mu.Lock()
+		conn.active = false
+		_ = conn.Conn.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort; a dead conn fails the following read
+		conn.mu.Unlock()
 	}
 }
 
@@ -85,28 +94,29 @@ func (c *deadlineConn) beginIO(ctx context.Context) func() {
 // while upgrading its underlying transport to TLS after STARTTLS/STLS.
 type switchConn struct {
 	net.Conn
+
 	mu      sync.RWMutex
 	current net.Conn
 }
 
-func (c *switchConn) set(conn net.Conn) {
-	c.mu.Lock()
-	c.current = conn
-	c.mu.Unlock()
+func (conn *switchConn) Read(p []byte) (int, error)         { return conn.active().Read(p) }
+func (conn *switchConn) Write(p []byte) (int, error)        { return conn.active().Write(p) }
+func (conn *switchConn) SetDeadline(t time.Time) error      { return conn.active().SetDeadline(t) }
+func (conn *switchConn) SetReadDeadline(t time.Time) error  { return conn.active().SetReadDeadline(t) }
+func (conn *switchConn) SetWriteDeadline(t time.Time) error { return conn.active().SetWriteDeadline(t) }
+func (conn *switchConn) Close() error                       { return conn.Conn.Close() }
+
+func (conn *switchConn) set(nextConn net.Conn) {
+	conn.mu.Lock()
+	conn.current = nextConn
+	conn.mu.Unlock()
 }
 
-func (c *switchConn) active() net.Conn {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.current != nil {
-		return c.current
+func (conn *switchConn) active() net.Conn {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	if conn.current != nil {
+		return conn.current
 	}
-	return c.Conn
+	return conn.Conn
 }
-
-func (c *switchConn) Read(p []byte) (int, error)         { return c.active().Read(p) }
-func (c *switchConn) Write(p []byte) (int, error)        { return c.active().Write(p) }
-func (c *switchConn) SetDeadline(t time.Time) error      { return c.active().SetDeadline(t) }
-func (c *switchConn) SetReadDeadline(t time.Time) error  { return c.active().SetReadDeadline(t) }
-func (c *switchConn) SetWriteDeadline(t time.Time) error { return c.active().SetWriteDeadline(t) }
-func (c *switchConn) Close() error                       { return c.Conn.Close() }

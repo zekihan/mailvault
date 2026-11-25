@@ -20,19 +20,19 @@ type fixtureSource struct {
 	failure  error
 }
 
-func (s *fixtureSource) Name() string                                { return s.name }
+func (source *fixtureSource) Name() string                           { return source.name }
 func (*fixtureSource) Type() string                                  { return "fixture" }
 func (*fixtureSource) Connect(context.Context) error                 { return nil }
 func (*fixtureSource) ListFolders(context.Context) ([]string, error) { return []string{"Archive"}, nil }
 func (*fixtureSource) Close() error                                  { return nil }
-func (s *fixtureSource) FetchMessages(context.Context, []string, int64, int64) (<-chan *plugins.Message, <-chan error) {
-	messages := make(chan *plugins.Message, len(s.messages))
+func (source *fixtureSource) FetchMessages(context.Context, []string, int64, int64) (<-chan *plugins.Message, <-chan error) {
+	messages := make(chan *plugins.Message, len(source.messages))
 	errs := make(chan error, 1)
-	for _, msg := range s.messages {
+	for _, msg := range source.messages {
 		messages <- msg
 	}
-	if s.failure != nil {
-		errs <- s.failure
+	if source.failure != nil {
+		errs <- source.failure
 	}
 	close(messages)
 	close(errs)
@@ -72,29 +72,29 @@ type engineFixture struct {
 
 func newEngineFixture(t *testing.T) *engineFixture {
 	t.Helper()
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	raw := []byte("Message-ID: <fixture@example.invalid>\r\n\r\nbody\r\n")
 	msg := &plugins.Message{UID: "42", Folder: "Archive", MessageID: "fixture@example.invalid", Raw: raw, ContentHash: dedup.ComputeContentHash(raw)}
-	f := &engineFixture{store: store, registry: plugins.NewRegistry(), source: &fixtureSource{name: "account", messages: []*plugins.Message{msg, msg}}, targets: map[string]*fixtureTarget{"first": {name: "first"}, "second": {name: "second"}}}
-	f.cfg = &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"Archive"}}}, Targets: []config.TargetConfig{{Name: "first", Type: "fixture"}, {Name: "second", Type: "fixture"}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"first", "second"}}}}
-	f.registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return f.source, nil })
-	f.registry.RegisterTarget("fixture", func(values map[string]interface{}) (plugins.Target, error) {
-		return f.targets[values["name"].(string)], nil
+	fixture := &engineFixture{store: store, registry: plugins.NewRegistry(), source: &fixtureSource{name: "account", messages: []*plugins.Message{msg, msg}}, targets: map[string]*fixtureTarget{"first": {name: "first"}, "second": {name: "second"}}}
+	fixture.cfg = &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"Archive"}}}, Targets: []config.TargetConfig{{Name: "first", Type: "fixture"}, {Name: "second", Type: "fixture"}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"first", "second"}}}}
+	fixture.registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return fixture.source, nil })
+	fixture.registry.RegisterTarget("fixture", func(values map[string]any) (plugins.Target, error) {
+		return fixture.targets[mustAssert[string](t, values["name"])], nil
 	})
-	return f
+	return fixture
 }
-func (f *engineFixture) run(t *testing.T, opts ...SyncOption) *SyncStats {
+func (fixture *engineFixture) run(t *testing.T, opts ...SyncOption) *SyncStats {
 	t.Helper()
 	opts = append([]SyncOption{WithMaxRetries(0)}, opts...)
-	e, err := NewSyncEngine(f.cfg, f.store, f.registry, opts...)
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err := e.Run(context.Background())
+	stats, err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,61 +108,61 @@ func assertStats(t *testing.T, s *SyncStats, written, skipped, failures int) {
 }
 
 func TestEngineDeliversEveryTargetAndPersistsPerTarget(t *testing.T) {
-	f := newEngineFixture(t)
-	if err := f.store.UpsertSource(context.Background(), "account", "fixture", "", ""); err != nil {
+	fixture := newEngineFixture(t)
+	if err := fixture.store.UpsertSource(t.Context(), "account", "fixture", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	msg := f.source.messages[0]
-	if err := f.store.MarkMessageFetched(context.Background(), "account", msg.Folder, msg.UID, msg.MessageID, msg.ContentHash, msg.Size, msg.InternalDate); err != nil {
+	msg := fixture.source.messages[0]
+	if err := fixture.store.MarkMessageFetched(t.Context(), "account", msg.Folder, msg.UID, msg.MessageID, msg.ContentHash, msg.Size, msg.InternalDate); err != nil {
 		t.Fatal(err)
 	}
-	assertStats(t, f.run(t), 2, 2, 0) // A legacy fetched row cannot prove delivery to either target.
-	if f.targets["first"].writes != 1 || f.targets["second"].writes != 1 {
+	assertStats(t, fixture.run(t), 2, 2, 0) // A legacy fetched row cannot prove delivery to either target.
+	if fixture.targets["first"].writes != 1 || fixture.targets["second"].writes != 1 {
 		t.Fatal("missing fanout delivery")
 	}
-	assertStats(t, f.run(t), 0, 4, 0)
-	f.targets["third"] = &fixtureTarget{name: "third"}
-	f.cfg.Targets = append(f.cfg.Targets, config.TargetConfig{Name: "third", Type: "fixture"})
-	f.cfg.Pairs[0].Targets = append(f.cfg.Pairs[0].Targets, "third")
-	assertStats(t, f.run(t), 1, 5, 0)
-	if f.targets["third"].writes != 1 {
+	assertStats(t, fixture.run(t), 0, 4, 0)
+	fixture.targets["third"] = &fixtureTarget{name: "third"}
+	fixture.cfg.Targets = append(fixture.cfg.Targets, config.TargetConfig{Name: "third", Type: "fixture"})
+	fixture.cfg.Pairs[0].Targets = append(fixture.cfg.Pairs[0].Targets, "third")
+	assertStats(t, fixture.run(t), 1, 5, 0)
+	if fixture.targets["third"].writes != 1 {
 		t.Fatal("new destination did not receive existing message")
 	}
 }
 func TestEngineRetriesFailedTargetWithoutSuppressingOtherTargets(t *testing.T) {
-	f := newEngineFixture(t)
-	f.source.messages = f.source.messages[:1]
-	f.targets["second"].fail = true
-	assertStats(t, f.run(t), 1, 0, 1)
-	f.targets["second"].fail = false
-	assertStats(t, f.run(t), 1, 1, 0)
+	fixture := newEngineFixture(t)
+	fixture.source.messages = fixture.source.messages[:1]
+	fixture.targets["second"].fail = true
+	assertStats(t, fixture.run(t), 1, 0, 1)
+	fixture.targets["second"].fail = false
+	assertStats(t, fixture.run(t), 1, 1, 0)
 }
 func TestEngineDryRunChecksStateWithoutPersisting(t *testing.T) {
-	f := newEngineFixture(t)
-	assertStats(t, f.run(t, WithDryRun(true)), 2, 2, 0)
-	if f.targets["first"].writes != 0 || f.targets["second"].writes != 0 {
+	fixture := newEngineFixture(t)
+	assertStats(t, fixture.run(t, WithDryRun(true)), 2, 2, 0)
+	if fixture.targets["first"].writes != 0 || fixture.targets["second"].writes != 0 {
 		t.Fatal("dry run wrote to target")
 	}
-	assertStats(t, f.run(t), 2, 2, 0)
-	assertStats(t, f.run(t, WithDryRun(true)), 0, 4, 0)
+	assertStats(t, fixture.run(t), 2, 2, 0)
+	assertStats(t, fixture.run(t, WithDryRun(true)), 0, 4, 0)
 }
 func TestEngineDrainsBufferedSourceErrors(t *testing.T) {
-	f := newEngineFixture(t)
-	f.source.messages = nil
-	f.source.failure = errFixture
-	for i := 0; i < 20; i++ {
-		assertStats(t, f.run(t), 0, 0, 2)
+	fixture := newEngineFixture(t)
+	fixture.source.messages = nil
+	fixture.source.failure = errFixture
+	for range 20 {
+		assertStats(t, fixture.run(t), 0, 0, 2)
 	}
 }
 func TestEngineSerializesSameTargetAcrossSources(t *testing.T) {
-	f := newEngineFixture(t)
-	f.cfg.Pairs = append(f.cfg.Pairs, f.cfg.Pairs[0])
-	assertStats(t, f.run(t), 2, 6, 0)
+	fixture := newEngineFixture(t)
+	fixture.cfg.Pairs = append(fixture.cfg.Pairs, fixture.cfg.Pairs[0])
+	assertStats(t, fixture.run(t), 2, 6, 0)
 }
 func TestEngineRejectsInvalidOptions(t *testing.T) {
-	f := newEngineFixture(t)
+	fixture := newEngineFixture(t)
 	for _, opt := range []SyncOption{WithConcurrency(0), WithConcurrency(-1), WithMaxRetries(-1), WithRetryDelay(-1)} {
-		if _, err := NewSyncEngine(f.cfg, f.store, f.registry, opt); err == nil {
+		if _, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, opt); err == nil {
 			t.Fatal("invalid option accepted")
 		}
 	}

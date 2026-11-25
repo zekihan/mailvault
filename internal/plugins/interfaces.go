@@ -12,25 +12,25 @@ var (
 )
 
 // ErrMailboxExists indicates that a requested new destination mailbox exists already.
-var ErrMailboxExists = errMailboxExists{}
+var ErrMailboxExists = mailboxExistsError{}
 
 // ErrMailboxUnchanged indicates that mailbox setup failed before CREATE was sent.
-var ErrMailboxUnchanged = errMailboxUnchanged{}
+var ErrMailboxUnchanged = mailboxUnchangedError{}
 
 // ErrMailboxMissing indicates that a resumable restore mailbox no longer exists.
-var ErrMailboxMissing = errMailboxMissing{}
+var ErrMailboxMissing = mailboxMissingError{}
 
-type errMailboxExists struct{}
+type mailboxExistsError struct{}
 
-func (errMailboxExists) Error() string { return "destination mailbox already exists" }
+func (mailboxExistsError) Error() string { return "destination mailbox already exists" }
 
-type errMailboxUnchanged struct{}
+type mailboxUnchangedError struct{}
 
-func (errMailboxUnchanged) Error() string { return "destination mailbox was not created" }
+func (mailboxUnchangedError) Error() string { return "destination mailbox was not created" }
 
-type errMailboxMissing struct{}
+type mailboxMissingError struct{}
 
-func (errMailboxMissing) Error() string { return "resumable destination mailbox is missing" }
+func (mailboxMissingError) Error() string { return "resumable destination mailbox is missing" }
 
 // Message represents a single email message.
 type Message struct {
@@ -137,31 +137,33 @@ type BackupMessage struct {
 
 // TargetBackupReader exposes stable locations for verification and restore.
 type TargetBackupReader interface {
-	ListBackupMessages(context.Context) ([]BackupMessage, error)
-	ReadBackupMessage(context.Context, string) (*Message, error)
+	ListBackupMessages(ctx context.Context) ([]BackupMessage, error)
+	ReadBackupMessage(ctx context.Context, locator string) (*Message, error)
 }
 
 // TargetBackupReaderInitializer prepares only read capabilities, without creating destination state.
-type TargetBackupReaderInitializer interface{ InitializeForRead(context.Context) error }
+type TargetBackupReaderInitializer interface {
+	InitializeForRead(ctx context.Context) error
+}
 
 // BackupWriter returns the stable target locator after writing a message.
 type BackupWriter interface {
-	WriteBackupMessage(context.Context, *Message) (string, error)
+	WriteBackupMessage(ctx context.Context, msg *Message) (string, error)
 }
 
 // RepairBackupWriter stores a corrected copy while retaining the damaged copy.
 type RepairBackupWriter interface {
-	WriteRepairMessage(context.Context, *Message) (string, error)
+	WriteRepairMessage(ctx context.Context, msg *Message) (string, error)
 }
 
 // BackupLocatorProvider exposes the location from the most recent successful WriteMessage call.
 type BackupLocatorProvider interface{ LastBackupLocator() string }
 
 // SourceFactory creates Source instances from configuration.
-type SourceFactory func(config map[string]interface{}) (Source, error)
+type SourceFactory func(config map[string]any) (Source, error)
 
 // TargetFactory creates Target instances from configuration.
-type TargetFactory func(config map[string]interface{}) (Target, error)
+type TargetFactory func(config map[string]any) (Target, error)
 
 // Registry holds registered source and target factories.
 type Registry struct {
@@ -188,10 +190,10 @@ func (r *Registry) RegisterTarget(name string, factory TargetFactory) {
 }
 
 // CreateSource creates a source from configuration.
-func (r *Registry) CreateSource(name string, config map[string]interface{}) (Source, error) {
+func (r *Registry) CreateSource(name string, config map[string]any) (Source, error) {
 	factory, ok := r.sources[name]
 	if !ok {
-		return nil, ErrUnknownSource(name)
+		return nil, UnknownSourceError(name)
 	}
 	src, err := factory(config)
 	if err != nil {
@@ -202,10 +204,10 @@ func (r *Registry) CreateSource(name string, config map[string]interface{}) (Sou
 }
 
 // CreateTarget creates a target from configuration.
-func (r *Registry) CreateTarget(name string, config map[string]interface{}) (Target, error) {
+func (r *Registry) CreateTarget(name string, config map[string]any) (Target, error) {
 	factory, ok := r.targets[name]
 	if !ok {
-		return nil, ErrUnknownTarget(name)
+		return nil, UnknownTargetError(name)
 	}
 	tgt, err := factory(config)
 	if err != nil {
@@ -215,9 +217,12 @@ func (r *Registry) CreateTarget(name string, config map[string]interface{}) (Tar
 	return tgt, nil
 }
 
-func applyConfiguredName(plugin interface{}, config map[string]interface{}) {
-	name, _ := config["name"].(string)
-	if named, ok := plugin.(interface{ SetName(string) }); ok && name != "" {
+func applyConfiguredName(plugin any, config map[string]any) {
+	name, ok := config["name"].(string)
+	if !ok || name == "" {
+		return
+	}
+	if named, ok := plugin.(interface{ SetName(name string) }); ok {
 		named.SetName(name)
 	}
 }
@@ -240,17 +245,17 @@ func (r *Registry) TargetTypes() []string {
 	return types
 }
 
-// ErrUnknownSource indicates an unknown source type.
-type ErrUnknownSource string
+// UnknownSourceError indicates an unknown source type.
+type UnknownSourceError string
 
-func (e ErrUnknownSource) Error() string {
+func (e UnknownSourceError) Error() string {
 	return "unknown source type: " + string(e)
 }
 
-// ErrUnknownTarget indicates an unknown target type.
-type ErrUnknownTarget string
+// UnknownTargetError indicates an unknown target type.
+type UnknownTargetError string
 
-func (e ErrUnknownTarget) Error() string {
+func (e UnknownTargetError) Error() string {
 	return "unknown target type: " + string(e)
 }
 

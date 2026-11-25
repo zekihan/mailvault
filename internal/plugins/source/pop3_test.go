@@ -21,25 +21,31 @@ import (
 	"github.com/zekihan/mailvault/internal/testutil/mailtest"
 )
 
-func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
+func openPOP3DateFilterSource(t *testing.T, retrieved chan int) (*POP3Source, string) {
+	t.Helper()
 	messages := []mailtest.POP3Message{
 		{UID: "newer-id", Number: 1, Raw: "Message-ID: <new@example.invalid>\r\nDate: Mon, 01 Jan 2024 13:00:00 +0000\r\n\r\nnew\r\n"},
 		{UID: "older-id", Number: 2, Raw: "Message-ID: <old@example.invalid>\r\nDate: Mon, 01 Jan 2024 11:00:00 +0000\r\n\r\nold\r\n"},
 	}
-	retrieved := make(chan int, 4)
 	host, port := mailtest.POP3Server(t, messages, retrieved, 1, 0)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, connTimeout: time.Second, readTimeout: time.Second}
-	defer src.Close()
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", host, port, src.username)))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ctx = plugins.WithKnownUIDs(ctx, func(gotScope, folder string) (map[string]bool, error) {
+	return src, scope
+}
+
+func withPOP3DateFilterKnown(ctx context.Context, t *testing.T, scope string) context.Context {
+	t.Helper()
+	return plugins.WithKnownUIDs(ctx, func(gotScope, folder string) (map[string]bool, error) {
 		if gotScope != scope || folder != "INBOX" {
 			t.Fatalf("unexpected incremental lookup scope/folder: %q %q", gotScope, folder)
 		}
 		return map[string]bool{"older-id": true}, nil
 	})
-	since := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).Unix()
+}
+
+func drainPOP3DateFilter(ctx context.Context, t *testing.T, src *POP3Source) []*plugins.Message {
+	t.Helper()
+	since := time.Date(2024, time.January, 1, 12, 0, 0, 0, time.UTC).Unix()
 	messagesOut, failures := src.FetchMessages(ctx, []string{"INBOX"}, since, 0)
 	var got []*plugins.Message
 	for messagesOut != nil || failures != nil {
@@ -60,9 +66,11 @@ func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	if len(got) != 1 || got[0].UID != "newer-id" || got[0].UIDScope != scope {
-		t.Fatalf("unexpected messages: %+v", got)
-	}
+	return got
+}
+
+func checkPOP3DateFilterRetrieved(t *testing.T, retrieved <-chan int) {
+	t.Helper()
 	if ids := []int{<-retrieved}; len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("RETR IDs = %v, want [1]", ids)
 	}
@@ -71,6 +79,20 @@ func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
 		t.Fatalf("unexpected extra RETR %d", id)
 	default:
 	}
+}
+
+func TestPOP3UIDLIncrementalAndDateFilter(t *testing.T) {
+	retrieved := make(chan int, 4)
+	src, scope := openPOP3DateFilterSource(t, retrieved)
+	defer src.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = withPOP3DateFilterKnown(ctx, t, scope)
+	got := drainPOP3DateFilter(ctx, t, src)
+	if len(got) != 1 || got[0].UID != "newer-id" || got[0].UIDScope != scope {
+		t.Fatalf("unexpected messages: %+v", got)
+	}
+	checkPOP3DateFilterRetrieved(t, retrieved)
 }
 
 func TestPOP3SharedUIDLUsesSequenceIdentities(t *testing.T) {
@@ -86,7 +108,7 @@ func TestPOP3SharedUIDLUsesSequenceIdentities(t *testing.T) {
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", connTimeout: time.Second, readTimeout: time.Second}
 	defer src.Close()
 	scope := dedup.ComputeContentHash([]byte(fmt.Sprintf("pop3:%s:%d\x00%s", host, port, src.username)))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	ctx = plugins.WithKnownUIDs(ctx, func(string, string) (map[string]bool, error) {
 		return map[string]bool{"shared-id": true, "known-id": true}, nil
@@ -128,7 +150,7 @@ func TestPOP3FilteredFetchFailsOnInvalidDateHeader(t *testing.T) {
 	host, port := mailtest.POP3Server(t, []mailtest.POP3Message{{UID: "bad-date", Raw: "Subject: missing date\r\n\r\nbody\r\n"}}, nil)
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, connTimeout: time.Second, readTimeout: time.Second}
 	defer src.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, 1, 0)
 	for range messages {
@@ -155,7 +177,8 @@ func TestPOP3STARTTLSUpgradesBeforeAuthentication(t *testing.T) {
 		}
 		_, _ = fmt.Fprint(conn, "+OK begin TLS\r\n")
 		secure := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
-		if secure.Handshake() != nil {
+		ctx := t.Context()
+		if secure.HandshakeContext(ctx) != nil {
 			return
 		}
 		scanner := bufio.NewScanner(secure)
@@ -180,7 +203,7 @@ func TestPOP3STARTTLSUpgradesBeforeAuthentication(t *testing.T) {
 		}
 	})
 	src := &POP3Source{host: host, port: port, username: "fixture-user", password: "fixture-password", useTLS: false, startTLS: true, connTimeout: time.Second, readTimeout: time.Second, tlsConfig: &tls.Config{RootCAs: roots}}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	if err := src.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -223,7 +246,7 @@ func TestPOP3XOAUTH2SendsExpectedPayload(t *testing.T) {
 		}
 	})
 	src := &POP3Source{host: host, port: port, username: "fixture-user", useTLS: false, connTimeout: time.Second, readTimeout: time.Second, tokenSource: func(context.Context) (string, error) { return "fixture-access-token", nil }}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	if err := src.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -250,7 +273,7 @@ func TestPOP3XOAUTH2FailureRedactsEchoedPayload(t *testing.T) {
 		_, _ = fmt.Fprintf(conn, "-ERR rejected %s\r\n", parts[2])
 	})
 	src := &POP3Source{host: host, port: port, username: "fixture-user", useTLS: false, connTimeout: time.Second, readTimeout: time.Second, tokenSource: func(context.Context) (string, error) { return "sensitive-fixture-token", nil }}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	err := src.Connect(ctx)
 	if err == nil || strings.Contains(err.Error(), "sensitive-fixture-token") || strings.Contains(err.Error(), base64.StdEncoding.EncodeToString([]byte("user=fixture-user\x01auth=Bearer sensitive-fixture-token\x01\x01"))) {

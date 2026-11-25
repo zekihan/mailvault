@@ -1,6 +1,6 @@
 package config
 
-// Config keys for source factories
+// Config keys for source factories.
 const (
 	SourceConfigHost                = "host"
 	SourceConfigPort                = "port"
@@ -18,7 +18,7 @@ const (
 	SourceConfigOAuth2              = "oauth2"
 )
 
-// Config keys for target factories
+// Config keys for target factories.
 const (
 	TargetConfigPath                   = "path"
 	TargetConfigCreateIfMissing        = "create_if_missing"

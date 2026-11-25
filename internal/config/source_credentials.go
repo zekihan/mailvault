@@ -16,10 +16,10 @@ func resolveSourceCredentialRefAt(reference, configDir string) (string, error) {
 		return "", err
 	}
 	if strings.HasPrefix(reference, "file:") {
-		if strings.HasSuffix(value, "\r\n") {
-			value = strings.TrimSuffix(value, "\r\n")
-		} else {
-			value = strings.TrimSuffix(value, "\n")
+		if after, ok := strings.CutSuffix(value, "\r\n"); ok {
+			value = after
+		} else if after, ok := strings.CutSuffix(value, "\n"); ok {
+			value = after
 		}
 	}
 	if strings.ContainsAny(value, "\r\n") {

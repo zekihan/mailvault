@@ -8,26 +8,26 @@ import (
 )
 
 func TestRegistryRejectsUnknownTypesAndInvalidConfiguration(t *testing.T) {
-	r := Registry()
-	if _, err := r.CreateSource("unsupported", nil); err == nil {
+	registry := Registry()
+	if _, err := registry.CreateSource("unsupported", nil); err == nil {
 		t.Fatal("unknown source accepted")
 	} else {
-		var unknown plugins.ErrUnknownSource
+		var unknown plugins.UnknownSourceError
 		if !errors.As(err, &unknown) || string(unknown) != "unsupported" {
 			t.Fatalf("unexpected source error: %v", err)
 		}
 	}
-	if _, err := r.CreateTarget("unsupported", nil); err == nil {
+	if _, err := registry.CreateTarget("unsupported", nil); err == nil {
 		t.Fatal("unknown target accepted")
 	} else {
-		var unknown plugins.ErrUnknownTarget
+		var unknown plugins.UnknownTargetError
 		if !errors.As(err, &unknown) || string(unknown) != "unsupported" {
 			t.Fatalf("unexpected target error: %v", err)
 		}
 	}
 	for _, kind := range []string{"imap", "pop3"} {
 		t.Run(kind, func(t *testing.T) {
-			if _, err := r.CreateSource(kind, map[string]interface{}{}); err == nil {
+			if _, err := registry.CreateSource(kind, map[string]any{}); err == nil {
 				t.Fatal("missing source settings accepted")
 			}
 		})

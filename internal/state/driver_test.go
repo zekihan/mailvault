@@ -8,65 +8,97 @@ import (
 	"testing"
 )
 
-func TestSQLiteConnectionPragmas(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	ctx := context.Background()
-	// The production writable pool has one connection. Expand only this test
-	// pool to verify DSN settings apply to every newly opened connection.
+func openDriverTestConns(t *testing.T, store *Store) (*sql.Conn, *sql.Conn) {
+	t.Helper()
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("writable pool limit = %d, want 1", got)
 	}
 	store.db.SetMaxOpenConns(2)
+	ctx := t.Context()
 	first, err := store.db.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
 	second, err := store.db.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
-	for _, query := range []struct {
-		sql  string
-		want int
-	}{{"PRAGMA foreign_keys", 1}, {"PRAGMA busy_timeout", 5000}} {
-		for _, conn := range []*sql.Conn{first, second} {
-			var got int
-			if err := conn.QueryRowContext(ctx, query.sql).Scan(&got); err != nil {
-				t.Fatal(err)
-			}
-			if got != query.want {
-				t.Fatalf("%s = %d, want %d", query.sql, got, query.want)
-			}
+	return first, second
+}
+
+func checkConnectionPragmas(t *testing.T, conns []*sql.Conn, queries []struct {
+	sql  string
+	want int
+}) {
+	t.Helper()
+	ctx := t.Context()
+	for _, query := range queries {
+		checkSinglePragma(ctx, t, conns, query.sql, query.want)
+	}
+}
+
+func checkSinglePragma(ctx context.Context, t *testing.T, conns []*sql.Conn, pragma string, want int) {
+	t.Helper()
+	for _, conn := range conns {
+		var got int
+		if err := conn.QueryRowContext(ctx, pragma).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s = %d, want %d", pragma, got, want)
 		}
 	}
-	for _, conn := range []*sql.Conn{first, second} {
+}
+
+func checkJournalModes(t *testing.T, conns []*sql.Conn) {
+	t.Helper()
+	ctx := t.Context()
+	for _, conn := range conns {
 		var mode string
 		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
 			t.Fatalf("journal mode = %q, %v", mode, err)
 		}
 	}
-	ro, err := NewReadOnlyStore(path)
+}
+
+func checkReadOnlyStore(t *testing.T, path string) {
+	t.Helper()
+	ro, err := NewReadOnlyStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ro.Close()
 	var queryOnly int
-	if err := ro.db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
+	if err := ro.db.QueryRowContext(t.Context(), "PRAGMA query_only").Scan(&queryOnly); err != nil {
 		t.Fatal(err)
 	}
 	if queryOnly != 1 {
 		t.Fatalf("query_only = %d", queryOnly)
 	}
-	if _, err := ro.db.Exec("CREATE TABLE forbidden (id INTEGER)"); err == nil {
+	if _, err := ro.db.ExecContext(t.Context(), "CREATE TABLE forbidden (id INTEGER)"); err == nil {
 		t.Fatal("read-only store accepted a write")
 	}
+}
+
+func TestSQLiteConnectionPragmas(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := NewStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// The production writable pool has one connection. Expand only this test
+	// pool to verify DSN settings apply to every newly opened connection.
+	first, second := openDriverTestConns(t, store)
+	defer first.Close()
+	defer second.Close()
+	conns := []*sql.Conn{first, second}
+	checkConnectionPragmas(t, conns, []struct {
+		sql  string
+		want int
+	}{{"PRAGMA foreign_keys", 1}, {"PRAGMA busy_timeout", 5000}})
+	checkJournalModes(t, conns)
+	checkReadOnlyStore(t, path)
 }
 
 func TestLegacyMattnDatabaseCompatibility(t *testing.T) {
@@ -75,15 +107,15 @@ func TestLegacyMattnDatabaseCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "state.db")
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(path)
+	store, err := NewStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	ctx := context.Background()
+	ctx := t.Context()
 	exists, err := store.DeliveryExists(ctx, "fixture-target", "fixture-identity")
 	if err != nil || !exists {
 		t.Fatalf("legacy receipt: %v, %v", exists, err)
@@ -98,7 +130,7 @@ func TestLegacyMattnDatabaseCompatibility(t *testing.T) {
 	if err := store.MarkDelivered(ctx, "new-target", "new-identity", "fixture", "INBOX", "1"); err != nil {
 		t.Fatal(err)
 	}
-	ro, err := NewReadOnlyStore(path)
+	ro, err := NewReadOnlyStore(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}

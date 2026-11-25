@@ -64,7 +64,7 @@ func datedIMAPSource(t *testing.T, dates []string) (*IMAPSource, <-chan string) 
 
 func TestIMAPReportsSelectedFolderState(t *testing.T) {
 	src, _ := datedIMAPSource(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	var observation plugins.FolderStateObservation
 	ctx = plugins.WithFolderStateObserver(ctx, func(value plugins.FolderStateObservation) error {
@@ -95,7 +95,7 @@ func TestIMAPReportsSelectedFolderState(t *testing.T) {
 
 func fetchDatedMessages(t *testing.T, src *IMAPSource, since, until int64) ([]*plugins.Message, []error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	messages, failures := src.FetchMessages(ctx, []string{"INBOX"}, since, until)
 	var result []*plugins.Message
@@ -123,8 +123,8 @@ func fetchDatedMessages(t *testing.T, src *IMAPSource, since, until int64) ([]*p
 
 func TestIMAPExactTimestampBounds(t *testing.T) {
 	dates := []string{"01-Jan-2024 00:00:00 +0000", "01-Jan-2024 12:00:00 +0000", "01-Jan-2024 15:00:00 +0000", "02-Jan-2024 10:00:00 +0000", "02-Jan-2024 00:30:00 +1400", "01-Jan-2024 23:00:00 -1200", "03-Jan-2024 01:30:00 +1400", "02-Jan-2024 12:00:00 +0000", "02-Jan-2024 13:00:00 +0000"}
-	since := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).Unix()
-	until := time.Date(2024, 1, 2, 12, 0, 0, 0, time.UTC).Unix()
+	since := time.Date(2024, time.January, 1, 12, 0, 0, 0, time.UTC).Unix()
+	until := time.Date(2024, time.January, 2, 12, 0, 0, 0, time.UTC).Unix()
 	for _, tc := range []struct {
 		name         string
 		lower, upper int64

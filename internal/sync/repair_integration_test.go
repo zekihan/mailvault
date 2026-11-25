@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -12,142 +13,157 @@ import (
 	"github.com/zekihan/mailvault/internal/state"
 )
 
-func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
+type repairFixture struct {
+	root     string
+	store    *state.Store
+	cfg      *config.Config
+	registry *plugins.Registry
+	source   *fixtureSource
+}
+
+func newRepairFixture(t *testing.T) *repairFixture {
+	t.Helper()
 	root := physicalTempDir(t)
-	ctx := context.Background()
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	raw := []byte("Subject: original\r\n\r\ncomplete message\r\n")
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}}}
-	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"local"}}}}
+	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root}}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"local"}}}}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
-	run := func(options ...SyncOption) *SyncStats {
-		t.Helper()
-		engine, err := NewSyncEngine(cfg, store, registry, options...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stats, err := engine.Run(ctx)
-		if err != nil || stats.TotalErrors != 0 {
-			t.Fatalf("run: %+v %v", stats, err)
-		}
-		return stats
-	}
-	locator := func() string {
-		t.Helper()
-		currentTarget, createErr := target.NewMaildirTarget(cfg.Targets[0].Config)
-		if createErr != nil {
-			t.Fatal(createErr)
-		}
-		currentTarget.(interface{ SetName(string) }).SetName("local")
-		entries, err := store.BackupMessages(ctx, plugins.TargetStateKey(currentTarget))
-		if err != nil || len(entries) != 1 {
-			t.Fatalf("manifest: %+v %v", entries, err)
-		}
-		return filepath.Join(root, filepath.FromSlash(entries[0].Locator))
-	}
-	run()
-	first := locator()
-	if err := os.WriteFile(first, []byte("corrupt original"), 0600); err != nil {
+	return &repairFixture{root: root, store: store, cfg: cfg, registry: registry, source: source}
+}
+
+func (fixture *repairFixture) run(t *testing.T, options ...SyncOption) *SyncStats {
+	t.Helper()
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, options...)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if stats := run(WithRepair(true)); stats.TotalWritten != 1 {
+	stats, err := engine.Run(t.Context())
+	if err != nil || stats.TotalErrors != 0 {
+		t.Fatalf("run: %+v %v", stats, err)
+	}
+	return stats
+}
+
+func (fixture *repairFixture) locator(t *testing.T) string {
+	t.Helper()
+	currentTarget, createErr := target.NewMaildirTarget(fixture.cfg.Targets[0].Config)
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	mustAssert[interface{ SetName(name string) }](t, currentTarget).SetName("local")
+	entries, err := fixture.store.BackupMessages(t.Context(), plugins.TargetStateKey(currentTarget))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("manifest: %+v %v", entries, err)
+	}
+	return filepath.Join(fixture.root, filepath.FromSlash(entries[0].Locator))
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != want {
+		t.Fatal("file content mismatch")
+	}
+}
+
+func (fixture *repairFixture) repairCorrupt(t *testing.T, raw []byte) string {
+	t.Helper()
+	first := fixture.locator(t)
+	if err := os.WriteFile(first, []byte("corrupt original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if stats := fixture.run(t, WithRepair(true)); stats.TotalWritten != 1 {
 		t.Fatalf("repair corrupt: %+v", stats)
 	}
-	if data, err := os.ReadFile(first); err != nil || string(data) != "corrupt original" {
-		t.Fatal("corrupt original removed")
-	}
-	second := locator()
+	assertFileContent(t, first, "corrupt original")
+	second := fixture.locator(t)
 	if second == first {
 		t.Fatal("repair overwrote original")
 	}
-	if data, err := os.ReadFile(second); err != nil || string(data) != string(raw) {
+	if data, err := os.ReadFile(second); err != nil || !bytes.Equal(data, raw) {
 		t.Fatal("repair content mismatch")
 	}
-	if err := os.Remove(second); err != nil {
+	return second
+}
+
+func (fixture *repairFixture) repairMissingThenHealthy(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(fixture.locator(t)); err != nil {
 		t.Fatal(err)
 	}
-	if stats := run(WithRepair(true)); stats.TotalWritten != 1 {
+	if stats := fixture.run(t, WithRepair(true)); stats.TotalWritten != 1 {
 		t.Fatalf("repair missing: %+v", stats)
 	}
-	if stats := run(WithRepair(true)); stats.TotalWritten != 0 {
+	if stats := fixture.run(t, WithRepair(true)); stats.TotalWritten != 0 {
 		t.Fatalf("healthy repair wrote copies: %+v", stats)
 	}
-	before := locator()
-	run(WithDryRun(true), WithForceFetchAll(true))
-	if locator() != before {
+}
+
+func (fixture *repairFixture) assertDryRunStable(t *testing.T) {
+	t.Helper()
+	before := fixture.locator(t)
+	fixture.run(t, WithDryRun(true), WithForceFetchAll(true))
+	if fixture.locator(t) != before {
 		t.Fatal("dry run changed manifest")
 	}
-	source.messages = nil
-	if err := os.WriteFile(before, []byte("lost source copy"), 0600); err != nil {
+	requireSourceLossDetected(t, fixture, before)
+}
+
+func requireSourceLossDetected(t *testing.T, fixture *repairFixture, path string) {
+	t.Helper()
+	fixture.source.messages = nil
+	if err := os.WriteFile(path, []byte("lost source copy"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true))
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, WithRepair(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err := engine.Run(ctx)
+	stats, err := engine.Run(t.Context())
 	if err != nil || stats.TotalErrors == 0 {
 		t.Fatalf("missing source falsely repaired: %+v %v", stats, err)
 	}
 }
 
-func TestRepairCacheRefreshesAcrossRuns(t *testing.T) {
-	root := physicalTempDir(t)
-	ctx := context.Background()
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestRepairMissingAndCorruptMaildirRetainsOriginal(t *testing.T) {
+	fixture := newRepairFixture(t)
 	raw := []byte("Subject: original\r\n\r\ncomplete message\r\n")
-	source := &fixtureSource{name: "account", messages: []*plugins.Message{{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}}}
-	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"local"}}}}
-	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
-	registry.RegisterTarget("maildir", target.NewMaildirTarget)
-	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := func(wantWritten int) {
-		t.Helper()
-		stats, err := engine.Run(ctx)
-		if err != nil || stats.TotalErrors != 0 || stats.TotalWritten != wantWritten {
-			t.Fatalf("repair run: %+v, %v; want %d writes", stats, err, wantWritten)
-		}
-	}
-	maildir, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	maildir.(interface{ SetName(string) }).SetName("local")
-	locators := func() []string {
-		t.Helper()
-		entries, err := store.BackupMessages(ctx, plugins.TargetStateKey(maildir))
-		if err != nil {
-			t.Fatal(err)
-		}
-		out := make([]string, len(entries))
-		for i, entry := range entries {
-			out[i] = entry.Locator
-		}
-		return out
-	}
+	fixture.run(t)
+	fixture.repairCorrupt(t, raw)
+	fixture.repairMissingThenHealthy(t)
+	fixture.assertDryRunStable(t)
+}
 
-	run(1)
-	original := locators()[0]
-	originalPath := filepath.Join(root, filepath.FromSlash(original))
-	if err := os.WriteFile(originalPath, []byte("corrupt original"), 0600); err != nil {
+func runRepairEngine(ctx context.Context, t *testing.T, engine *SyncEngine, wantWritten int) {
+	t.Helper()
+	stats, err := engine.Run(ctx)
+	if err != nil || stats.TotalErrors != 0 || stats.TotalWritten != wantWritten {
+		t.Fatalf("repair run: %+v, %v; want %d writes", stats, err, wantWritten)
+	}
+}
+
+func repairCacheLocators(ctx context.Context, t *testing.T, store *state.Store, maildir plugins.Target) []string {
+	t.Helper()
+	entries, err := store.BackupMessages(ctx, plugins.TargetStateKey(maildir))
+	if err != nil {
 		t.Fatal(err)
 	}
-	run(1)
-	entries := locators()
+	out := make([]string, len(entries))
+	for i := range entries {
+		out[i] = entries[i].Locator
+	}
+	return out
+}
+
+func assertCacheReplacement(t *testing.T, root string, entries []string, original, originalPath string, raw []byte) {
+	t.Helper()
 	if len(entries) != 1 || entries[0] == original {
 		t.Fatalf("manifest after repair = %v, original locator %q", entries, original)
 	}
@@ -155,10 +171,43 @@ func TestRepairCacheRefreshesAcrossRuns(t *testing.T) {
 		t.Fatalf("corrupt original changed: %q, %v", data, err)
 	}
 	replacementPath := filepath.Join(root, filepath.FromSlash(entries[0]))
-	if data, err := os.ReadFile(replacementPath); err != nil || string(data) != string(raw) {
+	if data, err := os.ReadFile(replacementPath); err != nil || !bytes.Equal(data, raw) {
 		t.Fatalf("replacement data = %q, %v", data, err)
 	}
-	run(0)
+}
+
+func TestRepairCacheRefreshesAcrossRuns(t *testing.T) {
+	root := physicalTempDir(t)
+	ctx := t.Context()
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	raw := []byte("Subject: original\r\n\r\ncomplete message\r\n")
+	source := &fixtureSource{name: "account", messages: []*plugins.Message{{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}}}
+	cfg := &config.Config{Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX"}}}, Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root}}}, Pairs: []config.PairConfig{{Source: "account", Targets: []string{"local"}}}}
+	registry := plugins.NewRegistry()
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
+	registry.RegisterTarget("maildir", target.NewMaildirTarget)
+	engine, err := NewSyncEngine(cfg, store, registry, WithRepair(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	maildir, err := target.NewMaildirTarget(map[string]any{"path": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAssert[interface{ SetName(name string) }](t, maildir).SetName("local")
+	runRepairEngine(ctx, t, engine, 1)
+	original := repairCacheLocators(ctx, t, store, maildir)[0]
+	originalPath := filepath.Join(root, filepath.FromSlash(original))
+	if err := os.WriteFile(originalPath, []byte("corrupt original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runRepairEngine(ctx, t, engine, 1)
+	assertCacheReplacement(t, root, repairCacheLocators(ctx, t, store, maildir), original, originalPath, raw)
+	runRepairEngine(ctx, t, engine, 0)
 }
 
 func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
@@ -175,23 +224,22 @@ func TestUnstableSourceUIDUsesContentManifestIdentity(t *testing.T) {
 }
 
 func TestRepairIgnoresLegacyReceiptWithoutDestinationIdentity(t *testing.T) {
-	f := newEngineFixture(t)
-	f.source.messages = nil
-	if err := f.store.MarkDelivered(context.Background(), "first", "mid:legacy", "account", "INBOX", "old"); err != nil {
+	fixture := newEngineFixture(t)
+	fixture.source.messages = nil
+	if err := fixture.store.MarkDelivered(t.Context(), "first", "mid:legacy", "account", "INBOX", "old"); err != nil {
 		t.Fatal(err)
 	}
-	engine, err := NewSyncEngine(f.cfg, f.store, f.registry, WithRepair(true))
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry, WithRepair(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Use a read-capable empty target so the legacy integrity check can run.
 	root := physicalTempDir(t)
-	reader, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	reader, err := target.NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader.(interface{ SetName(string) }).SetName("first")
-	failures := engine.validateRepairedBackups(context.Background(), f.source, reader)
+	mustAssert[interface{ SetName(name string) }](t, reader).SetName("first")
+	failures := engine.validateRepairedBackups(t.Context(), fixture.source, reader)
 	if len(failures) != 0 {
 		t.Fatalf("unscoped receipt was treated as current destination evidence: %v", failures)
 	}

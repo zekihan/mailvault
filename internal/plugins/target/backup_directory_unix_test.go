@@ -3,7 +3,6 @@
 package target
 
 import (
-	"context"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -12,14 +11,14 @@ import (
 
 func TestMaildirWalkerRejectsFIFOWithoutBlocking(t *testing.T) {
 	path := filepath.Join(physicalTempDir(t), "fifo")
-	if err := syscall.Mkfifo(path, 0600); err != nil {
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
 		value, err := NewMaildirTarget(map[string]any{"path": path})
 		if err == nil {
-			_, err = value.(*MaildirTarget).ListBackupMessages(context.Background())
+			_, err = mustAssert[*MaildirTarget](t, value).ListBackupMessages(t.Context())
 		}
 		done <- err
 	}()

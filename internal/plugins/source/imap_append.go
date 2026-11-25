@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,19 +14,19 @@ import (
 	"github.com/zekihan/mailvault/internal/plugins"
 )
 
-func (s *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExisting bool) (bool, error) {
+func (src *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExisting bool) (bool, error) {
 	if strings.TrimSpace(mailbox) == "" {
 		return false, errors.New("mailbox is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.connectLocked(ctx); err != nil {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if err := src.connectLocked(ctx); err != nil {
 		return false, fmt.Errorf("connect to destination: %w: %w", err, plugins.ErrMailboxUnchanged)
 	}
 
-	finish := s.wire.beginIO(ctx)
+	finish := src.wire.beginIO(ctx)
 	exists := false
-	err := s.listMailboxesLocked(func(item *imap.ListData) {
+	err := src.listMailboxesLocked(func(item *imap.ListData) {
 		if item.Mailbox == mailbox {
 			exists = true
 		}
@@ -44,8 +45,8 @@ func (s *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExi
 		return false, fmt.Errorf("resumable destination mailbox %q is missing: %w", mailbox, plugins.ErrMailboxMissing)
 	}
 
-	finish = s.wire.beginIO(ctx)
-	err = s.client.Create(mailbox, nil).Wait()
+	finish = src.wire.beginIO(ctx)
+	err = src.client.Create(mailbox, nil).Wait()
 	finish()
 	if err != nil {
 		var response *imap.Error
@@ -58,18 +59,18 @@ func (s *IMAPSource) EnsureMailbox(ctx context.Context, mailbox string, allowExi
 }
 
 // MailboxUIDValidity returns the generation of an existing mailbox.
-func (s *IMAPSource) MailboxUIDValidity(ctx context.Context, mailbox string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.connectLocked(ctx); err != nil {
+func (src *IMAPSource) MailboxUIDValidity(ctx context.Context, mailbox string) (string, error) {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if err := src.connectLocked(ctx); err != nil {
 		return "", err
 	}
-	return s.mailboxUIDValidityLocked(ctx, mailbox)
+	return src.mailboxUIDValidityLocked(ctx, mailbox)
 }
 
-func (s *IMAPSource) mailboxUIDValidityLocked(ctx context.Context, mailbox string) (string, error) {
-	finish := s.wire.beginIO(ctx)
-	selected, err := s.client.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait()
+func (src *IMAPSource) mailboxUIDValidityLocked(ctx context.Context, mailbox string) (string, error) {
+	finish := src.wire.beginIO(ctx)
+	selected, err := src.client.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait()
 	finish()
 	if err != nil {
 		return "", fmt.Errorf("select destination mailbox %q: %w", mailbox, err)
@@ -77,10 +78,10 @@ func (s *IMAPSource) mailboxUIDValidityLocked(ctx context.Context, mailbox strin
 	if selected.UIDValidity == 0 {
 		return "", fmt.Errorf("destination mailbox %q returned zero UIDVALIDITY", mailbox)
 	}
-	return fmt.Sprint(selected.UIDValidity), nil
+	return strconv.FormatUint(uint64(selected.UIDValidity), 10), nil
 }
 
-func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plugins.Message, expectedUIDValidity string) error {
+func (src *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plugins.Message, expectedUIDValidity string) error {
 	if strings.TrimSpace(mailbox) == "" {
 		return errors.New("mailbox is required")
 	}
@@ -90,7 +91,7 @@ func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plu
 	if len(msg.Raw) == 0 {
 		return errors.New("message is empty")
 	}
-	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), s.maxMessageBytes); err != nil {
+	if err := plugins.CheckMessageSize(int64(len(msg.Raw)), src.maxMessageBytes); err != nil {
 		return err
 	}
 	var internalDate time.Time
@@ -106,20 +107,34 @@ func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plu
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.connectLocked(ctx); err != nil {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if err := src.connectLocked(ctx); err != nil {
 		return err
 	}
-	validity, err := s.mailboxUIDValidityLocked(ctx, mailbox)
+	if err := src.checkAppendValidity(ctx, mailbox, expectedUIDValidity); err != nil {
+		return err
+	}
+	if err := src.appendRawMessage(ctx, mailbox, msg, flags, internalDate, expectedUIDValidity); err != nil {
+		return err
+	}
+	return src.checkAppendValidityAfter(ctx, mailbox, expectedUIDValidity)
+}
+
+func (src *IMAPSource) checkAppendValidity(ctx context.Context, mailbox, expectedUIDValidity string) error {
+	validity, err := src.mailboxUIDValidityLocked(ctx, mailbox)
 	if err != nil {
 		return fmt.Errorf("verify destination mailbox generation before APPEND: %w", err)
 	}
 	if expectedUIDValidity == "" || expectedUIDValidity == "0" || validity != expectedUIDValidity {
 		return fmt.Errorf("destination mailbox UIDVALIDITY changed from %s to %s before APPEND", expectedUIDValidity, validity)
 	}
-	finish := s.wire.beginIO(ctx)
-	appendCmd := s.client.Append(mailbox, int64(len(msg.Raw)), &imap.AppendOptions{Flags: flags, Time: internalDate})
+	return nil
+}
+
+func (src *IMAPSource) appendRawMessage(ctx context.Context, mailbox string, msg *plugins.Message, flags []imap.Flag, internalDate time.Time, expectedUIDValidity string) error {
+	finish := src.wire.beginIO(ctx)
+	appendCmd := src.client.Append(mailbox, int64(len(msg.Raw)), &imap.AppendOptions{Flags: flags, Time: internalDate})
 	_, writeErr := io.Copy(appendCmd, bytes.NewReader(msg.Raw))
 	if writeErr == nil {
 		writeErr = appendCmd.Close()
@@ -134,10 +149,14 @@ func (s *IMAPSource) AppendMessage(ctx context.Context, mailbox string, msg *plu
 	if writeErr != nil {
 		return fmt.Errorf("append message to %q: %w", mailbox, writeErr)
 	}
-	if appendData != nil && appendData.UIDValidity != 0 && expectedUIDValidity != fmt.Sprint(appendData.UIDValidity) {
+	if appendData != nil && appendData.UIDValidity != 0 && expectedUIDValidity != strconv.FormatUint(uint64(appendData.UIDValidity), 10) {
 		return fmt.Errorf("destination mailbox UIDVALIDITY changed during APPEND from %s to %d", expectedUIDValidity, appendData.UIDValidity)
 	}
-	validity, err = s.mailboxUIDValidityLocked(ctx, mailbox)
+	return nil
+}
+
+func (src *IMAPSource) checkAppendValidityAfter(ctx context.Context, mailbox, expectedUIDValidity string) error {
+	validity, err := src.mailboxUIDValidityLocked(ctx, mailbox)
 	if err != nil {
 		return fmt.Errorf("verify destination mailbox generation after APPEND: %w", err)
 	}

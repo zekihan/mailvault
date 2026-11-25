@@ -12,7 +12,7 @@ func TestLoadMessageLimit(t *testing.T) {
 	for _, value := range []string{"0", "-1", "536870913", "1.5", "true", "invalid"} {
 		t.Run(value, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
-			if err := os.WriteFile(path, []byte("max_message_bytes: "+value+"\n"), 0600); err != nil {
+			if err := os.WriteFile(path, []byte("max_message_bytes: "+value+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -21,7 +21,7 @@ func TestLoadMessageLimit(t *testing.T) {
 		})
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -40,11 +40,11 @@ func TestLoadMessageLimit(t *testing.T) {
 }
 
 func TestPluginMessageLimitsUseGlobalSetting(t *testing.T) {
-	source, err := SourcePluginConfig(SourceConfig{}, 1024)
+	source, err := SourcePluginConfig(&SourceConfig{}, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := map[string]interface{}{"max_message_bytes": int64(2048), "path": "fixture"}
+	original := map[string]any{"max_message_bytes": int64(2048), "path": "fixture"}
 	target := TargetPluginConfig(TargetConfig{Name: "backup", Config: original}, 1024)
 	if source["max_message_bytes"] != int64(1024) || target["max_message_bytes"] != int64(1024) {
 		t.Fatalf("limits differ: source=%v target=%v", source, target)

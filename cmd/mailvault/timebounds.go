@@ -11,14 +11,14 @@ func parseTimeBound(value string) (int64, error) {
 	if value == "" {
 		return 0, nil
 	}
-	t, err := time.Parse(time.RFC3339, value)
+	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return 0, err
 	}
-	bound := t.Unix()
+	bound := parsed.Unix()
 	// INTERNALDATE is second-resolution. For both inclusive lower and
 	// exclusive upper comparisons, ceil preserves fractional RFC3339 bounds.
-	if t.Nanosecond() != 0 {
+	if parsed.Nanosecond() != 0 {
 		bound++
 	}
 	if bound == 0 {

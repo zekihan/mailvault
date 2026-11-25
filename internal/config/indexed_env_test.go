@@ -9,7 +9,7 @@ import (
 
 func TestLoadResolvesRelativeCredentialFilesAndIndexedEnvironment(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte("file-value\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte("file-value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "config.yaml")
@@ -17,7 +17,7 @@ func TestLoadResolvesRelativeCredentialFilesAndIndexedEnvironment(t *testing.T) 
 		"  - name: old\n    type: imap\n    host: old.invalid\n    port: 993\n    username: old@example.invalid\n    password_ref: file:secret\n    use_tls: true\n    max_connections: 1\n" +
 		"targets:\n  - name: local\n    type: maildir\n    config: {}\n" +
 		"pairs:\n  - source: old\n    targets: [local]\n"
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MAILVAULT_PAIRS_0_SOURCE", "new")
@@ -38,14 +38,14 @@ func TestLoadOAuthSourceSkipsUnrelatedCredentialsAndRejectsClientSecret(t *testi
 		"  - name: oauth\n    type: imap\n    host: outlook.office365.com\n    port: 993\n    username: user@example.invalid\n    oauth2:\n      client_id: public-client\n" +
 		"  - name: unrelated\n    type: pop3\n    host: mail.example.invalid\n    port: 995\n    username: other@example.invalid\n    password_ref: env:UNSET_TEST_SECRET\n" +
 		"targets: []\npairs: []\n"
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOAuthSource(path, "oauth"); err != nil {
 		t.Fatalf("selected OAuth source depended on unrelated credential: %v", err)
 	}
 	data = strings.Replace(data, "client_id: public-client", "client_id: public-client\n      client_secret: env:UNSUPPORTED_SECRET", 1)
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOAuthSource(path, "oauth"); err == nil || !strings.Contains(err.Error(), "client_secret is not supported") {
@@ -74,7 +74,7 @@ func TestLoadOAuthSourceRejectsInvalidSelectedSource(t *testing.T) {
 				data = strings.Replace(data, test.replace, "", 1)
 			}
 			path := filepath.Join(t.TempDir(), "config.yaml")
-			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := LoadOAuthSource(path, "selected"); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -126,7 +126,7 @@ func TestIndexedEnvironmentRejectsMalformedTargetOptions(t *testing.T) {
 	}
 	targets := "    config:\n      create_if_missing: true\n      max_listing_entries: 100\n      operation_timeout: 1.5\n"
 	data = []byte(strings.Replace(string(data), "    config: {}\n", targets, 1))
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,30 +179,30 @@ func TestKeyringReferenceUsesInjectedLookup(t *testing.T) {
 }
 
 func TestNewOAuthTokenProviderRejectsClientSecret(t *testing.T) {
-	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", UseTLS: true, OAuth2: &OAuth2Config{ClientID: "public-client", ClientSecret: "unused-secret"}})
+	_, err := NewOAuthTokenProvider(&SourceConfig{Name: "account", UseTLS: true, OAuth2: &OAuth2Config{ClientID: "public-client", ClientSecret: "unused-secret"}})
 	if err == nil || !strings.Contains(err.Error(), "client_secret is not supported") {
 		t.Fatalf("provider silently accepted an OAuth client secret: %v", err)
 	}
 }
 
 func TestNewOAuthTokenProviderRequiresTLS(t *testing.T) {
-	_, err := NewOAuthTokenProvider(SourceConfig{Name: "account", OAuth2: &OAuth2Config{ClientID: "public-client"}})
+	_, err := NewOAuthTokenProvider(&SourceConfig{Name: "account", OAuth2: &OAuth2Config{ClientID: "public-client"}})
 	if err == nil || !strings.Contains(err.Error(), "OAuth2 requires TLS") {
 		t.Fatalf("provider accepted an unencrypted OAuth source: %v", err)
 	}
 }
 
 func TestOAuthTokenAccountIsolatesClientAndTenant(t *testing.T) {
-	source := SourceConfig{Host: "mail.example.invalid", Username: "user@example.invalid", OAuth2: &OAuth2Config{ClientID: "client-one", Tenant: "consumers"}}
+	source := &SourceConfig{Host: "mail.example.invalid", Username: "user@example.invalid", OAuth2: &OAuth2Config{ClientID: "client-one", Tenant: "consumers"}}
 	base := OAuthTokenAccount(source)
 	if base != OAuthTokenAccount(source) {
 		t.Fatal("same mailbox did not receive a stable account key")
 	}
-	changedClient := source
+	changedClient := *source
 	changedClient.OAuth2 = &OAuth2Config{ClientID: "client-two", Tenant: "consumers"}
-	changedTenant := source
+	changedTenant := *source
 	changedTenant.OAuth2 = &OAuth2Config{ClientID: "client-one", Tenant: "organizations"}
-	if base == OAuthTokenAccount(changedClient) || base == OAuthTokenAccount(changedTenant) {
+	if base == OAuthTokenAccount(&changedClient) || base == OAuthTokenAccount(&changedTenant) {
 		t.Fatal("different client or tenant reused a keyring account")
 	}
 	source.OAuth2.TokenKey = "explicit-account"
@@ -218,7 +218,7 @@ func writeEnvironmentConfig(t *testing.T) string {
 		"  - name: account\n    type: imap\n    host: mail.example.invalid\n    port: 993\n    username: user@example.invalid\n    password_ref: synthetic-password\n    max_connections: 1\n" +
 		"targets:\n  - name: local\n    type: maildir\n    config: {}\n" +
 		"pairs:\n  - source: account\n    targets: [local]\n"
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

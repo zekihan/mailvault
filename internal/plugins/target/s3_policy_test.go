@@ -10,20 +10,20 @@ import (
 )
 
 func TestS3OperationTimeoutDefaultAndCallerDeadline(t *testing.T) {
-	plugin, err := NewS3Target(map[string]interface{}{"bucket": "bucket", "region": "us-east-1"})
+	plugin, err := NewS3Target(map[string]any{"bucket": "bucket", "region": "us-east-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := plugin.(*S3Target)
+	target := mustAssert[*S3Target](t, plugin)
 	if target.operationTimeout != 5*time.Minute {
 		t.Fatalf("default timeout=%s", target.operationTimeout)
 	}
-	ctx, cancel := target.operationContext(context.Background())
+	ctx, cancel := target.operationContext(t.Context())
 	defer cancel()
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 5*time.Minute {
 		t.Fatal("default operation has no valid finite deadline")
 	}
-	parent, parentCancel := context.WithTimeout(context.Background(), time.Second)
+	parent, parentCancel := context.WithTimeout(t.Context(), time.Second)
 	defer parentCancel()
 	child, childCancel := target.operationContext(parent)
 	defer childCancel()

@@ -21,10 +21,16 @@ func TestValidateConfigJSONWithoutConnectivity(t *testing.T) {
 	var report struct {
 		Valid              bool `json:"valid"`
 		ConnectivityTested bool `json:"connectivity_tested"`
-		Sources            []struct{ Name, Status string }
-		Targets            []struct{ Name, Status string }
-		Pairs              int
-		Errors             []string
+		Sources            []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"sources"`
+		Targets []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"targets"`
+		Pairs  int      `json:"pairs"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("validation output is not JSON: %v", err)
@@ -48,10 +54,13 @@ func TestValidateConfigJSONConnectivityFailure(t *testing.T) {
 		t.Fatal("failed connectivity returned success")
 	}
 	var report struct {
-		Valid              bool
+		Valid              bool `json:"valid"`
 		ConnectivityTested bool `json:"connectivity_tested"`
-		Sources            []struct{ Status, Error string }
-		Errors             []string
+		Sources            []struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"sources"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("failed validation is not JSON: %v", err)
@@ -64,7 +73,7 @@ func TestValidateConfigJSONConnectivityFailure(t *testing.T) {
 func TestValidateConfigJSONStructuralFailure(t *testing.T) {
 	configureCLI(t)
 	jsonOutput = true
-	if err := os.WriteFile(cfgFile, []byte(`{"sources":[],"targets":[],"pairs":[]}`), 0600); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(`{"sources":[],"targets":[],"pairs":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := captureOutput(t, func() error { return runValidateConfig(nil, nil) })
@@ -72,8 +81,8 @@ func TestValidateConfigJSONStructuralFailure(t *testing.T) {
 		t.Fatal("invalid configuration accepted")
 	}
 	var report struct {
-		Valid  bool
-		Errors []string
+		Valid  bool     `json:"valid"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("structural failure is not JSON: %v", err)
@@ -107,7 +116,7 @@ pairs:
   - source: oauth-account
     targets: [local]
 `, targetPath)
-	if err := os.WriteFile(cfgFile, []byte(config), 0600); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := captureOutput(t, func() error { return runValidateConfig(nil, nil) })
@@ -134,20 +143,18 @@ func TestValidateConfigResolvesUnusedResourceCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var values map[string]interface{}
+	var values map[string]any
 	if err := json.Unmarshal(data, &values); err != nil {
 		t.Fatal(err)
 	}
-	values["targets"] = append(values["targets"].([]interface{}), map[string]interface{}{
-		"name": "unused", "type": "s3", "config": map[string]interface{}{
-			"bucket": "fixture", "region": "us-east-1", "credentials_ref": "env:MAILVAULT_VALIDATION_UNUSED",
-		},
+	values["targets"] = append(mustAssert[[]any](t, values["targets"]), map[string]any{
+		"name": "unused", "type": "s3", "config": map[string]any{"bucket": "fixture", "region": "us-east-1", "credentials_ref": "env:MAILVAULT_VALIDATION_UNUSED"}, // #nosec G101 -- env credential reference, not a secret
 	})
 	data, err = json.Marshal(values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfgFile, data, 0600); err != nil {
+	if err := os.WriteFile(cfgFile, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := captureOutput(t, func() error { return runValidateConfig(nil, nil) })

@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -15,7 +14,7 @@ import (
 
 func TestMaildirPreservedPlacementsAfterFlatBackup(t *testing.T) {
 	root := physicalTempDir(t)
-	store, err := state.NewStore(filepath.Join(physicalTempDir(t), "state.db"))
+	store, err := state.NewStore(t.Context(), filepath.Join(physicalTempDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,11 +26,11 @@ func TestMaildirPreservedPlacementsAfterFlatBackup(t *testing.T) {
 	}}
 	cfg := &config.Config{
 		Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"INBOX", "Starred"}}},
-		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}},
+		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root}}},
 		Pairs:   []config.PairConfig{{Source: "account", Targets: []string{"local"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
 	run := func(wantWritten int) {
 		t.Helper()
@@ -39,7 +38,7 @@ func TestMaildirPreservedPlacementsAfterFlatBackup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stats, err := engine.Run(context.Background())
+		stats, err := engine.Run(t.Context())
 		if err != nil || stats.TotalErrors != 0 || stats.TotalWritten != wantWritten {
 			t.Fatalf("run = %+v, %v; want %d written", stats, err, wantWritten)
 		}
@@ -50,7 +49,7 @@ func TestMaildirPreservedPlacementsAfterFlatBackup(t *testing.T) {
 	if err != nil || len(flat) != 1 {
 		t.Fatalf("flat backup has %d messages, %v; want one", len(flat), err)
 	}
-	cfg.Targets[0].Config = map[string]interface{}{"path": root, "preserve_folders": true}
+	cfg.Targets[0].Config = map[string]any{"path": root, "preserve_folders": true}
 	run(2)
 
 	for _, folder := range []string{"INBOX", "Starred"} {

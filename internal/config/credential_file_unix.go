@@ -3,7 +3,7 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"syscall"
 
@@ -22,11 +22,11 @@ func openCredentialFile(path string) (*os.File, error) {
 
 func validateCredentialFile(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) {
-		return fmt.Errorf("credential file must be owned by root or the effective user")
+	if !ok || (stat.Uid != 0 && int64(stat.Uid) != int64(os.Geteuid())) {
+		return errors.New("credential file must be owned by root or the effective user")
 	}
-	if info.Mode().Perm()&0022 != 0 {
-		return fmt.Errorf("credential file must not be group- or world-writable")
+	if info.Mode().Perm()&0o022 != 0 {
+		return errors.New("credential file must not be group- or world-writable")
 	}
 	return nil
 }

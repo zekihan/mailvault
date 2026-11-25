@@ -21,7 +21,7 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 			name = "with-uid-scope"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			root := physicalTempDir(t)
 			statePath := filepath.Join(physicalTempDir(t), "state.db")
 			message := &plugins.Message{UID: "42", Folder: "Archive", MessageID: "repair@example.invalid", Raw: []byte("Message-ID: <repair@example.invalid>\r\n\r\nbody\r\n")}
@@ -31,75 +31,76 @@ func TestRepairAdoptionPersistsReceipts(t *testing.T) {
 			message.ContentHash = dedup.ComputeContentHash(message.Raw)
 			source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
 			var registeredSource plugins.Source = source
-			cfg, registry := repairReceiptFixture(root, &registeredSource)
+			cfg, registry := repairReceiptFixture(root, registeredSource)
 
-			initialStore := openReceiptTestStore(t, statePath)
-			runReceiptTestEngine(t, ctx, cfg, initialStore, registry)
+			initialStore := openReceiptTestStore(ctx, t, statePath)
+			runReceiptTestEngine(ctx, t, cfg, initialStore, registry)
 			if err := initialStore.Close(); err != nil {
 				t.Fatal(err)
 			}
 
-			store := openReceiptTestStore(t, filepath.Join(physicalTempDir(t), "fresh-state.db"))
-			stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
+			store := openReceiptTestStore(ctx, t, filepath.Join(physicalTempDir(t), "fresh-state.db"))
+			stats := runReceiptTestEngine(ctx, t, cfg, store, registry, WithRepair(true))
 			if stats.TotalWritten != 0 || stats.TotalSkipped != 1 || stats.TotalErrors != 0 {
 				t.Fatalf("adoption stats: %+v", stats)
 			}
-			assertRepairReceipts(t, ctx, store, root, message)
+			assertRepairReceipts(ctx, t, store, root, message)
 
-			stats = runReceiptTestEngine(t, ctx, cfg, store, registry, WithForceFetchAll(true))
+			stats = runReceiptTestEngine(ctx, t, cfg, store, registry, WithForceFetchAll(true))
 			if stats.TotalWritten != 0 || stats.TotalSkipped != 1 || stats.TotalErrors != 0 {
 				t.Fatalf("force-fetch-all stats: %+v", stats)
 			}
-			assertMaildirObjectCount(t, ctx, root, 1)
+			assertMaildirObjectCount(ctx, t, root, 1)
 
 			if withUIDScope {
-				registeredSource = &incrementalFixtureSource{fixtureSource: source}
-				stats = runReceiptTestEngine(t, ctx, cfg, store, registry)
+				updatedSource := &incrementalFixtureSource{fixtureSource: source}
+				registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return updatedSource, nil })
+				stats = runReceiptTestEngine(ctx, t, cfg, store, registry)
 				if stats.TotalFetched != 0 || stats.TotalErrors != 0 {
 					t.Fatalf("incremental stats: %+v", stats)
 				}
-				assertMaildirObjectCount(t, ctx, root, 1)
+				assertMaildirObjectCount(ctx, t, root, 1)
 			}
 		})
 	}
 }
 
 func TestRepairHealthyManifestRestoresMissingReceipts(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	root := physicalTempDir(t)
 	statePath := filepath.Join(physicalTempDir(t), "state.db")
 	message := &plugins.Message{UID: "42", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: intact\r\n\r\nbody\r\n")}
 	message.ContentHash = dedup.ComputeContentHash(message.Raw)
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
 	var registeredSource plugins.Source = source
-	cfg, registry := repairReceiptFixture(root, &registeredSource)
-	store := openReceiptTestStore(t, statePath)
-	runReceiptTestEngine(t, ctx, cfg, store, registry)
+	cfg, registry := repairReceiptFixture(root, registeredSource)
+	store := openReceiptTestStore(ctx, t, statePath)
+	runReceiptTestEngine(ctx, t, cfg, store, registry)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 	deleteRepairReceipts(t, statePath)
 
-	store = openReceiptTestStore(t, statePath)
+	store = openReceiptTestStore(ctx, t, statePath)
 	t.Cleanup(func() { _ = store.Close() })
-	stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
+	stats := runReceiptTestEngine(ctx, t, cfg, store, registry, WithRepair(true))
 	if stats.TotalErrors != 0 || stats.TotalWritten != 0 || stats.TotalSkipped != 1 {
 		t.Fatalf("healthy-manifest repair stats: %+v", stats)
 	}
-	assertRepairReceipts(t, ctx, store, root, message)
+	assertRepairReceipts(ctx, t, store, root, message)
 }
 
 func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	root := physicalTempDir(t)
 	statePath := filepath.Join(physicalTempDir(t), "state.db")
 	message := &plugins.Message{UID: "42", UIDScope: "generation-1", Folder: "Archive", Raw: []byte("Subject: existing\r\n\r\nbody\r\n")}
 	message.ContentHash = dedup.ComputeContentHash(message.Raw)
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
 	var registeredSource plugins.Source = source
-	cfg, registry := repairReceiptFixture(root, &registeredSource)
-	initialStore := openReceiptTestStore(t, statePath)
-	runReceiptTestEngine(t, ctx, cfg, initialStore, registry)
+	cfg, registry := repairReceiptFixture(root, registeredSource)
+	initialStore := openReceiptTestStore(ctx, t, statePath)
+	runReceiptTestEngine(ctx, t, cfg, initialStore, registry)
 	if err := initialStore.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +113,13 @@ func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 		{name: "hash-scan", path: filepath.Join(physicalTempDir(t), "fresh-state.db")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			setupStore := openReceiptTestStore(t, test.path)
+			setupStore := openReceiptTestStore(ctx, t, test.path)
 			if err := setupStore.Close(); err != nil {
 				t.Fatal(err)
 			}
-			addDeliveryFailureTrigger(t, test.path)
-			store := openReceiptTestStore(t, test.path)
-			stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
+			addDeliveryFailureTrigger(ctx, t, test.path)
+			store := openReceiptTestStore(ctx, t, test.path)
+			stats := runReceiptTestEngine(ctx, t, cfg, store, registry, WithRepair(true))
 			if stats.TotalErrors == 0 || stats.TotalSkipped != 0 || stats.TotalWritten != 0 {
 				t.Fatalf("failed receipt was reported as successful adoption: %+v", stats)
 			}
@@ -127,13 +128,13 @@ func TestRepairAdoptionReceiptFailureIsNotReportedAsSuccess(t *testing.T) {
 }
 
 func TestRepairDoesNotSupersedeSameLocator(t *testing.T) {
-	ctx := context.Background()
-	store := openReceiptTestStore(t, filepath.Join(physicalTempDir(t), "state.db"))
+	ctx := t.Context()
+	store := openReceiptTestStore(ctx, t, filepath.Join(physicalTempDir(t), "state.db"))
 	raw := []byte("Subject: unchanged locator\r\n\r\nbody\r\n")
 	message := &plugins.Message{UID: "1", UIDScope: "generation", Folder: "INBOX", Raw: raw}
 	hash := dedup.ComputeContentHash(raw)
 	backup := &sameLocatorRepairTarget{name: "target", locator: "offset:0", message: message}
-	if err := store.RecordBackupMessage(ctx, plugins.BackupMessage{Source: "account", Target: "target", Scope: "generation", Folder: "INBOX", UID: "1", Locator: backup.locator, RawSHA256: hash}); err != nil {
+	if err := store.RecordBackupMessage(ctx, &plugins.BackupMessage{Source: "account", Target: "target", Scope: "generation", Folder: "INBOX", UID: "1", Locator: backup.locator, RawSHA256: hash}); err != nil {
 		t.Fatal(err)
 	}
 	source := &fixtureSource{name: "account", messages: []*plugins.Message{message}}
@@ -143,9 +144,9 @@ func TestRepairDoesNotSupersedeSameLocator(t *testing.T) {
 		Pairs:   []config.PairConfig{{Source: "account", Targets: []string{"target"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
-	registry.RegisterTarget("same-locator", func(map[string]interface{}) (plugins.Target, error) { return backup, nil })
-	stats := runReceiptTestEngine(t, ctx, cfg, store, registry, WithRepair(true))
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
+	registry.RegisterTarget("same-locator", func(map[string]any) (plugins.Target, error) { return backup, nil })
+	stats := runReceiptTestEngine(ctx, t, cfg, store, registry, WithRepair(true))
 	if stats.TotalWritten != 1 {
 		t.Fatalf("repair stats: %+v", stats)
 	}
@@ -176,21 +177,21 @@ func (*sameLocatorRepairTarget) ReadBackupMessage(context.Context, string) (*plu
 	return nil, plugins.ErrBackupMessageCorrupt
 }
 
-func repairReceiptFixture(root string, source *plugins.Source) (*config.Config, *plugins.Registry) {
+func repairReceiptFixture(root string, source plugins.Source) (*config.Config, *plugins.Registry) {
 	cfg := &config.Config{
 		Sources: []config.SourceConfig{{Name: "account", Type: "fixture", Folders: []string{"Archive"}}},
-		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]interface{}{"path": root}}},
+		Targets: []config.TargetConfig{{Name: "local", Type: "maildir", Config: map[string]any{"path": root}}},
 		Pairs:   []config.PairConfig{{Source: "account", Targets: []string{"local"}}},
 	}
 	registry := plugins.NewRegistry()
-	registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return *source, nil })
+	registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
 	registry.RegisterTarget("maildir", target.NewMaildirTarget)
 	return cfg, registry
 }
 
-func openReceiptTestStore(t *testing.T, path string) *state.Store {
+func openReceiptTestStore(ctx context.Context, t *testing.T, path string) *state.Store {
 	t.Helper()
-	store, err := state.NewStore(path)
+	store, err := state.NewStore(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func openReceiptTestStore(t *testing.T, path string) *state.Store {
 	return store
 }
 
-func runReceiptTestEngine(t *testing.T, ctx context.Context, cfg *config.Config, store *state.Store, registry *plugins.Registry, options ...SyncOption) *SyncStats {
+func runReceiptTestEngine(ctx context.Context, t *testing.T, cfg *config.Config, store *state.Store, registry *plugins.Registry, options ...SyncOption) *SyncStats {
 	t.Helper()
 	engine, err := NewSyncEngine(cfg, store, registry, options...)
 	if err != nil {
@@ -211,13 +212,13 @@ func runReceiptTestEngine(t *testing.T, ctx context.Context, cfg *config.Config,
 	return stats
 }
 
-func assertRepairReceipts(t *testing.T, ctx context.Context, store *state.Store, root string, message *plugins.Message) {
+func assertRepairReceipts(ctx context.Context, t *testing.T, store *state.Store, root string, message *plugins.Message) {
 	t.Helper()
-	backup, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	backup, err := target.NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	backup.(interface{ SetName(string) }).SetName("local")
+	mustAssert[interface{ SetName(name string) }](t, backup).SetName("local")
 	hash := dedup.ComputeContentHash(message.Raw)
 	delivered, err := store.DeliveryExists(ctx, plugins.TargetStateKey(backup), targetDeliveryIdentity(backup, message, "hash:"+hash))
 	if err != nil || !delivered {
@@ -240,13 +241,13 @@ func assertRepairReceipts(t *testing.T, ctx context.Context, store *state.Store,
 	}
 }
 
-func assertMaildirObjectCount(t *testing.T, ctx context.Context, root string, want int) {
+func assertMaildirObjectCount(ctx context.Context, t *testing.T, root string, want int) {
 	t.Helper()
-	backup, err := target.NewMaildirTarget(map[string]interface{}{"path": root})
+	backup, err := target.NewMaildirTarget(map[string]any{"path": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := backup.(plugins.TargetBackupReader).ListBackupMessages(ctx)
+	entries, err := mustAssert[plugins.TargetBackupReader](t, backup).ListBackupMessages(ctx)
 	if err != nil || len(entries) != want {
 		t.Fatalf("Maildir objects = %d, %v; want %d", len(entries), err, want)
 	}
@@ -259,19 +260,19 @@ func deleteRepairReceipts(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec("DELETE FROM deliveries; DELETE FROM messages;"); err != nil {
+	if _, err := db.ExecContext(t.Context(), "DELETE FROM deliveries; DELETE FROM messages;"); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func addDeliveryFailureTrigger(t *testing.T, path string) {
+func addDeliveryFailureTrigger(ctx context.Context, t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`CREATE TRIGGER fail_delivery_receipt BEFORE INSERT ON deliveries BEGIN SELECT RAISE(ABORT, 'forced delivery receipt failure'); END;`)
+	_, err = db.ExecContext(ctx, `CREATE TRIGGER fail_delivery_receipt BEFORE INSERT ON deliveries BEGIN SELECT RAISE(ABORT, 'forced delivery receipt failure'); END;`)
 	if err != nil {
 		t.Fatal(err)
 	}

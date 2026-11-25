@@ -17,18 +17,18 @@ type loginProbeSource struct {
 
 func (*loginProbeSource) Name() string { return "hotmail" }
 func (*loginProbeSource) Type() string { return "imap" }
-func (s *loginProbeSource) Connect(ctx context.Context) error {
-	s.connected = true
-	token, err := s.token(ctx)
+func (src *loginProbeSource) Connect(ctx context.Context) error {
+	src.connected = true
+	token, err := src.token(ctx)
 	if err != nil {
 		return err
 	}
 	if token != "fresh-token" {
 		return errors.New("did not use new login token")
 	}
-	return s.failure
+	return src.failure
 }
-func (s *loginProbeSource) Close() error { s.closed = true; return nil }
+func (src *loginProbeSource) Close() error { src.closed = true; return nil }
 func (*loginProbeSource) ListFolders(context.Context) ([]string, error) {
 	panic("login must not list folders")
 }
@@ -49,15 +49,15 @@ func TestMailboxTokenValidatorUsesFreshTokenAndClosesConnection(t *testing.T) {
 				probe.failure = failure
 			}
 			registry := plugins.NewRegistry()
-			registry.RegisterSource("imap", func(values map[string]interface{}) (plugins.Source, error) {
+			registry.RegisterSource("imap", func(values map[string]any) (plugins.Source, error) {
 				if values["username"] != "expected@hotmail.com" || values["host"] != "outlook.office365.com" {
 					t.Fatal("wrong mailbox configuration")
 				}
-				probe.token = values["oauth2_token_provider"].(func(context.Context) (string, error))
+				probe.token = mustAssert[func(context.Context) (string, error)](t, values["oauth2_token_provider"])
 				return probe, nil
 			})
 			cfg := config.SourceConfig{Name: "hotmail", Type: "imap", Host: "outlook.office365.com", Username: "expected@hotmail.com", UseTLS: true, OAuth2: &config.OAuth2Config{ClientID: "client", Tenant: "consumers"}}
-			err := mailboxTokenValidator(cfg, registry)(context.Background(), "fresh-token")
+			err := mailboxTokenValidator(&cfg, registry)(t.Context(), "fresh-token")
 			if reject && !errors.Is(err, failure) {
 				t.Fatalf("lost authentication failure: %v", err)
 			}

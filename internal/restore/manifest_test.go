@@ -1,7 +1,6 @@
 package restore
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -42,11 +41,11 @@ func TestMergeBackupMessagesRejectsConflictingAliasHashes(t *testing.T) {
 func TestLegacyBackupRequiresExplicitOptIn(t *testing.T) {
 	reader := fixtureReader{entries: []plugins.BackupMessage{{Locator: "legacy"}}, message: &plugins.Message{Raw: []byte("content")}}
 	appender := &fixtureAppender{}
-	result, err := Run(context.Background(), reader, appender, nil, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: true})
+	result, err := Run(t.Context(), reader, appender, nil, Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore", DryRun: true})
 	if err != nil || result.Unverified != 1 || result.Planned != 1 {
 		t.Fatalf("dry-run legacy result=%+v err=%v", result, err)
 	}
-	_, err = Run(context.Background(), reader, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
+	_, err = Run(t.Context(), reader, appender, newFixtureReceipts(), Options{BackupTarget: "archive", DestinationSource: "account", DestinationFolder: "restore"})
 	if err == nil || appender.ensured != 0 {
 		t.Fatalf("legacy restore proceeded without opt-in: err=%v appends=%d", err, appender.appended)
 	}

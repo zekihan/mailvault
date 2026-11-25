@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	// Register the pure-Go SQLite driver for database/sql.
 	_ "modernc.org/sqlite"
 )
 
@@ -22,7 +23,7 @@ type Store struct {
 }
 
 // NewStore creates a new state store at the given path.
-func NewStore(path string) (*Store, error) {
+func NewStore(ctx context.Context, path string) (*Store, error) {
 	filename, err := stateFilename(path, true)
 	if err != nil {
 		return nil, fmt.Errorf("state filename: %w", err)
@@ -43,16 +44,263 @@ func NewStore(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	s := &Store{db: db, path: filename}
-	if err := s.migrate(context.Background()); err != nil {
+	store := &Store{db: db, path: filename}
+	if err := store.migrate(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate: %w", err), db.Close())
 	}
 
-	return s, nil
+	return store, nil
+}
+
+// Close closes the database connection.
+func (store *Store) Close() error {
+	return store.db.Close()
+}
+
+// UpsertSource creates or updates a source record.
+func (store *Store) UpsertSource(ctx context.Context, name, srcType, host, username string) error {
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO sources (name, type, host, username, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(name) DO UPDATE SET
+			type = excluded.type,
+			host = excluded.host,
+			username = excluded.username,
+			updated_at = CURRENT_TIMESTAMP
+	`, name, srcType, host, username)
+	return err
+}
+
+// GetFolderState retrieves sync state for a folder.
+func (store *Store) GetFolderState(ctx context.Context, sourceName, folder string) (*FolderState, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT uidvalidity, uidnext, modseq, last_sync
+		FROM folders
+		WHERE source_name = ? AND name = ?
+	`, sourceName, folder)
+
+	var fs FolderState
+	err := row.Scan(&fs.UIDValidity, &fs.UIDNext, &fs.ModSeq, &fs.LastSync)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil //nolint:nilnil // Not found is not an error
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &fs, nil
+}
+
+// FolderState holds sync state for a single folder.
+type FolderState struct {
+	UIDValidity string
+	UIDNext     string
+	ModSeq      string
+	LastSync    *time.Time
+}
+
+// UpsertFolderState creates or updates folder sync state.
+func (store *Store) UpsertFolderState(ctx context.Context, sourceName, folder string, fs *FolderState) error {
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO folders (source_name, name, uidvalidity, uidnext, modseq, last_sync)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(source_name, name) DO UPDATE SET
+			uidvalidity = excluded.uidvalidity,
+			uidnext = excluded.uidnext,
+			modseq = excluded.modseq,
+			last_sync = CURRENT_TIMESTAMP
+	`, sourceName, folder, fs.UIDValidity, fs.UIDNext, fs.ModSeq)
+	return err
+}
+
+// MarkMessageFetched records that a message has been fetched.
+func (store *Store) MarkMessageFetched(ctx context.Context, sourceName, folder, uid, messageID, contentHash string, size int64, internalDate string) error {
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO messages (source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(source_name, folder, uid) DO UPDATE SET
+			message_id = excluded.message_id,
+			content_hash = excluded.content_hash,
+			size = excluded.size,
+			internal_date = excluded.internal_date,
+			fetched_at = CURRENT_TIMESTAMP
+	`, sourceName, folder, uid, messageID, contentHash, size, internalDate)
+	return err
+}
+
+// MessageExists checks if a message was already fetched (by UID).
+func (store *Store) MessageExists(ctx context.Context, sourceName, folder, uid string) (bool, error) {
+	var exists int
+	err := store.db.QueryRowContext(ctx, `
+		SELECT 1 FROM messages WHERE source_name = ? AND folder = ? AND uid = ?
+	`, sourceName, folder, uid).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// FindByMessageID finds messages with the same Message-ID across all sources.
+func (store *Store) FindByMessageID(ctx context.Context, messageID string) ([]MessageRecord, error) {
+	if messageID == "" {
+		return nil, nil
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at
+		FROM messages WHERE message_id = ?
+	`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	return scanMessages(rows)
+}
+
+// FindByContentHash finds messages with the same content hash.
+func (store *Store) FindByContentHash(ctx context.Context, contentHash string) ([]MessageRecord, error) {
+	if contentHash == "" {
+		return nil, nil
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at
+		FROM messages WHERE content_hash = ?
+	`, contentHash)
+	if err != nil {
+		return nil, err
+	}
+	return scanMessages(rows)
+}
+
+// MessageRecord represents a stored message record.
+type MessageRecord struct {
+	SourceName   string
+	Folder       string
+	UID          string
+	MessageID    string
+	ContentHash  string
+	Size         int64
+	InternalDate string
+	FetchedAt    time.Time
+}
+
+func scanMessages(rows *sql.Rows) ([]MessageRecord, error) {
+	var results []MessageRecord
+	for rows.Next() {
+		var r MessageRecord
+		if err := rows.Scan(&r.SourceName, &r.Folder, &r.UID, &r.MessageID, &r.ContentHash, &r.Size, &r.InternalDate, &r.FetchedAt); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		results = append(results, r)
+	}
+	return results, errors.Join(rows.Err(), rows.Close())
+}
+
+// GetOAuthToken retrieves stored OAuth token for a source.
+func (store *Store) GetOAuthToken(ctx context.Context, sourceName string) (*OAuthToken, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT access_token, refresh_token, expiry FROM oauth_tokens WHERE source_name = ?
+	`, sourceName)
+
+	var tok OAuthToken
+	err := row.Scan(&tok.AccessToken, &tok.RefreshToken, &tok.Expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil //nolint:nilnil // Not found is not an error
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &tok, nil
+}
+
+// OAuthToken holds OAuth2 tokens.
+type OAuthToken struct {
+	AccessToken  string
+	RefreshToken string
+	Expiry       time.Time
+}
+
+// UpsertOAuthToken stores or updates OAuth tokens.
+func (store *Store) UpsertOAuthToken(ctx context.Context, sourceName string, tok *OAuthToken) error {
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO oauth_tokens (source_name, access_token, refresh_token, expiry, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(source_name) DO UPDATE SET
+			access_token = excluded.access_token,
+			refresh_token = excluded.refresh_token,
+			expiry = excluded.expiry,
+			updated_at = CURRENT_TIMESTAMP
+	`, sourceName, tok.AccessToken, tok.RefreshToken, tok.Expiry)
+	return err
+}
+
+// CleanOldMessages removes message records older than the given duration.
+func (store *Store) CleanOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return store.cleanOldMessages(ctx, time.Now(), olderThan)
+}
+
+// CountOldMessages reports how many message metadata records are older than the
+// supplied duration. It does not inspect or modify delivery receipts.
+func (store *Store) CountOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
+	var count int64
+	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE fetched_at < ?`, messageMetadataCutoff(time.Now(), olderThan)).Scan(&count)
+	return count, err
+}
+
+func messageMetadataCutoff(now time.Time, olderThan time.Duration) string {
+	return now.UTC().Add(-olderThan).Format(time.DateTime)
+}
+
+// Stats returns database statistics.
+func (store *Store) Stats(ctx context.Context) (map[string]int64, error) {
+	stats := make(map[string]int64)
+
+	queries := map[string]string{
+		"sources":  "SELECT COUNT(*) FROM sources",
+		"folders":  "SELECT COUNT(*) FROM folders",
+		"messages": "SELECT COUNT(*) FROM messages",
+		"oauth":    "SELECT COUNT(*) FROM oauth_tokens",
+	}
+
+	for name, query := range queries {
+		var count int64
+		if err := store.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return nil, err
+		}
+		stats[name] = count
+	}
+
+	return stats, nil
+}
+
+// DeliveryExists reports whether this target has received the stable message identity.
+func (store *Store) DeliveryExists(ctx context.Context, target, identity string) (bool, error) {
+	if store.missingDeliveries {
+		return false, ctx.Err()
+	}
+	var exists int
+	err := store.db.QueryRowContext(ctx, `SELECT 1 FROM deliveries WHERE target_name=? AND identity=?`, target, identity).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// MarkDelivered records successful delivery to a target.
+func (store *Store) MarkDelivered(ctx context.Context, target, identity, source, folder, uid string) error {
+	_, err := store.db.ExecContext(ctx, `INSERT OR IGNORE INTO deliveries(target_name,identity,source_name,folder,uid) VALUES(?,?,?,?,?)`, target, identity, source, folder, uid)
+	return err
+}
+
+func (store *Store) cleanOldMessages(ctx context.Context, now time.Time, olderThan time.Duration) (int64, error) {
+	result, err := store.db.ExecContext(ctx, `
+		DELETE FROM messages WHERE fetched_at < ?
+	`, messageMetadataCutoff(now, olderThan))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // migrate creates the schema if needed.
-func (s *Store) migrate(ctx context.Context) error {
+func (store *Store) migrate(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS imap_receipts (
 		source TEXT NOT NULL, target TEXT NOT NULL, scope TEXT NOT NULL,
@@ -132,255 +380,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_folders_source ON folders(source_name);
 	`
 
-	_, err := s.db.ExecContext(ctx, schema)
-	return err
-}
-
-// Close closes the database connection.
-func (s *Store) Close() error {
-	return s.db.Close()
-}
-
-// UpsertSource creates or updates a source record.
-func (s *Store) UpsertSource(ctx context.Context, name, srcType, host, username string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sources (name, type, host, username, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(name) DO UPDATE SET
-			type = excluded.type,
-			host = excluded.host,
-			username = excluded.username,
-			updated_at = CURRENT_TIMESTAMP
-	`, name, srcType, host, username)
-	return err
-}
-
-// GetFolderState retrieves sync state for a folder.
-func (s *Store) GetFolderState(ctx context.Context, sourceName, folder string) (*FolderState, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT uidvalidity, uidnext, modseq, last_sync
-		FROM folders
-		WHERE source_name = ? AND name = ?
-	`, sourceName, folder)
-
-	var fs FolderState
-	err := row.Scan(&fs.UIDValidity, &fs.UIDNext, &fs.ModSeq, &fs.LastSync)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil // Not found is not an error
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &fs, nil
-}
-
-// FolderState holds sync state for a single folder.
-type FolderState struct {
-	UIDValidity string
-	UIDNext     string
-	ModSeq      string
-	LastSync    *time.Time
-}
-
-// UpsertFolderState creates or updates folder sync state.
-func (s *Store) UpsertFolderState(ctx context.Context, sourceName, folder string, fs *FolderState) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO folders (source_name, name, uidvalidity, uidnext, modseq, last_sync)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(source_name, name) DO UPDATE SET
-			uidvalidity = excluded.uidvalidity,
-			uidnext = excluded.uidnext,
-			modseq = excluded.modseq,
-			last_sync = CURRENT_TIMESTAMP
-	`, sourceName, folder, fs.UIDValidity, fs.UIDNext, fs.ModSeq)
-	return err
-}
-
-// MarkMessageFetched records that a message has been fetched.
-func (s *Store) MarkMessageFetched(ctx context.Context, sourceName, folder, uid, messageID, contentHash string, size int64, internalDate string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO messages (source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(source_name, folder, uid) DO UPDATE SET
-			message_id = excluded.message_id,
-			content_hash = excluded.content_hash,
-			size = excluded.size,
-			internal_date = excluded.internal_date,
-			fetched_at = CURRENT_TIMESTAMP
-	`, sourceName, folder, uid, messageID, contentHash, size, internalDate)
-	return err
-}
-
-// MessageExists checks if a message was already fetched (by UID).
-func (s *Store) MessageExists(ctx context.Context, sourceName, folder, uid string) (bool, error) {
-	var exists int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT 1 FROM messages WHERE source_name = ? AND folder = ? AND uid = ?
-	`, sourceName, folder, uid).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-// FindByMessageID finds messages with the same Message-ID across all sources.
-func (s *Store) FindByMessageID(ctx context.Context, messageID string) ([]MessageRecord, error) {
-	if messageID == "" {
-		return nil, nil
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at
-		FROM messages WHERE message_id = ?
-	`, messageID)
-	if err != nil {
-		return nil, err
-	}
-	return scanMessages(rows)
-}
-
-// FindByContentHash finds messages with the same content hash.
-func (s *Store) FindByContentHash(ctx context.Context, contentHash string) ([]MessageRecord, error) {
-	if contentHash == "" {
-		return nil, nil
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT source_name, folder, uid, message_id, content_hash, size, internal_date, fetched_at
-		FROM messages WHERE content_hash = ?
-	`, contentHash)
-	if err != nil {
-		return nil, err
-	}
-	return scanMessages(rows)
-}
-
-// MessageRecord represents a stored message record.
-type MessageRecord struct {
-	SourceName   string
-	Folder       string
-	UID          string
-	MessageID    string
-	ContentHash  string
-	Size         int64
-	InternalDate string
-	FetchedAt    time.Time
-}
-
-func scanMessages(rows *sql.Rows) (results []MessageRecord, err error) {
-	defer func() {
-		err = errors.Join(err, rows.Close())
-	}()
-	for rows.Next() {
-		var r MessageRecord
-		if err := rows.Scan(&r.SourceName, &r.Folder, &r.UID, &r.MessageID, &r.ContentHash, &r.Size, &r.InternalDate, &r.FetchedAt); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-	return results, rows.Err()
-}
-
-// GetOAuthToken retrieves stored OAuth token for a source.
-func (s *Store) GetOAuthToken(ctx context.Context, sourceName string) (*OAuthToken, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT access_token, refresh_token, expiry FROM oauth_tokens WHERE source_name = ?
-	`, sourceName)
-
-	var tok OAuthToken
-	err := row.Scan(&tok.AccessToken, &tok.RefreshToken, &tok.Expiry)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &tok, nil
-}
-
-// OAuthToken holds OAuth2 tokens.
-type OAuthToken struct {
-	AccessToken  string
-	RefreshToken string
-	Expiry       time.Time
-}
-
-// UpsertOAuthToken stores or updates OAuth tokens.
-func (s *Store) UpsertOAuthToken(ctx context.Context, sourceName string, tok *OAuthToken) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO oauth_tokens (source_name, access_token, refresh_token, expiry, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(source_name) DO UPDATE SET
-			access_token = excluded.access_token,
-			refresh_token = excluded.refresh_token,
-			expiry = excluded.expiry,
-			updated_at = CURRENT_TIMESTAMP
-	`, sourceName, tok.AccessToken, tok.RefreshToken, tok.Expiry)
-	return err
-}
-
-// CleanOldMessages removes message records older than the given duration.
-func (s *Store) CleanOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
-	return s.cleanOldMessages(ctx, time.Now(), olderThan)
-}
-
-func (s *Store) cleanOldMessages(ctx context.Context, now time.Time, olderThan time.Duration) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM messages WHERE fetched_at < ?
-	`, messageMetadataCutoff(now, olderThan))
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// CountOldMessages reports how many message metadata records are older than the
-// supplied duration. It does not inspect or modify delivery receipts.
-func (s *Store) CountOldMessages(ctx context.Context, olderThan time.Duration) (int64, error) {
-	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE fetched_at < ?`, messageMetadataCutoff(time.Now(), olderThan)).Scan(&count)
-	return count, err
-}
-
-func messageMetadataCutoff(now time.Time, olderThan time.Duration) string {
-	return now.UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
-}
-
-// Stats returns database statistics.
-func (s *Store) Stats(ctx context.Context) (map[string]int64, error) {
-	stats := make(map[string]int64)
-
-	queries := map[string]string{
-		"sources":  "SELECT COUNT(*) FROM sources",
-		"folders":  "SELECT COUNT(*) FROM folders",
-		"messages": "SELECT COUNT(*) FROM messages",
-		"oauth":    "SELECT COUNT(*) FROM oauth_tokens",
-	}
-
-	for name, query := range queries {
-		var count int64
-		if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
-			return nil, err
-		}
-		stats[name] = count
-	}
-
-	return stats, nil
-}
-
-// DeliveryExists reports whether this target has received the stable message identity.
-func (s *Store) DeliveryExists(ctx context.Context, target, identity string) (bool, error) {
-	if s.missingDeliveries {
-		return false, ctx.Err()
-	}
-	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM deliveries WHERE target_name=? AND identity=?`, target, identity).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-// MarkDelivered records successful delivery to a target.
-func (s *Store) MarkDelivered(ctx context.Context, target, identity, source, folder, uid string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO deliveries(target_name,identity,source_name,folder,uid) VALUES(?,?,?,?,?)`, target, identity, source, folder, uid)
+	_, err := store.db.ExecContext(ctx, schema)
 	return err
 }

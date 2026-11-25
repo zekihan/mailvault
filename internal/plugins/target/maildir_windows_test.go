@@ -15,7 +15,7 @@ import (
 
 func windowsMaildirFixture(t *testing.T, preserveFolders bool) *MaildirTarget {
 	t.Helper()
-	plugin, err := NewMaildirTarget(map[string]interface{}{
+	plugin, err := NewMaildirTarget(map[string]any{
 		"path": filepath.Join(t.TempDir(), "maildir"), "preserve_folders": preserveFolders,
 	})
 	if err != nil {
@@ -27,7 +27,7 @@ func windowsMaildirFixture(t *testing.T, preserveFolders bool) *MaildirTarget {
 			t.Error(err)
 		}
 	})
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	return target
@@ -54,7 +54,7 @@ func windowsSymlink(t *testing.T, path, destination string) {
 
 func TestWindowsMaildirWriteReadAndMove(t *testing.T) {
 	target := windowsMaildirFixture(t, true)
-	ctx := context.Background()
+	ctx := t.Context()
 	raw := []byte("Subject: native Windows fixture\r\n\r\nbody\r\n")
 	locator, err := target.WriteBackupMessage(ctx, &plugins.Message{Folder: "Archive/2026", Raw: raw})
 	if err != nil {
@@ -96,10 +96,10 @@ func TestWindowsMaildirPublicationNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer to.Close()
-	if err := from.root.WriteFile("source", []byte("new fixture"), 0600); err != nil {
+	if err := from.root.WriteFile("source", []byte("new fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := to.root.WriteFile("existing", []byte("keep fixture"), 0600); err != nil {
+	if err := to.root.WriteFile("existing", []byte("keep fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := linkMaildirFile(from, "source", to, "existing"); err == nil {
@@ -120,7 +120,7 @@ func TestWindowsMaildirPublicationNeverOverwrites(t *testing.T) {
 	if err != nil || !os.SameFile(sourceInfo, publishedInfo) {
 		t.Fatalf("publication did not create a hard link: %v", err)
 	}
-	message, err := target.ReadBackupMessage(context.Background(), "new/published")
+	message, err := target.ReadBackupMessage(t.Context(), "new/published")
 	if err != nil || string(message.Raw) != "new fixture" {
 		t.Fatalf("published hard link could not be read: %+v, %v", message, err)
 	}
@@ -150,7 +150,7 @@ func TestWindowsMaildirRejectsReparseDirectories(t *testing.T) {
 						t.Fatal(err)
 					}
 					path = filepath.Dir(folder)
-					if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 						t.Fatal(err)
 					}
 				default:
@@ -170,7 +170,7 @@ func TestWindowsMaildirRejectsReparseDirectories(t *testing.T) {
 					}
 				}
 				if component == "root" || component == "ancestor" {
-					if err := target.Initialize(context.Background()); err == nil {
+					if err := target.Initialize(t.Context()); err == nil {
 						t.Fatal("initialized a reparse directory")
 					}
 				} else {
@@ -178,7 +178,7 @@ func TestWindowsMaildirRejectsReparseDirectories(t *testing.T) {
 					if component == "folder" {
 						folder = "parent/child"
 					}
-					if err := target.WriteMessage(context.Background(), &plugins.Message{Folder: folder, Raw: []byte("fixture")}); err == nil {
+					if err := target.WriteMessage(t.Context(), &plugins.Message{Folder: folder, Raw: []byte("fixture")}); err == nil {
 						t.Fatal("wrote through a reparse directory")
 					}
 				}
@@ -194,11 +194,11 @@ func TestWindowsMaildirRejectsReparseDirectories(t *testing.T) {
 func TestWindowsMaildirReadRejectsExternalSymlink(t *testing.T) {
 	target := windowsMaildirFixture(t, false)
 	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("external fixture"), 0600); err != nil {
+	if err := os.WriteFile(outside, []byte("external fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	windowsSymlink(t, filepath.Join(target.path, "new", "message"), outside)
-	if message, err := target.ReadBackupMessage(context.Background(), "new/message"); err == nil || message != nil {
+	if message, err := target.ReadBackupMessage(t.Context(), "new/message"); err == nil || message != nil {
 		t.Fatalf("read through external symlink: %+v, %v", message, err)
 	}
 }
@@ -211,7 +211,6 @@ func TestWindowsMaildirPublicationRejectsDirectoryReplacement(t *testing.T) {
 		called = true
 		path := filepath.Join(target.path, "new")
 		if err := os.Rename(path, path+"-old"); err != nil {
-			// Denying rename of a pinned directory is also fail-closed behavior.
 			if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) && !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 				t.Fatalf("replace fixture directory: %v", err)
 			}
@@ -221,7 +220,7 @@ func TestWindowsMaildirPublicationRejectsDirectoryReplacement(t *testing.T) {
 		windowsJunction(t, path, outside)
 		return linkMaildirFile(from, oldName, to, newName)
 	}
-	locator, err := target.WriteBackupMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")})
+	locator, err := target.WriteBackupMessage(t.Context(), &plugins.Message{Raw: []byte("fixture")})
 	if !called || err == nil || locator != "" || target.LastBackupLocator() != "" {
 		t.Fatalf("acknowledged directory replacement: called=%v locator=%q err=%v", called, locator, err)
 	}
@@ -242,7 +241,7 @@ func TestWindowsMaildirSyncFailureRollsBackPublication(t *testing.T) {
 		}
 		return nil
 	}
-	locator, err := target.WriteBackupMessage(context.Background(), &plugins.Message{Raw: []byte("fixture")})
+	locator, err := target.WriteBackupMessage(t.Context(), &plugins.Message{Raw: []byte("fixture")})
 	if !errors.Is(err, syncFailure) || locator != "" || target.LastBackupLocator() != "" || calls != 2 {
 		t.Fatalf("acknowledged unsynced publication: calls=%d locator=%q err=%v", calls, locator, err)
 	}
@@ -253,7 +252,7 @@ func TestWindowsMaildirSyncFailureRollsBackPublication(t *testing.T) {
 		}
 	}
 	target.syncDir = nil
-	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte("retry fixture")}); err != nil {
+	if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte("retry fixture")}); err != nil {
 		t.Fatal(err)
 	}
 }

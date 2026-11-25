@@ -7,6 +7,12 @@ import (
 	"github.com/spf13/viper"
 )
 
+const (
+	defaultConnectionTimeout = 30 * time.Second
+	defaultReadTimeout       = 60 * time.Second
+	defaultConnectRetryTime  = 3 * time.Minute
+)
+
 // Apply defaults while field presence is still available. Zero values in the
 // decoded struct alone cannot distinguish omission from an explicit opt-out.
 // InConfig checks decoded file presence; IsSet also sees automatic env lookups,
@@ -19,13 +25,13 @@ func applySourceDefaults(cfg *Config, values *viper.Viper) {
 			src.UseTLS = !src.StartTLS
 		}
 		if !values.InConfig(prefix+"connection_timeout") && !values.IsSet(prefix+"connection_timeout") {
-			src.ConnectionTimeout = 30 * time.Second
+			src.ConnectionTimeout = defaultConnectionTimeout
 		}
 		if !values.InConfig(prefix+"read_timeout") && !values.IsSet(prefix+"read_timeout") {
-			src.ReadTimeout = 60 * time.Second
+			src.ReadTimeout = defaultReadTimeout
 		}
 		if !values.InConfig(prefix+"connect_retry_timeout") && !values.IsSet(prefix+"connect_retry_timeout") {
-			src.ConnectRetryTimeout = 3 * time.Minute
+			src.ConnectRetryTimeout = defaultConnectRetryTime
 		}
 	}
 }

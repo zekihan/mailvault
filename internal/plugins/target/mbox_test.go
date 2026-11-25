@@ -1,7 +1,6 @@
 package target
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,13 +12,13 @@ import (
 func TestMboxTargetEscapesFromLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mailbox")
 	target := &MboxTarget{path: path, create: true}
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	defer target.Close()
 
 	body := "From ordinary\r\n>From escaped\n>>From escaped twice\r\n>>>From already escaped\nlast-no-newline"
-	if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: []byte(body)}); err != nil {
+	if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: []byte(body)}); err != nil {
 		t.Fatal(err)
 	}
 	gotBytes, err := os.ReadFile(path)
@@ -46,12 +45,12 @@ func TestMboxrdEscapesAcrossHeaderBoundaries(t *testing.T) {
 func TestMboxTargetEmptyAndCRLF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mailbox")
 	target := &MboxTarget{path: path, create: true}
-	if err := target.Initialize(context.Background()); err != nil {
+	if err := target.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	defer target.Close()
 	for _, raw := range [][]byte{[]byte("A: b\r\n\r\nFrom x\r\n"), {}} {
-		if err := target.WriteMessage(context.Background(), &plugins.Message{Raw: raw}); err != nil {
+		if err := target.WriteMessage(t.Context(), &plugins.Message{Raw: raw}); err != nil {
 			t.Fatal(err)
 		}
 	}

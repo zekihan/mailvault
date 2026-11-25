@@ -22,7 +22,15 @@ const (
 	DefaultScope   = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All offline_access"
 	GoogleScope    = "https://mail.google.com/"
 	GoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
-	GoogleTokenURL = "https://oauth2.googleapis.com/token"
+	GoogleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 -- public OAuth scope constant; not a credential
+
+	oauthPollFallbackInterval = 5 * time.Second
+	oauthReadHeaderTimeout    = 5 * time.Second
+	oauthTokenBytes           = 32
+	oauthLoopbackTimeout      = 10 * time.Minute
+	oauthHTTPTimeout          = 30 * time.Second
+	oauthResponseLimit        = 1 << 20
+	oauthKeyClientID          = "client_id"
 )
 
 // Config contains the public-client settings needed by Microsoft's device flow.
@@ -41,8 +49,8 @@ type Config struct {
 
 // Store keeps OAuth state as one opaque value per account.
 type Store interface {
-	Get(context.Context, string) (string, error)
-	Set(context.Context, string, string) error
+	Get(ctx context.Context, account string) (string, error)
+	Set(ctx context.Context, account, value string) error
 }
 
 type tokenState struct {
@@ -53,8 +61,13 @@ type tokenState struct {
 
 // DeviceLogin authorizes a Microsoft personal account and stores tokens without
 // printing either token. Output contains only the device verification details.
-func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, output io.Writer) error {
-	cfg = cfg.normalized()
+func DeviceLogin(ctx context.Context, cfg *Config, account string, store Store, output io.Writer) error {
+	if cfg == nil {
+		return errors.New("account, token store, and output are required")
+	}
+	copied := *cfg
+	normalized := copied.normalized()
+	cfg = &normalized
 	if cfg.Provider != "microsoft" {
 		return errors.New("device login is supported only for Microsoft OAuth")
 	}
@@ -71,67 +84,95 @@ func DeviceLogin(ctx context.Context, cfg Config, account string, store Store, o
 	if _, err := fmt.Fprintf(output, "Open %s and enter code %s\n", device.VerificationURI, device.UserCode); err != nil {
 		return fmt.Errorf("write device instructions: %w", err)
 	}
+	return pollDeviceToken(ctx, cfg, account, store, &device)
+}
+
+func pollDeviceToken(ctx context.Context, cfg *Config, account string, store Store, device *deviceCodeResponse) error {
 	interval := time.Duration(device.Interval) * time.Second
 	if interval <= 0 {
-		interval = 5 * time.Second
+		interval = oauthPollFallbackInterval
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(device.ExpiresIn)*time.Second)
 	defer cancel()
 	for {
-		timer := time.NewTimer(interval)
-		select {
-		case <-pollCtx.Done():
-			timer.Stop()
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return errors.New("device authorization expired")
-		case <-timer.C:
+		if err := waitDeviceInterval(pollCtx, ctx, interval); err != nil {
+			return err
 		}
 		state, err := requestToken(pollCtx, cfg, url.Values{
-			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-			"client_id":   {cfg.ClientID},
-			"device_code": {device.DeviceCode},
+			"grant_type":     {"urn:ietf:params:oauth:grant-type:device_code"},
+			oauthKeyClientID: {cfg.ClientID},
+			"device_code":    {device.DeviceCode},
 		})
 		if err != nil {
-			var oauthErr *protocolError
-			if errors.As(err, &oauthErr) && oauthErr.Code == "authorization_pending" {
-				continue
+			done, next := handleDevicePollError(err, &interval)
+			if done {
+				return next
 			}
-			if errors.As(err, &oauthErr) && oauthErr.Code == "slow_down" {
-				interval += 5 * time.Second
-				continue
-			}
-			return err
+			continue
 		}
 		if state.RefreshToken == "" {
 			return errors.New("authorization response did not include a refresh token; ensure offline_access is requested")
 		}
-		if cfg.ValidateAccessToken != nil {
-			if err := cfg.ValidateAccessToken(ctx, state.AccessToken); err != nil {
-				return fmt.Errorf("OAuth authorization completed, but mailbox access could not be verified; new credentials were not saved: %w", err)
-			}
+		return saveOAuthState(ctx, cfg, store, account, state)
+	}
+}
+
+func waitDeviceInterval(pollCtx, ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	select {
+	case <-pollCtx.Done():
+		timer.Stop()
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("encode OAuth state: %w", err)
-		}
-		if err := store.Set(ctx, account, string(encoded)); err != nil {
-			return fmt.Errorf("save OAuth state: %w", err)
-		}
+		return errors.New("device authorization expired")
+	case <-timer.C:
 		return nil
 	}
 }
 
+func handleDevicePollError(err error, interval *time.Duration) (bool, error) {
+	var oauthErr *protocolError
+	if errors.As(err, &oauthErr) && oauthErr.Code == "authorization_pending" {
+		return false, nil
+	}
+	if errors.As(err, &oauthErr) && oauthErr.Code == "slow_down" {
+		*interval += oauthPollFallbackInterval
+		return false, nil
+	}
+	return true, err
+}
+
+func saveOAuthState(ctx context.Context, cfg *Config, store Store, account string, state tokenState) error {
+	if cfg.ValidateAccessToken != nil {
+		if err := cfg.ValidateAccessToken(ctx, state.AccessToken); err != nil {
+			return fmt.Errorf("OAuth authorization completed, but mailbox access could not be verified; new credentials were not saved: %w", err)
+		}
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode OAuth state: %w", err)
+	}
+	if err := store.Set(ctx, account, string(encoded)); err != nil {
+		return fmt.Errorf("save OAuth state: %w", err)
+	}
+	return nil
+}
+
 // LoopbackLogin authorizes a Google desktop OAuth client with PKCE and stores
 // the resulting token set without printing secrets.
-func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store, output io.Writer) error {
+func LoopbackLogin(ctx context.Context, cfg *Config, account string, store Store, output io.Writer) error {
+	if cfg == nil {
+		return errors.New("account, token store, and output are required")
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+		ctx, cancel = context.WithTimeout(ctx, oauthLoopbackTimeout)
 		defer cancel()
 	}
-	cfg = cfg.normalized()
+	copied := *cfg
+	normalized := copied.normalized()
+	cfg = &normalized
 	if cfg.Provider != "google" {
 		return errors.New("loopback login is supported only for Google OAuth")
 	}
@@ -141,25 +182,55 @@ func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store,
 	if account == "" || store == nil || output == nil {
 		return errors.New("account, token store, and output are required")
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("start OAuth loopback listener: %w", err)
 	}
 	defer func() { _ = listener.Close() }()
 	redirectURI := "http://" + listener.Addr().String()
-	state, err := randomURLToken(32)
+	state, verifier, err := newLoopbackAuth(cfg, redirectURI, output)
 	if err != nil {
-		return fmt.Errorf("create OAuth state: %w", err)
+		return err
 	}
-	verifier, err := randomURLToken(32)
+	callbackCh := make(chan loopbackCallback, 1)
+	server, serveErr := newLoopbackServer(listener, state, callbackCh)
+	defer func() { _ = server.Close() }()
+	return awaitLoopbackToken(ctx, cfg, account, store, redirectURI, verifier, serveErr, callbackCh)
+}
+
+type loopbackCallback struct {
+	code string
+	err  error
+}
+
+func newLoopbackAuth(cfg *Config, redirectURI string, output io.Writer) (string, string, error) {
+	state, err := randomURLToken(oauthTokenBytes)
 	if err != nil {
-		return fmt.Errorf("create PKCE verifier: %w", err)
+		return "", "", fmt.Errorf("create OAuth state: %w", err)
+	}
+	verifier, err := randomURLToken(oauthTokenBytes)
+	if err != nil {
+		return "", "", fmt.Errorf("create PKCE verifier: %w", err)
 	}
 	digest := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
-	authURL, _ := url.Parse(cfg.AuthorizationURL)
+	authURL, err := buildLoopbackAuthURL(cfg, redirectURI, state, challenge)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := fmt.Fprintf(output, "Open this URL to authorize Mailvault:\n%s\n", authURL.String()); err != nil {
+		return "", "", fmt.Errorf("write OAuth instructions: %w", err)
+	}
+	return state, verifier, nil
+}
+
+func buildLoopbackAuthURL(cfg *Config, redirectURI, state, challenge string) (*url.URL, error) {
+	authURL, err := url.Parse(cfg.AuthorizationURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse authorization URL: %w", err)
+	}
 	query := authURL.Query()
-	query.Set("client_id", cfg.ClientID)
+	query.Set(oauthKeyClientID, cfg.ClientID)
 	query.Set("redirect_uri", redirectURI)
 	query.Set("response_type", "code")
 	query.Set("scope", strings.Join(cfg.Scopes, " "))
@@ -169,85 +240,93 @@ func LoopbackLogin(ctx context.Context, cfg Config, account string, store Store,
 	query.Set("access_type", "offline")
 	query.Set("prompt", "consent")
 	authURL.RawQuery = query.Encode()
-	if _, err := fmt.Fprintf(output, "Open this URL to authorize Mailvault:\n%s\n", authURL.String()); err != nil {
-		return fmt.Errorf("write OAuth instructions: %w", err)
-	}
-	type callback struct {
-		code string
-		err  error
-	}
-	callbackCh := make(chan callback, 1)
+	return authURL, nil
+}
+
+func newLoopbackServer(listener net.Listener, state string, callbackCh chan<- loopbackCallback) (*http.Server, <-chan error) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
+	mux.HandleFunc("/", loopbackCallbackHandler(state, callbackCh))
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: oauthReadHeaderTimeout}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	return server, serveErr
+}
+
+func loopbackCallbackHandler(state string, callbackCh chan<- loopbackCallback) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !checkLoopbackRequest(w, r, state) {
 			return
 		}
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if r.URL.Query().Get("state") != state {
-			http.Error(w, "invalid OAuth state", http.StatusBadRequest)
-			return
-		}
-		if oauthErr := r.URL.Query().Get("error"); oauthErr != "" {
-			http.Error(w, "authorization was not completed", http.StatusBadRequest)
-			select {
-			case callbackCh <- callback{err: &protocolError{Code: safeCode(oauthErr, http.StatusBadRequest)}}:
-			default:
-			}
+		if handleLoopbackError(w, r, callbackCh) {
 			return
 		}
 		code := r.URL.Query().Get("code")
 		if code == "" || containsControl(code) {
 			http.Error(w, "missing authorization code", http.StatusBadRequest)
-			select {
-			case callbackCh <- callback{err: errors.New("OAuth callback did not include an authorization code")}:
-			default:
-			}
+			sendLoopbackCallback(callbackCh, loopbackCallback{err: errors.New("OAuth callback did not include an authorization code")})
 			return
 		}
-		_, _ = io.WriteString(w, "Authorization received. Return to Mailvault for the mailbox verification result. You may close this window.\n")
-		select {
-		case callbackCh <- callback{code: code}:
-		default:
-		}
-	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(listener) }()
-	defer func() { _ = server.Close() }()
+		_, _ = io.WriteString(w, "Authorization received. Return to Mailvault for the mailbox verification result. You may close this window.\n") //nolint:errcheck // best-effort loopback page; failure only means the client disconnected
+		sendLoopbackCallback(callbackCh, loopbackCallback{code: code})
+	}
+}
+
+func checkLoopbackRequest(w http.ResponseWriter, r *http.Request, state string) bool {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return false
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if r.URL.Query().Get("state") != state {
+		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func handleLoopbackError(w http.ResponseWriter, r *http.Request, callbackCh chan<- loopbackCallback) bool {
+	oauthErr := r.URL.Query().Get("error")
+	if oauthErr == "" {
+		return false
+	}
+	http.Error(w, "authorization was not completed", http.StatusBadRequest)
+	sendLoopbackCallback(callbackCh, loopbackCallback{err: &protocolError{Code: safeCode(oauthErr, http.StatusBadRequest)}})
+	return true
+}
+
+func sendLoopbackCallback(ch chan<- loopbackCallback, result loopbackCallback) {
+	select {
+	case ch <- result:
+	default:
+	}
+}
+
+func awaitLoopbackToken(ctx context.Context, cfg *Config, account string, store Store, redirectURI, verifier string, serveErr <-chan error, callbackCh <-chan loopbackCallback) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case err := <-serveErr:
 		return fmt.Errorf("serve OAuth callback: %w", err)
 	case result := <-callbackCh:
-		if result.err != nil {
-			return result.err
-		}
-		state, err := requestToken(ctx, cfg, url.Values{"grant_type": {"authorization_code"}, "client_id": {cfg.ClientID}, "code": {result.code}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
-		if err != nil {
-			return err
-		}
-		if state.RefreshToken == "" {
-			return errors.New("authorization response did not include a refresh token; retry consent with offline access")
-		}
-		if cfg.ValidateAccessToken != nil {
-			if err := cfg.ValidateAccessToken(ctx, state.AccessToken); err != nil {
-				return fmt.Errorf("OAuth authorization completed, but mailbox access could not be verified; new credentials were not saved: %w", err)
-			}
-		}
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("encode OAuth state: %w", err)
-		}
-		if err := store.Set(ctx, account, string(encoded)); err != nil {
-			return fmt.Errorf("save OAuth state: %w", err)
-		}
-		return nil
+		return exchangeLoopbackToken(ctx, cfg, account, store, redirectURI, verifier, result)
 	}
+}
+
+func exchangeLoopbackToken(ctx context.Context, cfg *Config, account string, store Store, redirectURI, verifier string, result loopbackCallback) error {
+	if result.err != nil {
+		return result.err
+	}
+	state, err := requestToken(ctx, cfg, url.Values{"grant_type": {"authorization_code"}, oauthKeyClientID: {cfg.ClientID}, "code": {result.code}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
+	if err != nil {
+		return err
+	}
+	if state.RefreshToken == "" {
+		return errors.New("authorization response did not include a refresh token; retry consent with offline access")
+	}
+	return saveOAuthState(ctx, cfg, store, account, state)
 }
 
 func randomURLToken(size int) (string, error) {
@@ -258,19 +337,6 @@ func randomURLToken(size int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// NewTokenProvider returns a concurrency-safe provider that refreshes tokens
-// before expiry and atomically saves rotated refresh tokens through Store.Set.
-func NewTokenProvider(cfg Config, account string, store Store) (*Provider, error) {
-	cfg = cfg.normalized()
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
-	if account == "" || store == nil {
-		return nil, errors.New("account and token store are required")
-	}
-	return &Provider{cfg: cfg, account: account, store: store, gate: make(chan struct{}, 1)}, nil
-}
-
 type Provider struct {
 	cfg     Config
 	account string
@@ -278,20 +344,34 @@ type Provider struct {
 	gate    chan struct{}
 }
 
-func (p *Provider) AccessToken(ctx context.Context) (string, error) {
+// NewTokenProvider returns a concurrency-safe provider that refreshes tokens
+// before expiry and atomically saves rotated refresh tokens through Store.Set.
+func NewTokenProvider(cfg *Config, account string, store Store) (*Provider, error) {
+	normalized := cfg.normalized()
+	cfg = &normalized
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if account == "" || store == nil {
+		return nil, errors.New("account and token store are required")
+	}
+	return &Provider{cfg: *cfg, account: account, store: store, gate: make(chan struct{}, 1)}, nil
+}
+
+func (provider *Provider) AccessToken(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	select {
-	case p.gate <- struct{}{}:
-		defer func() { <-p.gate }()
+	case provider.gate <- struct{}{}:
+		defer func() { <-provider.gate }()
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	encoded, err := p.store.Get(ctx, p.account)
+	encoded, err := provider.store.Get(ctx, provider.account)
 	if err != nil {
 		return "", fmt.Errorf("read OAuth state: %w", err)
 	}
@@ -302,11 +382,11 @@ func (p *Provider) AccessToken(ctx context.Context) (string, error) {
 	if state.AccessToken != "" && time.Until(state.Expiry) > time.Minute {
 		return state.AccessToken, nil
 	}
-	refreshed, err := requestToken(ctx, p.cfg, url.Values{
-		"grant_type":    {"refresh_token"},
-		"client_id":     {p.cfg.ClientID},
-		"refresh_token": {state.RefreshToken},
-		"scope":         {strings.Join(p.cfg.Scopes, " ")},
+	refreshed, err := requestToken(ctx, &provider.cfg, url.Values{
+		"grant_type":     {"refresh_token"},
+		oauthKeyClientID: {provider.cfg.ClientID},
+		"refresh_token":  {state.RefreshToken},
+		"scope":          {strings.Join(provider.cfg.Scopes, " ")},
 	})
 	if err != nil {
 		return "", err
@@ -318,61 +398,61 @@ func (p *Provider) AccessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode OAuth state: %w", err)
 	}
-	if err := p.store.Set(ctx, p.account, string(encodedState)); err != nil {
+	if err := provider.store.Set(ctx, provider.account, string(encodedState)); err != nil {
 		return "", fmt.Errorf("save refreshed OAuth state: %w", err)
 	}
 	return refreshed.AccessToken, nil
 }
 
-func (c Config) normalized() Config {
-	if c.Provider == "" {
-		c.Provider = "microsoft"
+func (cfg *Config) normalized() Config {
+	if cfg.Provider == "" {
+		cfg.Provider = "microsoft"
 	}
-	switch c.Provider {
+	switch cfg.Provider {
 	case "google":
-		if len(c.Scopes) == 0 {
-			c.Scopes = []string{GoogleScope}
+		if len(cfg.Scopes) == 0 {
+			cfg.Scopes = []string{GoogleScope}
 		}
-		if c.AuthorizationURL == "" {
-			c.AuthorizationURL = GoogleAuthURL
+		if cfg.AuthorizationURL == "" {
+			cfg.AuthorizationURL = GoogleAuthURL
 		}
-		if c.TokenURL == "" {
-			c.TokenURL = GoogleTokenURL
+		if cfg.TokenURL == "" {
+			cfg.TokenURL = GoogleTokenURL
 		}
 	default:
-		if c.Tenant == "" {
-			c.Tenant = DefaultTenant
+		if cfg.Tenant == "" {
+			cfg.Tenant = DefaultTenant
 		}
-		if len(c.Scopes) == 0 {
-			c.Scopes = strings.Fields(DefaultScope)
+		if len(cfg.Scopes) == 0 {
+			cfg.Scopes = strings.Fields(DefaultScope)
 		}
-		base := "https://login.microsoftonline.com/" + url.PathEscape(c.Tenant) + "/oauth2/v2.0/"
-		if c.DeviceCodeURL == "" {
-			c.DeviceCodeURL = base + "devicecode"
+		base := "https://login.microsoftonline.com/" + url.PathEscape(cfg.Tenant) + "/oauth2/v2.0/"
+		if cfg.DeviceCodeURL == "" {
+			cfg.DeviceCodeURL = base + "devicecode"
 		}
-		if c.TokenURL == "" {
-			c.TokenURL = base + "token"
+		if cfg.TokenURL == "" {
+			cfg.TokenURL = base + "token"
 		}
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	if c.HTTPClient != nil {
-		*client = *c.HTTPClient
+	client := &http.Client{Timeout: oauthHTTPTimeout}
+	if cfg.HTTPClient != nil {
+		*client = *cfg.HTTPClient
 	}
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	c.HTTPClient = client
-	return c
+	cfg.HTTPClient = client
+	return *cfg
 }
 
-func (c Config) validate() error {
-	if strings.TrimSpace(c.ClientID) == "" {
+func (cfg *Config) validate() error {
+	if strings.TrimSpace(cfg.ClientID) == "" {
 		return errors.New("OAuth2 client_id is required")
 	}
-	endpoints := []string{c.TokenURL}
-	switch c.Provider {
+	endpoints := []string{cfg.TokenURL}
+	switch cfg.Provider {
 	case "google":
-		endpoints = append(endpoints, c.AuthorizationURL)
+		endpoints = append(endpoints, cfg.AuthorizationURL)
 	case "microsoft":
-		endpoints = append(endpoints, c.DeviceCodeURL)
+		endpoints = append(endpoints, cfg.DeviceCodeURL)
 	default:
 		return errors.New("OAuth2 provider must be microsoft or google")
 	}
@@ -405,8 +485,8 @@ type protocolError struct{ Code string }
 
 func (e *protocolError) Error() string { return "OAuth authorization failed: " + e.Code }
 
-func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, error) {
-	form := url.Values{"client_id": {cfg.ClientID}, "scope": {strings.Join(cfg.Scopes, " ")}}
+func requestDeviceCode(ctx context.Context, cfg *Config) (deviceCodeResponse, error) {
+	form := url.Values{oauthKeyClientID: {cfg.ClientID}, "scope": {strings.Join(cfg.Scopes, " ")}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.DeviceCodeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return deviceCodeResponse{}, fmt.Errorf("create device authorization request: %w", err)
@@ -424,17 +504,24 @@ func requestDeviceCode(ctx context.Context, cfg Config) (deviceCodeResponse, err
 	if resp.StatusCode/100 != 2 || result.Error != "" {
 		return deviceCodeResponse{}, &protocolError{Code: safeCode(result.Error, resp.StatusCode)}
 	}
-	if result.DeviceCode == "" || result.UserCode == "" || result.VerificationURI == "" || result.ExpiresIn <= 0 {
-		return deviceCodeResponse{}, errors.New("incomplete device authorization response")
-	}
-	verificationURI, err := url.Parse(result.VerificationURI)
-	if err != nil || verificationURI.Scheme != "https" || verificationURI.Host == "" || verificationURI.User != nil || containsControl(result.UserCode+result.VerificationURI) || !deviceCodePattern.MatchString(result.UserCode) {
-		return deviceCodeResponse{}, errors.New("invalid device authorization instructions")
+	if err := validateDeviceCodeResponse(&result); err != nil {
+		return deviceCodeResponse{}, err
 	}
 	return result, nil
 }
 
-func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState, error) {
+func validateDeviceCodeResponse(result *deviceCodeResponse) error {
+	if result.DeviceCode == "" || result.UserCode == "" || result.VerificationURI == "" || result.ExpiresIn <= 0 {
+		return errors.New("incomplete device authorization response")
+	}
+	verificationURI, err := url.Parse(result.VerificationURI)
+	if err != nil || verificationURI.Scheme != "https" || verificationURI.Host == "" || verificationURI.User != nil || containsControl(result.UserCode+result.VerificationURI) || !deviceCodePattern.MatchString(result.UserCode) {
+		return errors.New("invalid device authorization instructions")
+	}
+	return nil
+}
+
+func requestToken(ctx context.Context, cfg *Config, form url.Values) (tokenState, error) {
 	if form.Get("scope") == "" {
 		form.Set("scope", strings.Join(cfg.Scopes, " "))
 	}
@@ -462,7 +549,7 @@ func requestToken(ctx context.Context, cfg Config, form url.Values) (tokenState,
 }
 
 func decodeOAuthResponse(ctx context.Context, body io.Reader, result any, kind string) error {
-	err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(result)
+	err := json.NewDecoder(io.LimitReader(body, oauthResponseLimit)).Decode(result)
 	if err == nil {
 		return nil
 	}

@@ -14,7 +14,7 @@ import (
 func TestSyncHonorsCommandCancellation(t *testing.T) {
 	configureCLI(t)
 	jsonOutput, dryRun = true, true
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
@@ -28,15 +28,15 @@ func TestSyncHonorsCommandCancellation(t *testing.T) {
 }
 
 func TestJSONSyncCancellationRetainsReport(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	configureCLIOnPort(t, listener.Addr().(*net.TCPAddr).Port, "10s")
+	configureCLIOnPort(t, mustAssert[*net.TCPAddr](t, listener.Addr()).Port, "10s")
 	jsonOutput, dryRun = true, true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan struct{})
 	defer close(done)
@@ -56,8 +56,11 @@ func TestJSONSyncCancellationRetainsReport(t *testing.T) {
 		t.Fatalf("interrupted sync error = %v, want context cancellation", err)
 	}
 	var report struct {
-		TotalErrors int
-		Results     []struct{ SourceName, TargetName string }
+		TotalErrors int `json:"TotalErrors"`
+		Results     []struct {
+			SourceName string `json:"SourceName"`
+			TargetName string `json:"TargetName"`
+		} `json:"Results"`
 	}
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("interrupted sync stdout = %q, want a JSON report: %v", output, err)

@@ -21,7 +21,7 @@ func listingConfig(cfg *config.Config) *config.Config {
 	}
 	result.Targets = append([]config.TargetConfig(nil), cfg.Targets...)
 	for i := range result.Targets {
-		values := make(map[string]interface{}, len(cfg.Targets[i].Config))
+		values := make(map[string]any, len(cfg.Targets[i].Config))
 		for key, value := range cfg.Targets[i].Config {
 			if key == "credentials_ref" {
 				values[key] = "[REDACTED]"

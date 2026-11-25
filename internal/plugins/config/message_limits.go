@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 )
 
 // ParseMessageLimit refuses fractional, overflowing, zero and negative values.
-func ParseMessageLimit(values map[string]interface{}) (int64, error) {
+func ParseMessageLimit(values map[string]any) (int64, error) {
 	value, exists := values["max_message_bytes"]
 	if !exists {
 		return plugins.DefaultMaxMessageBytes, nil
@@ -22,7 +23,7 @@ func ParseMessageLimit(values map[string]interface{}) (int64, error) {
 		limit = value
 	case float64:
 		if math.IsNaN(value) || math.IsInf(value, 0) || value != math.Trunc(value) || value < 1 || value > float64(plugins.MaxMessageBytes) {
-			return 0, fmt.Errorf("invalid max_message_bytes")
+			return 0, errors.New("invalid max_message_bytes")
 		}
 		limit = int64(value)
 	case string:
@@ -32,7 +33,7 @@ func ParseMessageLimit(values map[string]interface{}) (int64, error) {
 			return 0, fmt.Errorf("invalid max_message_bytes: %w", err)
 		}
 	default:
-		return 0, fmt.Errorf("invalid max_message_bytes")
+		return 0, errors.New("invalid max_message_bytes")
 	}
 	return limit, plugins.ValidateMessageLimit(limit)
 }

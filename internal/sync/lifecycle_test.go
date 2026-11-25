@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 type resourceTarget struct {
 	*fixtureTarget
+
 	closes   int
 	closeErr error
 }
@@ -19,6 +19,7 @@ func (t *resourceTarget) Close() error { t.closes++; return t.closeErr }
 
 type resourceSource struct {
 	*fixtureSource
+
 	closes int
 }
 
@@ -26,29 +27,29 @@ func (s *resourceSource) Close() error { s.closes++; return nil }
 
 func lifecycleFixture(t *testing.T) (*engineFixture, map[string]*resourceTarget, *resourceSource) {
 	t.Helper()
-	f := newEngineFixture(t)
+	fixture := newEngineFixture(t)
 	targets := map[string]*resourceTarget{}
-	for name, target := range f.targets {
+	for name, target := range fixture.targets {
 		targets[name] = &resourceTarget{fixtureTarget: target}
 	}
-	source := &resourceSource{fixtureSource: f.source}
-	f.registry.RegisterTarget("fixture", func(values map[string]interface{}) (plugins.Target, error) {
-		return targets[values["name"].(string)], nil
+	source := &resourceSource{fixtureSource: fixture.source}
+	fixture.registry.RegisterTarget("fixture", func(values map[string]any) (plugins.Target, error) {
+		return targets[mustAssert[string](t, values["name"])], nil
 	})
-	f.registry.RegisterSource("fixture", func(map[string]interface{}) (plugins.Source, error) { return source, nil })
-	return f, targets, source
+	fixture.registry.RegisterSource("fixture", func(map[string]any) (plugins.Source, error) { return source, nil })
+	return fixture, targets, source
 }
 
 func TestEngineClosesResourcesOnStateSetupFailure(t *testing.T) {
-	f, targets, source := lifecycleFixture(t)
-	engine, err := NewSyncEngine(f.cfg, f.store, f.registry)
+	fixture, targets, source := lifecycleFixture(t)
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.Close(); err != nil {
+	if err := fixture.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = engine.Run(context.Background())
+	_, err = engine.Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "upsert source") {
 		t.Fatalf("expected state setup failure: %v", err)
 	}
@@ -63,10 +64,10 @@ func TestEngineClosesResourcesOnStateSetupFailure(t *testing.T) {
 }
 
 func TestEngineClosesPartiallyInitializedTarget(t *testing.T) {
-	f, targets, source := lifecycleFixture(t)
-	f.cfg.Pairs[0].Targets = []string{"first"}
+	fixture, targets, source := lifecycleFixture(t)
+	fixture.cfg.Pairs[0].Targets = []string{"first"}
 	targets["first"].initializeErr = errFixture
-	_, err := f.runError(t)
+	_, err := fixture.runError(t)
 	if !errors.Is(err, errFixture) {
 		t.Fatalf("lost initialize failure: %v", err)
 	}
@@ -75,22 +76,22 @@ func TestEngineClosesPartiallyInitializedTarget(t *testing.T) {
 	}
 }
 
-func (f *engineFixture) runError(t *testing.T) (*SyncStats, error) {
+func (fixture *engineFixture) runError(t *testing.T) (*SyncStats, error) {
 	t.Helper()
-	engine, err := NewSyncEngine(f.cfg, f.store, f.registry)
+	engine, err := NewSyncEngine(fixture.cfg, fixture.store, fixture.registry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return engine.Run(context.Background())
+	return engine.Run(t.Context())
 }
 
 func TestEnginePreservesSetupAndCleanupFailures(t *testing.T) {
-	f, targets, _ := lifecycleFixture(t)
-	f.cfg.Pairs[0].Targets = []string{"first"}
+	fixture, targets, _ := lifecycleFixture(t)
+	fixture.cfg.Pairs[0].Targets = []string{"first"}
 	initializeErr := errors.New("synthetic initialize failure")
 	targets["first"].initializeErr = initializeErr
 	targets["first"].closeErr = errFixture
-	_, err := f.runError(t)
+	_, err := fixture.runError(t)
 	if !errors.Is(err, initializeErr) || !errors.Is(err, errFixture) {
 		t.Fatalf("lost setup or cleanup failure: %v", err)
 	}

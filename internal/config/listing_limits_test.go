@@ -13,7 +13,7 @@ func TestListingLimitsConfigurationReachesSourcePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := SourcePluginConfig(cfg.Sources[0])
+	values, err := SourcePluginConfig(&cfg.Sources[0])
 	if err != nil {
 		t.Fatal(err)
 	}
